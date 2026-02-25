@@ -3,3 +3,7 @@ package-lock.json
 dist/
 node_modules/
 yarn.lock
+
+# JUCE / CMake build artefacts
+JucePlugin/build/
+JucePlugin/_deps/
