@@ -61,6 +61,54 @@ On the right side of this page is the `Releases` section. You can find this app 
 
 ---
 
+## JUCE Plug-in (AU / VST3 for Logic Pro and other DAWs)
+
+The `JucePlugin/` directory contains a JUCE 8 project that wraps the existing
+web-based tool inside an Audio Unit (AU) and VST3 plug-in. Load it in Logic Pro
+on an instrument or audio-effect track to manage your EP-133 samples without
+leaving your DAW session.
+
+### Requirements
+
+- macOS 13 (Ventura) or later
+- Xcode 15 or later (provides clang and the AU SDK)
+- CMake 3.22 or later (`brew install cmake`)
+- An internet connection the first time you build (CMake fetches JUCE 8 automatically via FetchContent)
+
+### How to build the plug-in
+
+```sh
+cd JucePlugin
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+The built plug-ins are placed in:
+
+| Format | Location |
+|--------|----------|
+| AU     | `JucePlugin/build/EP133SampleTool_artefacts/Release/AU/EP-133 Sample Tool.component` |
+| VST3   | `JucePlugin/build/EP133SampleTool_artefacts/Release/VST3/EP-133 Sample Tool.vst3` |
+
+Copy the `.component` bundle to `~/Library/Audio/Plug-Ins/Components/` (or
+`/Library/Audio/Plug-Ins/Components/` for all users) and rescan plug-ins in
+Logic Pro to use it.
+
+### How it works
+
+- All web assets from `data/` are copied into the plugin bundle's
+  `Contents/Resources/data/` folder at build time.
+- The plug-in's editor hosts a `WebBrowserComponent` (WKWebView) that serves
+  these assets via JUCE 8's built-in resource-provider mechanism – avoiding
+  any `file://` URL restrictions.
+- A small JavaScript polyfill is injected into `index.html` that overrides
+  `navigator.requestMIDIAccess()` and routes MIDI through JUCE's
+  `MidiInput` / `MidiOutput` APIs. This means the EP-133 communicates
+  directly with the plug-in host process, independently of the DAW's own
+  MIDI routing.
+
+---
+
 ## How to build from source
 
 **NOTE:** To build the version for the EP-1320 Medieval, after cloning the repo, run the following command to switch to the EP-1320 branch:
