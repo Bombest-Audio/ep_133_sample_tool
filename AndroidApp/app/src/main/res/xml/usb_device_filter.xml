@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Teenage Engineering EP-133 K.O. II USB MIDI
+         Vendor ID 0x2367 = 9063, Product ID may vary by firmware.
+         Use broad vendor match to catch all TE devices. -->
+    <usb-device vendor-id="9063" />
+</resources>

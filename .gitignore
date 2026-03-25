@@ -3,3 +3,21 @@ package-lock.json
 dist/
 node_modules/
 yarn.lock
+
+# JUCE / CMake build artefacts
+JucePlugin/build/
+JucePlugin/_deps/
+
+# iOS
+iOSApp/build/
+iOSApp/DerivedData/
+iOSApp/*.xcworkspace/xcuserdata/
+iOSApp/EP133SampleTool.xcodeproj/xcuserdata/
+iOSApp/EP133SampleTool.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Android
+AndroidApp/.gradle/
+AndroidApp/build/
+AndroidApp/app/build/
+AndroidApp/local.properties
+AndroidApp/app/src/main/assets/data/
