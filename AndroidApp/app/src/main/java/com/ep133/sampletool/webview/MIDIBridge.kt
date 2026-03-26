@@ -2,7 +2,7 @@ package com.ep133.sampletool.webview
 
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
-import com.ep133.sampletool.midi.MIDIManager
+import com.ep133.sampletool.midi.MIDIPort
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -16,7 +16,7 @@ import org.json.JSONObject
  * Incoming MIDI is pushed to JS via [forwardMIDIToJS].
  */
 class MIDIBridge(
-    private val midiManager: MIDIManager,
+    private val midiManager: MIDIPort,
     private val webView: WebView
 ) {
 

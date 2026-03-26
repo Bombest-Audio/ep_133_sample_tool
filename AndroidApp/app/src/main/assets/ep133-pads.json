@@ -1,0 +1,76 @@
+{
+  "channels": {
+    "A": {
+      "midiChannel": 0,
+      "baseNote": 36,
+      "pads": [
+        {"label": "A.", "note": 36, "defaultSound": "KICK"},
+        {"label": "A0", "note": 37, "defaultSound": null},
+        {"label": "AFX", "note": 38, "defaultSound": null},
+        {"label": "A1", "note": 39, "defaultSound": null},
+        {"label": "A2", "note": 40, "defaultSound": "SNARE"},
+        {"label": "A3", "note": 41, "defaultSound": "CLAP"},
+        {"label": "A4", "note": 42, "defaultSound": null},
+        {"label": "A5", "note": 43, "defaultSound": "HI-HAT"},
+        {"label": "A6", "note": 44, "defaultSound": null},
+        {"label": "A7", "note": 45, "defaultSound": null},
+        {"label": "A8", "note": 46, "defaultSound": "OPEN HH"},
+        {"label": "A9", "note": 47, "defaultSound": null}
+      ]
+    },
+    "B": {
+      "midiChannel": 1,
+      "baseNote": 48,
+      "pads": [
+        {"label": "B.", "note": 48, "defaultSound": null},
+        {"label": "B0", "note": 49, "defaultSound": null},
+        {"label": "BFX", "note": 50, "defaultSound": null},
+        {"label": "B1", "note": 51, "defaultSound": null},
+        {"label": "B2", "note": 52, "defaultSound": null},
+        {"label": "B3", "note": 53, "defaultSound": null},
+        {"label": "B4", "note": 54, "defaultSound": null},
+        {"label": "B5", "note": 55, "defaultSound": null},
+        {"label": "B6", "note": 56, "defaultSound": null},
+        {"label": "B7", "note": 57, "defaultSound": null},
+        {"label": "B8", "note": 58, "defaultSound": null},
+        {"label": "B9", "note": 59, "defaultSound": null}
+      ]
+    },
+    "C": {
+      "midiChannel": 2,
+      "baseNote": 60,
+      "pads": [
+        {"label": "C.", "note": 60, "defaultSound": null},
+        {"label": "C0", "note": 61, "defaultSound": null},
+        {"label": "CFX", "note": 62, "defaultSound": null},
+        {"label": "C1", "note": 63, "defaultSound": null},
+        {"label": "C2", "note": 64, "defaultSound": null},
+        {"label": "C3", "note": 65, "defaultSound": null},
+        {"label": "C4", "note": 66, "defaultSound": null},
+        {"label": "C5", "note": 67, "defaultSound": null},
+        {"label": "C6", "note": 68, "defaultSound": null},
+        {"label": "C7", "note": 69, "defaultSound": null},
+        {"label": "C8", "note": 70, "defaultSound": null},
+        {"label": "C9", "note": 71, "defaultSound": null}
+      ]
+    },
+    "D": {
+      "midiChannel": 3,
+      "baseNote": 72,
+      "pads": [
+        {"label": "D.", "note": 72, "defaultSound": null},
+        {"label": "D0", "note": 73, "defaultSound": null},
+        {"label": "DFX", "note": 74, "defaultSound": null},
+        {"label": "D1", "note": 75, "defaultSound": null},
+        {"label": "D2", "note": 76, "defaultSound": null},
+        {"label": "D3", "note": 77, "defaultSound": null},
+        {"label": "D4", "note": 78, "defaultSound": null},
+        {"label": "D5", "note": 79, "defaultSound": null},
+        {"label": "D6", "note": 80, "defaultSound": null},
+        {"label": "D7", "note": 81, "defaultSound": null},
+        {"label": "D8", "note": 82, "defaultSound": null},
+        {"label": "D9", "note": 83, "defaultSound": null}
+      ]
+    }
+  }
+}

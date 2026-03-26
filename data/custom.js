@@ -7,7 +7,7 @@ var CustomNames = false;
 var BackupSamples = true;
 
 // set EnableHMLS to true if you want a new menu option to restore custom sounds
-var EnableHMLS = false;
+var EnableHMLS = true;
 var OptionsDistance = 72
 if (EnableHMLS == true) {OptionsDistance = 55};
 

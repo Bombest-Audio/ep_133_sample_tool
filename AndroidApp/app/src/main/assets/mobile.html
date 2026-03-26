@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>EP-133 · Sample Tool</title>
+  <style>
+    /* ── TOKENS ──────────────────────────────────────── */
+    :root {
+      /* Faceplate — warm mid-gray matching EP-133 hardware */
+      --bg:          #D1D2D4;
+      --surface:     #DADBDD;
+      --surface-hi:  #E2E3E5;
+      --surface-lo:  #C6C7C9;
+      --surface-btn: #D8D9DB;
+
+      /* Rubber pads */
+      --pad:         #222323;
+      --pad-hi:      #2D2E2E;
+      --pad-glow:    rgba(239, 78, 39, 0.55);
+
+      /* EP-133 signature orange */
+      --accent:      #EF4E27;
+      --accent-lo:   rgba(239, 78, 39, 0.13);
+      --accent-mid:  rgba(239, 78, 39, 0.35);
+
+      /* EP-133 teal (wave indicator) */
+      --teal:        #00A69C;
+      --teal-lo:     rgba(0, 166, 156, 0.12);
+      --teal-glow:   rgba(0, 166, 156, 0.5);
+
+      /* Text */
+      --ink:         #191A1B;
+      --ink-2:       #555657;
+      --ink-3:       #8A8B8D;
+      --ink-inv:     #E2E3E4;
+      --ink-inv-2:   rgba(226,227,228,0.4);
+
+      /* Borders & shadows */
+      --border:      #B0B1B3;
+      --border-hi:   rgba(255,255,255,0.65);
+      --shadow-sm:   rgba(0,0,0,0.15);
+      --shadow-md:   rgba(0,0,0,0.25);
+      --shadow-pad:  rgba(0,0,0,0.45);
+      --inset:       rgba(0,0,0,0.12);
+
+      /* Layout */
+      --tab-h:       68px;
+      --hdr-h:       52px;
+
+      /* Font */
+      --font:        monospace;
+    }
+
+    /* ── RESET ───────────────────────────────────────── */
+    *, *::before, *::after {
+      margin: 0; padding: 0; box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none; -webkit-user-select: none;
+      font-family: var(--font);
+    }
+    html, body {
+      width: 100%; height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      overflow: hidden;
+    }
+
+    /* ── LAYOUT SHELL ────────────────────────────────── */
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      height: 100dvh;
+    }
+
+    /* ── HEADER ──────────────────────────────────────── */
+    .hdr {
+      height: var(--hdr-h);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      background: var(--surface-hi);
+      border-bottom: 1px solid var(--border);
+      box-shadow: 0 2px 6px var(--shadow-sm);
+      position: relative; z-index: 50;
+    }
+    .hdr-brand { display: flex; flex-direction: column; gap: 1px; }
+    .hdr-model {
+      font-size: 11px; font-weight: 700;
+      letter-spacing: 5px; color: var(--ink);
+    }
+    .hdr-sub {
+      font-size: 7px; letter-spacing: 2.5px; color: var(--ink-3);
+    }
+    .hdr-pill {
+      display: flex; align-items: center; gap: 7px;
+      padding: 7px 12px;
+      background: var(--surface-lo);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      box-shadow: inset 0 1px 2px var(--inset);
+      cursor: pointer;
+    }
+    .hdr-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--ink-3);
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .hdr-dot.on {
+      background: var(--teal);
+      box-shadow: 0 0 7px var(--teal-glow);
+      animation: throb 2.5s ease-in-out infinite;
+    }
+    @keyframes throb { 0%,100%{opacity:1} 50%{opacity:0.45} }
+    .hdr-dev-name {
+      font-size: 9px; letter-spacing: 2px; color: var(--ink-2);
+    }
+
+    /* ── CONTENT AREA ────────────────────────────────── */
+    .content {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    .screen {
+      position: absolute; inset: 0;
+      overflow: hidden;
+      opacity: 0; visibility: hidden;
+      transform: translateY(5px);
+      transition: opacity .12s ease, transform .12s ease, visibility 0s .12s;
+    }
+    .screen.active {
+      opacity: 1; visibility: visible; transform: none;
+      transition: opacity .12s ease, transform .12s ease, visibility 0s 0s;
+    }
+
+    /* ── TAB BAR ─────────────────────────────────────── */
+    .tabbar {
+      height: var(--tab-h);
+      flex-shrink: 0;
+      display: flex;
+      background: var(--surface-hi);
+      border-top: 1px solid var(--border);
+      box-shadow: 0 -2px 8px var(--shadow-sm);
+      padding-bottom: env(safe-area-inset-bottom, 0);
+    }
+    .tab {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 5px;
+      font-size: 8px; font-weight: 700; letter-spacing: 2.5px;
+      color: var(--ink-3); cursor: pointer;
+      position: relative; transition: color .1s;
+    }
+    .tab.active { color: var(--accent); }
+    .tab.active::after {
+      content: ''; position: absolute;
+      bottom: 0; left: 50%; transform: translateX(-50%);
+      width: 28px; height: 3px;
+      background: var(--accent);
+      border-radius: 3px 3px 0 0;
+    }
+    .tab-icon {
+      width: 22px; height: 22px;
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    /* ─────────────────────────────────────────────────── */
+    /* ── PADS SCREEN ─────────────────────────────────── */
+    /* ─────────────────────────────────────────────────── */
+    .pads-wrap {
+      display: flex; flex-direction: column;
+      height: 100%; padding: 12px;
+    }
+    .bank-strip {
+      display: flex; gap: 5px; flex-shrink: 0;
+      margin-bottom: 12px;
+      overflow-x: auto;
+      /* custom scrollbar hidden */
+      scrollbar-width: none;
+    }
+    .bank-strip::-webkit-scrollbar { display: none; }
+    .bank-btn {
+      flex-shrink: 0;
+      min-width: 36px; height: 30px;
+      padding: 0 8px;
+      background: var(--surface-btn);
+      border: 1px solid var(--border);
+      border-radius: 2px;
+      font-size: 10px; font-weight: 700; letter-spacing: 1.5px;
+      color: var(--ink-2); cursor: pointer;
+      box-shadow: 0 1px 0 var(--border-hi), inset 0 1px 2px var(--inset);
+      transition: all .08s;
+    }
+    .bank-btn.active {
+      background: var(--accent);
+      border-color: #C03C18;
+      color: #fff;
+      box-shadow: 0 2px 6px rgba(239,78,39,.3), inset 0 1px 0 rgba(255,255,255,.15);
+    }
+
+    .pad-grid {
+      flex: 1; min-height: 0;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: repeat(4, 1fr);
+      gap: 7px;
+    }
+    .pad {
+      background: var(--pad);
+      border-radius: 5px;
+      display: flex; flex-direction: column;
+      align-items: flex-start; justify-content: flex-end;
+      padding: 7px 7px 6px;
+      cursor: pointer; position: relative; overflow: hidden;
+      box-shadow:
+        0 4px 8px var(--shadow-pad),
+        0 1px 2px var(--shadow-md),
+        inset 0 1px 0 rgba(255,255,255,0.05);
+      transition: transform .05s ease, box-shadow .05s ease;
+      -webkit-touch-callout: none;
+    }
+    /* Top sheen — simulates rubber concavity */
+    .pad::before {
+      content: ''; position: absolute;
+      top: 0; left: 0; right: 0; height: 45%;
+      background: linear-gradient(180deg, rgba(255,255,255,.04) 0%, transparent 100%);
+      border-radius: 5px 5px 0 0;
+      pointer-events: none;
+    }
+    /* Orange glow — fires on press */
+    .pad::after {
+      content: ''; position: absolute; inset: 0;
+      background: radial-gradient(ellipse at 50% 80%, var(--pad-glow), transparent 65%);
+      opacity: 0; pointer-events: none;
+      transition: opacity .08s;
+    }
+    .pad.pressed {
+      transform: scale(0.92);
+      box-shadow: 0 1px 3px var(--shadow-pad), inset 0 2px 4px rgba(0,0,0,0.3);
+    }
+    .pad.pressed::after { opacity: 1; }
+    .pad.flash::after { animation: padFlash .35s ease-out forwards; }
+    @keyframes padFlash { 0%{opacity:.9} 100%{opacity:0} }
+
+    /* Filled vs empty */
+    .pad.filled { border: 1px solid rgba(255,255,255,0.04); }
+    .pad.empty  { border: 1px solid transparent; }
+
+    .pad-id {
+      position: absolute; top: 5px; right: 6px;
+      font-size: 7px; letter-spacing: .5px;
+      color: rgba(255,255,255,.18);
+    }
+    .pad-name {
+      font-size: 7px; font-weight: 700; letter-spacing: .5px;
+      color: var(--ink-inv);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      width: 100%; line-height: 1.4;
+    }
+    .pad.empty .pad-name { color: rgba(255,255,255,.1); }
+    .pad-type {
+      font-size: 6px; letter-spacing: 1px;
+      color: var(--ink-inv-2); margin-top: 1px;
+    }
+    /* Filled indicator stripe at bottom */
+    .pad-bar {
+      position: absolute; bottom: 0; left: 0; right: 0; height: 2px;
+      background: var(--accent); border-radius: 0 0 5px 5px;
+      transform: scaleX(0); transform-origin: left;
+      transition: transform .4s ease;
+    }
+    .pad.filled .pad-bar { transform: scaleX(1); }
+
+    /* ─────────────────────────────────────────────────── */
+    /* ── PAD DETAIL SHEET ────────────────────────────── */
+    /* ─────────────────────────────────────────────────── */
+    .sheet-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.28);
+      z-index: 200; opacity: 0; visibility: hidden;
+      transition: opacity .22s ease, visibility 0s .22s;
+    }
+    .sheet-backdrop.open {
+      opacity: 1; visibility: visible;
+      transition: opacity .22s ease, visibility 0s 0s;
+    }
+    .sheet {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      background: var(--surface-hi);
+      border-radius: 14px 14px 0 0;
+      border-top: 1px solid var(--border);
+      box-shadow: 0 -6px 24px var(--shadow-md);
+      transform: translateY(100%);
+      transition: transform .26s cubic-bezier(.32,.72,0,1);
+      padding-bottom: env(safe-area-inset-bottom, 12px);
+    }
+    .sheet-backdrop.open .sheet {
+      transform: translateY(0);
+    }
+    .sheet-handle {
+      width: 38px; height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      margin: 10px auto 0;
+    }
+    .sheet-body { padding: 14px 18px 20px; }
+    .sheet-top {
+      display: flex; align-items: flex-start;
+      justify-content: space-between; margin-bottom: 14px;
+    }
+    .sheet-pad-ref {
+      font-size: 9px; letter-spacing: 3px; color: var(--ink-3);
+    }
+    .sheet-sname {
+      font-size: 17px; font-weight: 700; letter-spacing: .5px;
+      margin-top: 3px;
+    }
+    .sheet-x {
+      width: 28px; height: 28px;
+      background: var(--surface-lo);
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; color: var(--ink-3); font-size: 13px;
+      box-shadow: inset 0 1px 2px var(--inset);
+    }
+    .wave-box {
+      background: var(--pad);
+      border-radius: 5px;
+      padding: 10px 12px 8px;
+      margin-bottom: 14px;
+    }
+    .wave-box canvas { display: block; width: 100%; }
+    .wave-times {
+      display: flex; justify-content: space-between;
+      margin-top: 5px;
+      font-size: 7px; letter-spacing: 1px;
+      color: rgba(255,255,255,.25);
+    }
+    .sheet-params {
+      display: grid; grid-template-columns: repeat(3,1fr); gap: 8px;
+      margin-bottom: 14px;
+    }
+    .spar {
+      background: var(--surface-lo);
+      border: 1px solid var(--border);
+      border-radius: 3px; padding: 9px 10px;
+      box-shadow: inset 0 1px 2px var(--inset);
+    }
+    .spar-label {
+      font-size: 7px; letter-spacing: 2px; color: var(--ink-3);
+      margin-bottom: 4px;
+    }
+    .spar-value { font-size: 14px; font-weight: 700; }
+    .sheet-btns { display: flex; gap: 7px; }
+    .sht-btn {
+      flex: 1; height: 44px;
+      background: var(--surface-btn);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      font-size: 8px; font-weight: 700; letter-spacing: 2px;
+      color: var(--ink-2); cursor: pointer;
+      box-shadow: 0 1px 0 var(--border-hi), inset 0 1px 2px var(--inset);
+      transition: transform .06s;
+    }
+    .sht-btn:active { transform: scale(.96); }
+    .sht-btn.primary {
+      background: var(--accent); border-color: #C03C18; color: #fff;
+      box-shadow: 0 2px 8px rgba(239,78,39,.35), inset 0 1px 0 rgba(255,255,255,.18);
+    }
+
+    /* ─────────────────────────────────────────────────── */
+    /* ── SAMPLES SCREEN ──────────────────────────────── */
+    /* ─────────────────────────────────────────────────── */
+    .samples-wrap {
+      display: flex; flex-direction: column; height: 100%;
+    }
+    .samples-hdr {
+      flex-shrink: 0; padding: 12px 14px 10px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      box-shadow: 0 1px 4px var(--shadow-sm);
+    }
+    .search-row {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--surface-lo);
+      border: 1px solid var(--border);
+      border-radius: 2px; padding: 9px 12px;
+      box-shadow: inset 0 1px 2px var(--inset);
+    }
+    .search-row input {
+      flex: 1; background: none; border: none; outline: none;
+      font-size: 10px; letter-spacing: 1px; color: var(--ink);
+    }
+    .search-row input::placeholder { color: var(--ink-3); }
+    .chips {
+      display: flex; gap: 6px; margin-top: 9px;
+      overflow-x: auto; padding-bottom: 2px;
+      scrollbar-width: none;
+    }
+    .chips::-webkit-scrollbar { display: none; }
+    .chip {
+      flex-shrink: 0; padding: 4px 10px;
+      background: var(--surface-btn);
+      border: 1px solid var(--border); border-radius: 12px;
+      font-size: 8px; letter-spacing: 1.5px; color: var(--ink-2);
+      cursor: pointer; transition: all .08s;
+      box-shadow: inset 0 1px 1px var(--inset);
+    }
+    .chip.on {
+      background: var(--ink); border-color: var(--ink); color: #fff;
+    }
+    .slist {
+      flex: 1; overflow-y: auto; overscroll-behavior: contain;
+      scrollbar-width: none;
+    }
+    .slist::-webkit-scrollbar { display: none; }
+    .sgroup-hdr {
+      padding: 9px 14px 5px;
+      font-size: 8px; letter-spacing: 3px; color: var(--ink-3);
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 10;
+    }
+    .srow {
+      display: flex; align-items: center;
+      padding: 11px 14px; gap: 12px;
+      border-bottom: 1px solid var(--surface);
+      cursor: pointer; transition: background .07s;
+    }
+    .srow:active { background: var(--surface-lo); }
+    .swave {
+      width: 52px; height: 30px; flex-shrink: 0;
+      background: var(--surface-lo);
+      border: 1px solid var(--border); border-radius: 2px;
+      overflow: hidden; display: flex; align-items: center;
+    }
+    .sinfo { flex: 1; min-width: 0; }
+    .sname {
+      font-size: 10px; font-weight: 700; letter-spacing: .5px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .smeta {
+      display: flex; gap: 8px; margin-top: 3px;
+      font-size: 7px; letter-spacing: 1px;
+    }
+    .stag  { color: var(--ink-3); }
+    .sdur  { color: var(--accent); }
+    .sassign {
+      width: 32px; height: 32px; flex-shrink: 0;
+      background: var(--surface-btn);
+      border: 1px solid var(--border); border-radius: 2px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; color: var(--ink-3);
+      box-shadow: 0 1px 0 var(--border-hi), inset 0 1px 1px var(--inset);
+      transition: all .08s;
+    }
+    .sassign:active {
+      transform: scale(.92);
+      background: var(--accent-lo);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* ─────────────────────────────────────────────────── */
+    /* ── DEVICE SCREEN ───────────────────────────────── */
+    /* ─────────────────────────────────────────────────── */
+    .device-scroll {
+      height: 100%; overflow-y: auto;
+      padding: 14px; scrollbar-width: none;
+    }
+    .device-scroll::-webkit-scrollbar { display: none; }
+    .dcard {
+      background: var(--surface-hi);
+      border: 1px solid var(--border); border-radius: 5px;
+      padding: 16px; margin-bottom: 12px;
+      box-shadow: 0 1px 4px var(--shadow-sm);
+    }
+    .dcard-top {
+      display: flex; align-items: center;
+      justify-content: space-between; margin-bottom: 12px;
+    }
+    .dlabel {
+      font-size: 8px; letter-spacing: 3px; color: var(--ink-3);
+    }
+    .dbadge {
+      display: flex; align-items: center; gap: 5px;
+      padding: 3px 8px; border-radius: 2px;
+      font-size: 8px; letter-spacing: 1.5px;
+    }
+    .dbadge.on {
+      background: var(--teal-lo); color: var(--teal);
+      border: 1px solid rgba(0,166,156,.3);
+    }
+    .dbadge.off {
+      background: var(--surface-lo); color: var(--ink-3);
+      border: 1px solid var(--border);
+    }
+    .dbadge-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+    .dmodel {
+      font-size: 24px; font-weight: 700; letter-spacing: 3px; line-height: 1;
+      margin-bottom: 4px;
+    }
+    .dsub {
+      font-size: 8px; letter-spacing: 2px; color: var(--ink-3);
+      margin-bottom: 14px;
+    }
+    .dbar-row {
+      display: flex; justify-content: space-between;
+      font-size: 9px; letter-spacing: 1px; color: var(--ink-2);
+      margin-bottom: 6px;
+    }
+    .dbar-track {
+      height: 4px; background: var(--surface-lo);
+      border: 1px solid var(--border); border-radius: 2px;
+      overflow: hidden; box-shadow: inset 0 1px 2px var(--inset);
+    }
+    .dbar-fill {
+      height: 100%; background: var(--accent);
+      border-radius: 1px; transition: width 1.2s cubic-bezier(.4,0,.2,1);
+    }
+    .dstats {
+      display: grid; grid-template-columns: repeat(3,1fr); gap: 10px;
+      margin-top: 14px; padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+    .dstat { display: flex; flex-direction: column; gap: 3px; }
+    .dstat-v {
+      font-size: 24px; font-weight: 700; letter-spacing: -1px; line-height: 1;
+    }
+    .dstat-l {
+      font-size: 7px; letter-spacing: 2px; color: var(--ink-3);
+    }
+    .dsec { font-size: 8px; letter-spacing: 3px; color: var(--ink-3); margin-bottom: 8px; }
+    .daction {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px;
+      background: var(--surface-hi);
+      border: 1px solid var(--border); border-radius: 4px;
+      cursor: pointer; margin-bottom: 7px;
+      box-shadow: 0 1px 0 var(--border-hi), inset 0 1px 2px var(--inset);
+      transition: all .07s;
+    }
+    .daction:active { transform: scale(.99); background: var(--surface-lo); }
+    .daction:last-child { margin-bottom: 0; }
+    .dact-left { display: flex; flex-direction: column; gap: 4px; }
+    .dact-name { font-size: 11px; font-weight: 700; letter-spacing: 1px; }
+    .dact-desc { font-size: 8px; letter-spacing: 1px; color: var(--ink-3); }
+    .dact-chev { font-size: 18px; color: var(--ink-3); line-height: 1; }
+
+    /* No-device empty state */
+    .no-device {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 40px 20px; gap: 14px; text-align: center;
+    }
+    .no-device-ring {
+      width: 72px; height: 72px;
+      border: 2px solid var(--border);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--ink-3);
+      animation: ringPulse 2.8s ease-in-out infinite;
+    }
+    @keyframes ringPulse {
+      0%,100%{ border-color: var(--border); }
+      50%{ border-color: var(--accent); }
+    }
+    .no-device-title { font-size: 10px; letter-spacing: 2px; color: var(--ink-2); }
+    .no-device-sub { font-size: 8px; letter-spacing: 1px; color: var(--ink-3); line-height: 2; }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── HEADER ──────────────────────────────────────── -->
+  <header class="hdr">
+    <div class="hdr-brand">
+      <div class="hdr-model">EP-133</div>
+      <div class="hdr-sub">SAMPLE TOOL</div>
+    </div>
+    <div class="hdr-pill" id="hdrPill" onclick="switchTab('device')">
+      <div class="hdr-dot on" id="hdrDot"></div>
+      <div class="hdr-dev-name" id="hdrName">K.O. II</div>
+    </div>
+  </header>
+
+  <!-- ── CONTENT ─────────────────────────────────────── -->
+  <main class="content">
+
+    <!-- PADS -->
+    <div class="screen active" id="screen-pads">
+      <div class="pads-wrap">
+        <div class="bank-strip" id="bankStrip"></div>
+        <div class="pad-grid"  id="padGrid"></div>
+      </div>
+    </div>
+
+    <!-- SAMPLES -->
+    <div class="screen" id="screen-samples">
+      <div class="samples-wrap">
+        <div class="samples-hdr">
+          <div class="search-row">
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+              <circle cx="5.5" cy="5.5" r="4" stroke="var(--ink-3)" stroke-width="1.3"/>
+              <path d="M8.5 8.5L11 11" stroke="var(--ink-3)" stroke-width="1.3" stroke-linecap="round"/>
+            </svg>
+            <input type="text" placeholder="SEARCH SAMPLES..." id="searchInput">
+          </div>
+          <div class="chips" id="chips"></div>
+        </div>
+        <div class="slist" id="slist"></div>
+      </div>
+    </div>
+
+    <!-- DEVICE -->
+    <div class="screen" id="screen-device">
+      <div class="device-scroll" id="deviceContent"></div>
+    </div>
+
+  </main>
+
+  <!-- ── TAB BAR ──────────────────────────────────────── -->
+  <nav class="tabbar">
+    <div class="tab active" id="tab-pads" onclick="switchTab('pads')">
+      <div class="tab-icon">
+        <!-- 4-square grid icon -->
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <rect x="2" y="2"   width="7" height="7" rx="1.5" fill="currentColor"/>
+          <rect x="11" y="2"  width="7" height="7" rx="1.5" fill="currentColor"/>
+          <rect x="2" y="11"  width="7" height="7" rx="1.5" fill="currentColor"/>
+          <rect x="11" y="11" width="7" height="7" rx="1.5" fill="currentColor"/>
+        </svg>
+      </div>
+      PADS
+    </div>
+    <div class="tab" id="tab-samples" onclick="switchTab('samples')">
+      <div class="tab-icon">
+        <!-- Library/list icon -->
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <path d="M3 5.5h14M3 10h14M3 14.5h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <circle cx="16" cy="14.5" r="2.2" stroke="currentColor" stroke-width="1.3"/>
+          <path d="M16 12.3V8.5l2-1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+        </svg>
+      </div>
+      LIBRARY
+    </div>
+    <div class="tab" id="tab-device" onclick="switchTab('device')">
+      <div class="tab-icon">
+        <!-- USB / device icon -->
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <rect x="6.5" y="2.5" width="7" height="12" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M8.5 6.5h3M8.5 9.5h3M8.5 12.5h2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <path d="M10 15v3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          <path d="M8 18h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+      </div>
+      DEVICE
+    </div>
+  </nav>
+
+</div><!-- .app -->
+
+<!-- ── PAD DETAIL SHEET ─────────────────────────────────── -->
+<div class="sheet-backdrop" id="sheetBg" onclick="closeSheet(event)">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-body" id="sheetBody"></div>
+  </div>
+</div>
+
+<script>
+/* ── DATA ──────────────────────────────────────────────── */
+const BANKS = {
+  A:[
+    {n:'KICK 808',  t:'DRUMS', dur:'0.48', lv:92},
+    {n:'SNARE 01',  t:'DRUMS', dur:'0.31', lv:78},
+    {n:'HH CLOSE',  t:'DRUMS', dur:'0.12', lv:65},
+    {n:'HH OPEN',   t:'DRUMS', dur:'0.28', lv:70},
+    {n:'CLAP 909',  t:'DRUMS', dur:'0.22', lv:85},
+    {n:'PERC 01',   t:'PERC',  dur:'0.19', lv:60},
+    null,
+    {n:'RIDE 01',   t:'DRUMS', dur:'0.56', lv:72},
+    {n:'BASS SYN',  t:'BASS',  dur:'1.20', lv:88},
+    null,
+    {n:'CHORD 01',  t:'KEYS',  dur:'2.14', lv:76},
+    null,
+    {n:'RISE FX',   t:'FX',   dur:'3.40', lv:64},
+    null,
+    {n:'VOX CHOP',  t:'VOCAL', dur:'0.85', lv:80},
+    null,
+  ],
+  B:[
+    {n:'KICK DEEP', t:'DRUMS', dur:'0.62', lv:95},
+    {n:'RIMSHOT',   t:'DRUMS', dur:'0.14', lv:74},
+    null, null,
+    {n:'SHAKER',    t:'PERC',  dur:'0.33', lv:68},
+    null, null, null,
+    {n:'SUB BASS',  t:'BASS',  dur:'1.80', lv:91},
+    {n:'LEAD SYN',  t:'SYNTH', dur:'0.95', lv:82},
+    null, null, null, null, null, null,
+  ],
+};
+'CDEFGHIJKLMNOP'.split('').forEach(b => { BANKS[b] = Array(16).fill(null); });
+
+const SAMPLES = [
+  {g:'FACTORY / DRUMS', n:'KICK 808',   t:'DRUMS', d:'0.48', id:'f01'},
+  {g:'FACTORY / DRUMS', n:'KICK 909',   t:'DRUMS', d:'0.35', id:'f02'},
+  {g:'FACTORY / DRUMS', n:'KICK DEEP',  t:'DRUMS', d:'0.62', id:'f03'},
+  {g:'FACTORY / DRUMS', n:'SNARE 01',   t:'DRUMS', d:'0.31', id:'f04'},
+  {g:'FACTORY / DRUMS', n:'SNARE 02',   t:'DRUMS', d:'0.28', id:'f05'},
+  {g:'FACTORY / DRUMS', n:'HH CLOSED',  t:'DRUMS', d:'0.12', id:'f06'},
+  {g:'FACTORY / DRUMS', n:'HH OPEN',    t:'DRUMS', d:'0.28', id:'f07'},
+  {g:'FACTORY / DRUMS', n:'CLAP 909',   t:'DRUMS', d:'0.22', id:'f08'},
+  {g:'FACTORY / DRUMS', n:'RIMSHOT',    t:'DRUMS', d:'0.14', id:'f09'},
+  {g:'FACTORY / DRUMS', n:'PERC 01',    t:'PERC',  d:'0.19', id:'f10'},
+  {g:'FACTORY / DRUMS', n:'SHAKER',     t:'PERC',  d:'0.33', id:'f11'},
+  {g:'FACTORY / DRUMS', n:'RIDE 01',    t:'DRUMS', d:'0.56', id:'f12'},
+  {g:'FACTORY / BASS',  n:'BASS SYN',   t:'BASS',  d:'1.20', id:'f13'},
+  {g:'FACTORY / BASS',  n:'SUB BASS',   t:'BASS',  d:'1.80', id:'f14'},
+  {g:'FACTORY / BASS',  n:'BASS PICK',  t:'BASS',  d:'0.90', id:'f15'},
+  {g:'FACTORY / KEYS',  n:'CHORD 01',   t:'KEYS',  d:'2.14', id:'f16'},
+  {g:'FACTORY / KEYS',  n:'LEAD SYN',   t:'SYNTH', d:'0.95', id:'f17'},
+  {g:'FACTORY / KEYS',  n:'PIANO C4',   t:'KEYS',  d:'1.42', id:'f18'},
+  {g:'FACTORY / FX',    n:'RISE FX',    t:'FX',    d:'3.40', id:'f19'},
+  {g:'FACTORY / FX',    n:'SWEEP DOWN', t:'FX',    d:'2.10', id:'f20'},
+  {g:'USER',            n:'VOX CHOP',   t:'VOCAL', d:'0.85', id:'u01'},
+  {g:'USER',            n:'MY KICK',    t:'DRUMS', d:'0.52', id:'u02'},
+  {g:'USER',            n:'GUITAR RIF', t:'KEYS',  d:'2.30', id:'u03'},
+];
+
+const FILTERS = ['ALL','DRUMS','BASS','KEYS','FX','USER'];
+
+/* ── STATE ─────────────────────────────────────────────── */
+let state = {
+  tab:    'pads',
+  bank:   'A',
+  filter: 'ALL',
+  query:  '',
+  connected: true,
+};
+
+/* ── NAVIGATION ────────────────────────────────────────── */
+function switchTab(tab) {
+  ['pads','samples','device'].forEach(t => {
+    document.getElementById('tab-' + t).classList.toggle('active', t === tab);
+    document.getElementById('screen-' + t).classList.toggle('active', t === tab);
+  });
+  state.tab = tab;
+  if (tab === 'device')  renderDevice();
+  if (tab === 'samples') renderSamples();
+}
+
+/* ── BANKS & PADS ──────────────────────────────────────── */
+function renderBanks() {
+  const strip = document.getElementById('bankStrip');
+  const banks = Object.keys(BANKS);
+  strip.innerHTML = banks.map(b =>
+    `<button class="bank-btn${b === state.bank ? ' active' : ''}"
+       onclick="selectBank('${b}',this)">${b}</button>`
+  ).join('');
+}
+
+function selectBank(b, el) {
+  state.bank = b;
+  document.querySelectorAll('.bank-btn').forEach(x => x.classList.remove('active'));
+  el.classList.add('active');
+  renderPads();
+}
+
+function renderPads() {
+  const grid = document.getElementById('padGrid');
+  const pads = BANKS[state.bank];
+  grid.innerHTML = '';
+  pads.forEach((p, i) => {
+    const id = state.bank + (i + 1);
+    const div = document.createElement('div');
+    div.className = 'pad ' + (p ? 'filled' : 'empty');
+    div.innerHTML = `
+      <div class="pad-id">${id}</div>
+      ${p ? `<div class="pad-name">${p.n}</div>
+             <div class="pad-type">${p.t}</div>
+             <div class="pad-bar"></div>`
+          : `<div class="pad-name">—</div>`}
+    `;
+    /* Touch press */
+    div.addEventListener('touchstart', e => {
+      e.preventDefault();
+      div.classList.add('pressed');
+    }, { passive: false });
+    div.addEventListener('touchend', e => {
+      e.preventDefault();
+      div.classList.remove('pressed');
+      if (p) {
+        div.classList.add('flash');
+        div.addEventListener('animationend', () => div.classList.remove('flash'), { once: true });
+      }
+    }, { passive: false });
+    /* Click = open sheet (for non-touch) */
+    div.addEventListener('click', () => { if (p) openSheet(i, p); });
+    grid.appendChild(div);
+  });
+}
+
+/* ── PAD DETAIL SHEET ──────────────────────────────────── */
+function openSheet(idx, p) {
+  const ref = state.bank + (idx + 1);
+  document.getElementById('sheetBody').innerHTML = `
+    <div class="sheet-top">
+      <div>
+        <div class="sheet-pad-ref">PAD ${ref}</div>
+        <div class="sheet-sname">${p.n}</div>
+      </div>
+      <div class="sheet-x" onclick="closeSheet(null,true)">✕</div>
+    </div>
+    <div class="wave-box">
+      <canvas id="sheetWave" height="58"></canvas>
+      <div class="wave-times"><span>0:00</span><span>0:${p.dur}</span></div>
+    </div>
+    <div class="sheet-params">
+      <div class="spar"><div class="spar-label">LEVEL</div><div class="spar-value">${p.lv}</div></div>
+      <div class="spar"><div class="spar-label">TYPE</div><div class="spar-value" style="font-size:10px;letter-spacing:1px">${p.t}</div></div>
+      <div class="spar"><div class="spar-label">LEN</div><div class="spar-value">${p.dur}s</div></div>
+    </div>
+    <div class="sheet-btns">
+      <button class="sht-btn" onclick="closeSheet(null,true)">CANCEL</button>
+      <button class="sht-btn" onclick="closeSheet(null,true);switchTab('samples')">REPLACE</button>
+      <button class="sht-btn primary" id="playBtn" onclick="triggerPlay()">▶ PLAY</button>
+    </div>
+  `;
+  document.getElementById('sheetBg').classList.add('open');
+  requestAnimationFrame(() => {
+    const c = document.getElementById('sheetWave');
+    if (c) drawWave(c, '#EF4E27', '#222323');
+  });
+}
+function closeSheet(e, force) {
+  if (!force && e && e.target !== document.getElementById('sheetBg')) return;
+  document.getElementById('sheetBg').classList.remove('open');
+}
+function triggerPlay() {
+  const btn = document.getElementById('playBtn');
+  if (!btn) return;
+  btn.textContent = '● PLAY';
+  setTimeout(() => { if(btn) btn.textContent = '▶ PLAY'; }, 600);
+}
+
+/* ── SAMPLES ───────────────────────────────────────────── */
+function renderChips() {
+  document.getElementById('chips').innerHTML = FILTERS.map(f =>
+    `<div class="chip${f===state.filter?' on':''}" onclick="setFilter('${f}',this)">${f}</div>`
+  ).join('');
+}
+function setFilter(f, el) {
+  state.filter = f;
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
+  el.classList.add('on');
+  renderSamples();
+}
+function renderSamples() {
+  const q = state.query.toLowerCase();
+  const f = state.filter;
+  const filtered = SAMPLES.filter(s => {
+    const mf = f==='ALL'||s.t===f||(f==='USER'&&s.g==='USER');
+    const mq = !q||s.n.toLowerCase().includes(q);
+    return mf && mq;
+  });
+  const groups = {};
+  filtered.forEach(s => { (groups[s.g] = groups[s.g]||[]).push(s); });
+
+  const list = document.getElementById('slist');
+  if (!list) return;
+
+  const typeColor = { DRUMS:'#EF4E27', BASS:'#00A69C', KEYS:'#8888CC', FX:'#AA88FF', SYNTH:'#FFAA44', PERC:'#EF6E47', VOCAL:'#88CCAA' };
+
+  let html = '';
+  Object.entries(groups).forEach(([g, samps]) => {
+    html += `<div class="sgroup-hdr">${g}</div>`;
+    samps.forEach(s => {
+      const col = typeColor[s.t] || '#888';
+      html += `
+        <div class="srow">
+          <div class="swave"><canvas width="50" height="28" data-col="${col}" id="sw-${s.id}"></canvas></div>
+          <div class="sinfo">
+            <div class="sname">${s.n}</div>
+            <div class="smeta"><span class="stag">${s.t}</span><span class="sdur">${s.d}s</span></div>
+          </div>
+          <div class="sassign" onclick="flashAssign(this)">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </div>
+        </div>`;
+    });
+  });
+  if (!html) html = `<div style="padding:40px;text-align:center;font-size:9px;letter-spacing:2px;color:var(--ink-3)">NO SAMPLES FOUND</div>`;
+  list.innerHTML = html;
+
+  requestAnimationFrame(() => {
+    list.querySelectorAll('canvas[data-col]').forEach(c => {
+      drawWaveMini(c, c.dataset.col);
+    });
+  });
+}
+function flashAssign(el) {
+  el.style.borderColor = 'var(--accent)';
+  el.style.color = 'var(--accent)';
+  el.style.background = 'var(--accent-lo)';
+  setTimeout(() => {
+    el.style.borderColor = '';
+    el.style.color = '';
+    el.style.background = '';
+  }, 500);
+}
+
+/* ── DEVICE SCREEN ─────────────────────────────────────── */
+function renderDevice() {
+  const el = document.getElementById('deviceContent');
+  if (!el) return;
+  if (state.connected) {
+    el.innerHTML = `
+      <div class="dcard">
+        <div class="dcard-top">
+          <span class="dlabel">CONNECTED DEVICE</span>
+          <span class="dbadge on"><span class="dbadge-dot"></span>ONLINE</span>
+        </div>
+        <div class="dmodel">EP-133</div>
+        <div class="dsub">K.O. II · SERIAL #TE032AS001-4891</div>
+        <div class="dbar-row"><span>STORAGE</span><span>234 / 512 MB</span></div>
+        <div class="dbar-track"><div class="dbar-fill" id="storBar" style="width:0%"></div></div>
+        <div class="dstats">
+          <div class="dstat"><div class="dstat-v">186</div><div class="dstat-l">SAMPLES</div></div>
+          <div class="dstat"><div class="dstat-v">12</div><div class="dstat-l">PROJECTS</div></div>
+          <div class="dstat"><div class="dstat-v">1.4.2</div><div class="dstat-l" style="letter-spacing:1px">FIRMWARE</div></div>
+        </div>
+      </div>
+
+      <div class="dsec">ACTIONS</div>
+      <div class="daction" onclick="devAction(this,'BACKING UP…','BACKUP DEVICE','SAVE ALL SAMPLES + PROJECTS')">
+        <div class="dact-left">
+          <div class="dact-name">BACKUP DEVICE</div>
+          <div class="dact-desc">SAVE ALL SAMPLES + PROJECTS</div>
+        </div>
+        <div class="dact-chev">›</div>
+      </div>
+      <div class="daction" onclick="devAction(this,'RESTORING…','RESTORE','LOAD FROM BACKUP FILE')">
+        <div class="dact-left">
+          <div class="dact-name">RESTORE</div>
+          <div class="dact-desc">LOAD FROM BACKUP FILE</div>
+        </div>
+        <div class="dact-chev">›</div>
+      </div>
+      <div class="daction" onclick="devAction(this,'SYNCING…','SYNC SAMPLES','TRANSFER CHANGES TO DEVICE')">
+        <div class="dact-left">
+          <div class="dact-name">SYNC SAMPLES</div>
+          <div class="dact-desc">TRANSFER CHANGES TO DEVICE</div>
+        </div>
+        <div class="dact-chev">›</div>
+      </div>
+      <div class="daction" style="margin-bottom:0">
+        <div class="dact-left">
+          <div class="dact-name" style="color:var(--accent)">FORMAT DEVICE</div>
+          <div class="dact-desc">ERASE ALL DATA FROM EP-133</div>
+        </div>
+        <div class="dact-chev" style="color:var(--accent)">›</div>
+      </div>
+    `;
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        const bar = document.getElementById('storBar');
+        if (bar) bar.style.width = '45%';
+      }, 80);
+    });
+  } else {
+    el.innerHTML = `
+      <div class="dcard">
+        <div class="dcard-top">
+          <span class="dlabel">CONNECTED DEVICE</span>
+          <span class="dbadge off"><span class="dbadge-dot"></span>OFFLINE</span>
+        </div>
+        <div class="no-device">
+          <div class="no-device-ring">
+            <svg width="30" height="30" viewBox="0 0 30 30" fill="none">
+              <path d="M15 25V5M6 14l9-9 9 9" stroke="var(--ink-3)" stroke-width="1.6"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="no-device-title">NO DEVICE FOUND</div>
+          <div class="no-device-sub">CONNECT YOUR EP-133<br>VIA USB-C CABLE</div>
+        </div>
+      </div>
+    `;
+  }
+}
+function devAction(el, loading, name, desc) {
+  el.querySelector('.dact-name').textContent = loading;
+  setTimeout(() => { el.querySelector('.dact-name').textContent = name; }, 1800);
+}
+
+/* ── WAVEFORM DRAWING ──────────────────────────────────── */
+function drawWave(canvas, color, bgColor) {
+  const W = canvas.offsetWidth || 280;
+  const H = canvas.height || 58;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
+
+  const mid = H / 2;
+  const N = 150;
+  const seed = color.charCodeAt(1) || 5;
+
+  /* Background center rule */
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+  ctx.lineWidth = .5;
+  ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(W, mid); ctx.stroke();
+
+  /* Waveform body — filled */
+  ctx.fillStyle = color + '30'; // semi-transparent fill
+  ctx.beginPath();
+  ctx.moveTo(0, mid);
+  for (let i = 0; i <= N; i++) {
+    const x = (i / N) * W;
+    const t = i / N;
+    const env = t < .06 ? t/.06 : t > .72 ? (1-t)/.28 : 1;
+    const y = mid + waveSample(i, seed) * mid * .82 * env;
+    ctx.lineTo(x, y);
+  }
+  for (let i = N; i >= 0; i--) {
+    const x = (i / N) * W;
+    const t = i / N;
+    const env = t < .06 ? t/.06 : t > .72 ? (1-t)/.28 : 1;
+    const y = mid - waveSample(i, seed) * mid * .82 * env;
+    ctx.lineTo(x, y);
+  }
+  ctx.closePath(); ctx.fill();
+
+  /* Waveform line */
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.4;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const x = (i / N) * W;
+    const t = i / N;
+    const env = t < .06 ? t/.06 : t > .72 ? (1-t)/.28 : 1;
+    const y = mid + waveSample(i, seed) * mid * .82 * env;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  /* Playhead */
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, 2, H);
+}
+
+function drawWaveMini(canvas, color) {
+  const W = 50, H = 28;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const mid = H / 2;
+  const N = 45;
+  const seed = color.charCodeAt(1) || 3;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const x = (i / N) * W;
+    const t = i / N;
+    const env = t < .08 ? t/.08 : t > .8 ? (1-t)/.2 : 1;
+    const y = mid + waveSample(i, seed) * mid * .75 * env;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+/* Deterministic pseudo-noise from index + seed */
+function waveSample(i, seed) {
+  return Math.sin(i * 7.13 + seed) * .52
+       + Math.sin(i * 13.7 + seed * 1.7) * .3
+       + Math.sin(i * 27.3) * .18;
+}
+
+/* ── SEARCH ────────────────────────────────────────────── */
+document.getElementById('searchInput').addEventListener('input', e => {
+  state.query = e.target.value;
+  renderSamples();
+});
+
+/* ── INIT ──────────────────────────────────────────────── */
+renderBanks();
+renderPads();
+renderChips();
+renderSamples();
+
+/* ── MIDI BRIDGE INTEGRATION ─────────────────────────── */
+function updateDeviceState() {
+  try {
+    if (!window.EP133Bridge) return;
+    var devices = JSON.parse(window.EP133Bridge.getMidiDevices());
+    state.connected = devices.inputs.length > 0 || devices.outputs.length > 0;
+    var first = devices.inputs[0] || devices.outputs[0];
+    var dot  = document.getElementById('hdrDot');
+    var name = document.getElementById('hdrName');
+    if (dot)  dot.className  = 'hdr-dot' + (state.connected ? ' on' : '');
+    if (name) name.textContent = state.connected ? (first ? first.name : 'K.O. II') : 'NO DEVICE';
+    if (state.tab === 'device') renderDevice();
+  } catch (e) { console.error('[EP133]', e); }
+}
+
+window.__ep133_onDevicesChanged = updateDeviceState;
+
+/* Initial device query — polyfill needs ~500ms to initialize */
+setTimeout(function() { updateDeviceState(); }, 800);
+
+/* Update header device pill (initial static state) */
+const dot  = document.getElementById('hdrDot');
+const name = document.getElementById('hdrName');
+dot.className  = 'hdr-dot' + (state.connected ? ' on' : '');
+name.textContent = state.connected ? 'K.O. II' : 'NO DEVICE';
+</script>
+</body>
+</html>

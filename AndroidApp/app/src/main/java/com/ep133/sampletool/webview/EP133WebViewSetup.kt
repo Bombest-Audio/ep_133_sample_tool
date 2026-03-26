@@ -60,12 +60,14 @@ object EP133WebViewSetup {
             ): WebResourceResponse? {
                 val url = request.url
 
-                // Intercept index.html to inject the MIDI polyfill
-                if (url.host == ASSET_HOST &&
-                    url.path?.endsWith("index.html") == true &&
-                    polyfillJS != null
-                ) {
-                    return injectPolyfillIntoHTML(context, polyfillJS)
+                // Intercept mobile.html or index.html to inject the MIDI polyfill
+                if (url.host == ASSET_HOST && polyfillJS != null) {
+                    if (url.path?.endsWith("mobile.html") == true) {
+                        return injectPolyfillIntoHTML(context, polyfillJS, "mobile.html")
+                    }
+                    if (url.path?.endsWith("index.html") == true) {
+                        return injectPolyfillIntoHTML(context, polyfillJS, "data/index.html")
+                    }
                 }
 
                 return assetLoader.shouldInterceptRequest(request.url)
@@ -75,63 +77,27 @@ object EP133WebViewSetup {
         webView.setBackgroundColor(android.graphics.Color.BLACK)
     }
 
-    fun loadApp(context: Context, webView: WebView) {
-        webView.loadUrl("https://$ASSET_HOST${DATA_URL_PATH}index.html")
+    fun loadApp(webView: WebView) {
+        webView.loadUrl("https://$ASSET_HOST/assets/mobile.html")
     }
 
     /**
-     * Reads index.html from assets, injects the polyfill script into <head>,
+     * Reads mobile.html from assets, injects the MIDI polyfill into <head>,
      * and returns the modified HTML as a WebResourceResponse.
+     * No scaling needed — mobile.html is a purpose-built mobile layout.
      */
     private fun injectPolyfillIntoHTML(
         context: Context,
-        polyfillJS: String
+        polyfillJS: String,
+        assetPath: String = "mobile.html",
     ): WebResourceResponse? {
         return try {
-            val html = context.assets.open("data/index.html")
+            val html = context.assets.open(assetPath)
                 .bufferedReader()
                 .readText()
 
-            // Desktop layout dimensions (matches Electron's BrowserWindow size)
-            val desktopW = 1200
-            val desktopH = 800
-
-            val mobileCSS = """<style id="ep133-mobile-override">
-html, body {
-  width: ${desktopW}px !important;
-  height: ${desktopH}px !important;
-  max-height: ${desktopH}px !important;
-  overflow: hidden !important;
-  margin: 0 !important;
-  padding: 0 !important;
-}
-</style>"""
-
-            // Scale the fixed-size desktop layout to fit the mobile screen
-            val scalingJS = """<script>
-(function() {
-  function applyScale() {
-    var sw = window.innerWidth;
-    var sh = window.innerHeight;
-    var scaleX = sw / $desktopW;
-    var scaleY = sh / $desktopH;
-    var scale = Math.min(scaleX, scaleY);
-    var offsetX = (sw - $desktopW * scale) / 2;
-    var offsetY = (sh - $desktopH * scale) / 2;
-    document.body.style.transformOrigin = 'top left';
-    document.body.style.transform = 'translate(' + offsetX + 'px,' + offsetY + 'px) scale(' + scale + ')';
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', applyScale);
-  } else {
-    applyScale();
-  }
-  window.addEventListener('resize', applyScale);
-})();
-</script>"""
-
             val scriptTag = "<script>\n$polyfillJS\n</script>"
-            val injected = html.replace("<head>", "<head>\n$mobileCSS\n$scriptTag\n$scalingJS")
+            val injected = html.replace("<head>", "<head>\n$scriptTag")
 
             WebResourceResponse(
                 "text/html",

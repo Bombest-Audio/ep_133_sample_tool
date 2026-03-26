@@ -29,16 +29,11 @@ import android.util.Log
  */
 class MIDIManager(
     private val context: Context,
-    private val midiManager: MidiManager
-) {
-    data class MIDIDevice(val id: String, val name: String)
-    data class DeviceList(val inputs: List<MIDIDevice>, val outputs: List<MIDIDevice>)
+    private val midiManager: MidiManager,
+) : MIDIPort {
 
-    /** Called when MIDI data arrives from a device. (portId, bytes) */
-    var onMidiReceived: ((String, ByteArray) -> Unit)? = null
-
-    /** Called when MIDI device list changes (connect/disconnect/permission granted) */
-    var onDevicesChanged: (() -> Unit)? = null
+    override var onMidiReceived: ((String, ByteArray) -> Unit)? = null
+    override var onDevicesChanged: (() -> Unit)? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -87,9 +82,9 @@ class MIDIManager(
     // MARK: - Device Enumeration
 
     @Suppress("DEPRECATION")
-    fun getUSBDevices(): DeviceList {
-        val inputs = mutableListOf<MIDIDevice>()
-        val outputs = mutableListOf<MIDIDevice>()
+    override fun getUSBDevices(): MIDIPort.Devices {
+        val inputs = mutableListOf<MIDIPort.Device>()
+        val outputs = mutableListOf<MIDIPort.Device>()
 
         Log.d(TAG, "Enumerating MIDI devices...")
 
@@ -109,13 +104,13 @@ class MIDIManager(
                     MidiDeviceInfo.PortInfo.TYPE_OUTPUT -> {
                         val portId = "${deviceId}_out_${port.portNumber}"
                         val portName = port.name?.takeIf { it.isNotBlank() } ?: deviceName
-                        inputs.add(MIDIDevice(portId, portName))
+                        inputs.add(MIDIPort.Device(portId, portName))
                         Log.d(TAG, "  Input port: $portId ($portName)")
                     }
                     MidiDeviceInfo.PortInfo.TYPE_INPUT -> {
                         val portId = "${deviceId}_in_${port.portNumber}"
                         val portName = port.name?.takeIf { it.isNotBlank() } ?: deviceName
-                        outputs.add(MIDIDevice(portId, portName))
+                        outputs.add(MIDIPort.Device(portId, portName))
                         Log.d(TAG, "  Output port: $portId ($portName)")
                     }
                 }
@@ -129,7 +124,7 @@ class MIDIManager(
             requestUSBPermissions()
         }
 
-        return DeviceList(inputs, outputs)
+        return MIDIPort.Devices(inputs, outputs)
     }
 
     // MARK: - USB Permission
@@ -139,7 +134,7 @@ class MIDIManager(
      * Once permission is granted, the MIDI service will enumerate the device and our
      * deviceCallback will fire.
      */
-    fun requestUSBPermissions() {
+    override fun requestUSBPermissions() {
         val deviceList = usbManager.deviceList
         Log.d(TAG, "Checking ${deviceList.size} USB devices for permissions...")
 
@@ -164,7 +159,7 @@ class MIDIManager(
 
     // MARK: - Send MIDI
 
-    fun sendMidi(portId: String, data: ByteArray) {
+    override fun sendMidi(portId: String, data: ByteArray) {
         val cached = openInputPorts[portId]
         if (cached != null) {
             try {
@@ -207,7 +202,16 @@ class MIDIManager(
 
     // MARK: - Receive MIDI
 
-    fun startListening(portId: String) {
+    /** Close all stale listeners (e.g. after device reconnect with new ID). */
+    override fun closeAllListeners() {
+        for ((id, port) in openOutputPorts) {
+            try { port.close() } catch (_: Exception) {}
+            Log.d(TAG, "Closed stale listener on $id")
+        }
+        openOutputPorts.clear()
+    }
+
+    override fun startListening(portId: String) {
         if (openOutputPorts.containsKey(portId)) return
 
         val parts = portId.split("_")
@@ -216,8 +220,12 @@ class MIDIManager(
         val deviceId = parts[0].toIntOrNull() ?: return
         val portNumber = parts[2].toIntOrNull() ?: return
 
+        Log.d(TAG, "startListening: opening device $deviceId for port $portId")
         openOrGetDevice(deviceId) { device ->
-            if (device == null) return@openOrGetDevice
+            if (device == null) {
+                Log.e(TAG, "startListening: device $deviceId open failed")
+                return@openOrGetDevice
+            }
 
             val outputPort = device.openOutputPort(portNumber)
             if (outputPort != null) {
@@ -228,14 +236,16 @@ class MIDIManager(
                         onMidiReceived?.invoke(portId, bytes)
                     }
                 })
-                Log.i(TAG, "Listening on $portId")
+                Log.i(TAG, "Listening on $portId — receiving MIDI input")
+            } else {
+                Log.e(TAG, "startListening: openOutputPort($portNumber) returned null")
             }
         }
     }
 
     // MARK: - Device Management
 
-    fun refreshDevices() {
+    override fun refreshDevices() {
         requestUSBPermissions()
 
         val devices = getUSBDevices()
@@ -251,7 +261,7 @@ class MIDIManager(
         }
     }
 
-    fun close() {
+    override fun close() {
         midiManager.unregisterDeviceCallback(deviceCallback)
         try {
             context.unregisterReceiver(usbPermissionReceiver)

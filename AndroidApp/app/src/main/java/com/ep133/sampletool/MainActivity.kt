@@ -7,27 +7,46 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbManager
 import android.media.midi.MidiManager
 import android.os.Bundle
-import android.webkit.WebView
-import androidx.appcompat.app.AppCompatActivity
+import android.os.Handler
+import android.os.Looper
+import android.view.WindowManager
+import androidx.activity.compose.setContent
+import androidx.activity.ComponentActivity
+import androidx.core.view.WindowCompat
+import com.ep133.sampletool.domain.midi.ChordPlayer
+import com.ep133.sampletool.domain.midi.MIDIRepository
+import com.ep133.sampletool.domain.sequencer.SequencerEngine
 import com.ep133.sampletool.midi.MIDIManager
-import com.ep133.sampletool.webview.EP133WebViewSetup
-import com.ep133.sampletool.webview.MIDIBridge
+import com.ep133.sampletool.ui.EP133App
+import com.ep133.sampletool.ui.beats.BeatsViewModel
+import com.ep133.sampletool.ui.chords.ChordsViewModel
+import com.ep133.sampletool.ui.device.DeviceViewModel
+import com.ep133.sampletool.ui.pads.PadsViewModel
+import com.ep133.sampletool.ui.sounds.SoundsViewModel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : ComponentActivity() {
 
-    private lateinit var webView: WebView
     private lateinit var midiManager: MIDIManager
-    private lateinit var midiBridge: MIDIBridge
+    private lateinit var midiRepo: MIDIRepository
+    private lateinit var sequencer: SequencerEngine
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val scope = CoroutineScope(Dispatchers.Main)
+    private var screenOnJob: Job? = null
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    // Delay slightly to let the system enumerate the device
-                    webView.postDelayed({ midiManager.refreshDevices() }, 1000)
+                    mainHandler.postDelayed({ midiRepo.refreshDeviceState() }, 1000)
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    midiManager.refreshDevices()
+                    midiRepo.refreshDeviceState()
                 }
             }
         }
@@ -35,54 +54,61 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        webView = findViewById(R.id.webView)
-
-        // Initialize MIDI
         val systemMidiManager = getSystemService(Context.MIDI_SERVICE) as MidiManager
         midiManager = MIDIManager(this, systemMidiManager)
+        midiRepo = MIDIRepository(midiManager)
+        sequencer = SequencerEngine(midiRepo)
 
-        // Set up the MIDI bridge and WebView
-        midiBridge = MIDIBridge(midiManager, webView)
+        val chordPlayer = ChordPlayer(midiRepo)
+        val padsViewModel = PadsViewModel(midiRepo)
+        val beatsViewModel = BeatsViewModel(sequencer, midiRepo)
+        val soundsViewModel = SoundsViewModel(midiRepo)
+        val chordsViewModel = ChordsViewModel(chordPlayer)
+        val deviceViewModel = DeviceViewModel(midiRepo)
 
-        midiManager.onMidiReceived = { portId, data ->
-            midiBridge.forwardMIDIToJS(portId, data)
+        setContent {
+            EP133App(
+                padsViewModel = padsViewModel,
+                beatsViewModel = beatsViewModel,
+                soundsViewModel = soundsViewModel,
+                chordsViewModel = chordsViewModel,
+                deviceViewModel = deviceViewModel,
+            )
         }
 
-        // When MIDI devices change, tell the web app to re-query
-        midiManager.onDevicesChanged = {
-            midiBridge.notifyDevicesChanged()
-        }
-
-        EP133WebViewSetup.configure(this, webView, midiBridge)
-        EP133WebViewSetup.loadApp(this, webView)
-
-        // Listen for USB device events
         val filter = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         }
         registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
 
-        // Request USB permissions for any already-connected devices
-        webView.postDelayed({ midiManager.requestUSBPermissions() }, 2000)
+        // Enumerate MIDI devices after USB permission grant delay
+        mainHandler.postDelayed({ midiRepo.refreshDeviceState() }, 2000)
+
+        observeScreenOnState()
+    }
+
+    private fun observeScreenOnState() {
+        screenOnJob = scope.launch {
+            sequencer.state.collectLatest { state ->
+                if (state.playing) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        screenOnJob?.cancel()
         try {
             unregisterReceiver(usbReceiver)
-        } catch (_: IllegalArgumentException) {}
-        midiManager.close()
-    }
-
-    @Deprecated("Use OnBackPressedCallback")
-    override fun onBackPressed() {
-        if (webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            super.onBackPressed()
+        } catch (_: IllegalArgumentException) {
         }
+        midiRepo.close()
     }
 }
