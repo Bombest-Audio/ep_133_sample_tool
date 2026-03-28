@@ -21,8 +21,8 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 open class MIDIRepository(private val midiManager: MIDIPort) {
 
-    private val _deviceState = MutableStateFlow(DeviceState())
-    val deviceState: StateFlow<DeviceState> = _deviceState.asStateFlow()
+    protected val _deviceState = MutableStateFlow(DeviceState())
+    open val deviceState: StateFlow<DeviceState> = _deviceState.asStateFlow()
 
     /** Incoming MIDI events: Triple(statusByte, note, velocity). */
     data class MidiEvent(val status: Int, val note: Int, val velocity: Int, val channel: Int)

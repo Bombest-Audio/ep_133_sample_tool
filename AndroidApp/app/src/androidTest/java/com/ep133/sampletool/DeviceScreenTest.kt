@@ -4,6 +4,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import com.ep133.sampletool.domain.midi.MIDIRepository
+import com.ep133.sampletool.domain.model.PermissionState
 import com.ep133.sampletool.ui.device.DeviceScreen
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.theme.EP133Theme
@@ -49,5 +50,26 @@ class DeviceScreenTest {
         setUpDevice()
         composeTestRule.onNodeWithText("Backup Device").assertIsDisplayed()
         composeTestRule.onNodeWithText("Sync Samples").assertIsDisplayed()
+    }
+
+    // ── CONN-04: Three-state connection UI ──────────────────────────────
+
+    @Test
+    fun deviceScreen_showsGrantPermissionButtonWhenDisconnected() {
+        setUpDevice()
+        // Disconnected with UNKNOWN permission state → shows "Grant Permission" button
+        composeTestRule.onNodeWithText("Grant Permission").assertIsDisplayed()
+    }
+
+    @Test
+    fun deviceScreen_showsAwaitingStateWhenPermissionPending() {
+        setUpDevice(TestMIDIRepository.withPermissionState(PermissionState.AWAITING))
+        composeTestRule.onNodeWithText("Waiting for USB permission…").assertIsDisplayed()
+    }
+
+    @Test
+    fun deviceScreen_showsDeniedStateWhenPermissionDenied() {
+        setUpDevice(TestMIDIRepository.withPermissionState(PermissionState.DENIED))
+        composeTestRule.onNodeWithText("Open Settings").assertIsDisplayed()
     }
 }

@@ -1,5 +1,8 @@
 package com.ep133.sampletool.ui.device
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebSettings
@@ -25,9 +28,11 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.SaveAlt
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Web
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -60,6 +65,7 @@ import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.model.DeviceState
 import com.ep133.sampletool.domain.model.EP133Scales
 import com.ep133.sampletool.domain.model.PadChannel
+import com.ep133.sampletool.domain.model.PermissionState
 import com.ep133.sampletool.domain.model.Scale
 import com.ep133.sampletool.ui.theme.TEColors
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -114,6 +120,8 @@ fun DeviceScreen(
         return
     }
 
+    val context = LocalContext.current
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -121,6 +129,19 @@ fun DeviceScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        if (!deviceState.connected) {
+            DeviceConnectionState(
+                permissionState = deviceState.permissionState,
+                onGrantPermission = { viewModel.refreshDevices() },
+                onOpenSettings = {
+                    val intent = Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", context.packageName, null),
+                    )
+                    context.startActivity(intent)
+                },
+            )
+        }
         DeviceCard(deviceState)
         StatsRow(deviceState)
         ChannelSelector(
@@ -136,6 +157,73 @@ fun DeviceScreen(
         ActionButtons(onOpenManager = { showSampleManager = true })
         RestoreFactoryButton(onOpen = { showSampleManager = true })
         FormatDeviceButton(onOpen = { showSampleManager = true })
+    }
+}
+
+/**
+ * Three-state connection guidance shown when no device is connected (D-19, CONN-04).
+ *
+ * - UNKNOWN / GRANTED (no device detected): "Connect your EP-133" + Grant Permission button
+ * - AWAITING: spinner + waiting text
+ * - DENIED: actionable message + Open Settings button
+ */
+@Composable
+private fun DeviceConnectionState(
+    permissionState: PermissionState,
+    onGrantPermission: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            when (permissionState) {
+                PermissionState.AWAITING -> {
+                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                    Text(
+                        text = "Waiting for USB permission…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                PermissionState.DENIED -> {
+                    Icon(
+                        imageVector = Icons.Filled.Usb,
+                        contentDescription = null,
+                        modifier = Modifier.size(32.dp),
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                    Text(
+                        text = "USB permission required. Go to Settings to allow USB access.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                    )
+                    Button(onClick = onOpenSettings) {
+                        Text("Open Settings")
+                    }
+                }
+                else -> {
+                    // UNKNOWN or GRANTED — device present but not yet enumerated
+                    Icon(
+                        imageVector = Icons.Filled.Usb,
+                        contentDescription = null,
+                        modifier = Modifier.size(32.dp),
+                    )
+                    Text(
+                        text = "Connect your EP-133 via USB",
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                    )
+                    Button(onClick = onGrantPermission) {
+                        Text("Grant Permission")
+                    }
+                }
+            }
+        }
     }
 }
 
