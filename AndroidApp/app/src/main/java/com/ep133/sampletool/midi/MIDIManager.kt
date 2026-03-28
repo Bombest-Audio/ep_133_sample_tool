@@ -38,7 +38,7 @@ class MIDIManager(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private val openDevices = mutableMapOf<Int, MidiDevice>()
-    private val openInputPorts = mutableMapOf<String, MidiInputPort>()
+    private val openInputPorts = java.util.concurrent.ConcurrentHashMap<String, MidiInputPort>()
     private val openOutputPorts = mutableMapOf<String, MidiOutputPort>()
 
     private val deviceCallback = object : MidiManager.DeviceCallback() {
@@ -159,6 +159,23 @@ class MIDIManager(
 
     // MARK: - Send MIDI
 
+    override fun prewarmSendPort(portId: String) {
+        if (openInputPorts.containsKey(portId)) return
+        val parts = portId.split("_")
+        if (parts.size < 3) return
+        val deviceId = parts[0].toIntOrNull() ?: return
+        val portNumber = parts[2].toIntOrNull() ?: return
+        Log.d(TAG, "Pre-warming send port $portId")
+        openOrGetDevice(deviceId) { device ->
+            if (device == null) return@openOrGetDevice
+            val inputPort = device.openInputPort(portNumber)
+            if (inputPort != null) {
+                openInputPorts[portId] = inputPort
+                Log.i(TAG, "Send port $portId ready")
+            }
+        }
+    }
+
     override fun sendMidi(portId: String, data: ByteArray) {
         val cached = openInputPorts[portId]
         if (cached != null) {
@@ -233,7 +250,7 @@ class MIDIManager(
                 outputPort.connect(object : MidiReceiver() {
                     override fun onSend(data: ByteArray, offset: Int, count: Int, timestamp: Long) {
                         val bytes = data.copyOfRange(offset, offset + count)
-                        onMidiReceived?.invoke(portId, bytes)
+                        mainHandler.post { onMidiReceived?.invoke(portId, bytes) }
                     }
                 })
                 Log.i(TAG, "Listening on $portId — receiving MIDI input")
