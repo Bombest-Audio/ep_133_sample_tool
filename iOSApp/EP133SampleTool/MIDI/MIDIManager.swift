@@ -133,10 +133,19 @@ final class MIDIManager {
     /// Sends raw bytes (including sysex) using the legacy MIDIPacketList API
     /// which handles arbitrary-length messages.
     private func sendRawBytes(to destination: MIDIEndpointRef, data: [UInt8]) {
-        let packetListSize = MemoryLayout<MIDIPacketList>.size + data.count
-        let packetListPtr = UnsafeMutablePointer<MIDIPacketList>.allocate(capacity: 1)
-        defer { packetListPtr.deallocate() }
+        // Correct allocation: MIDIPacketList header + MIDIPacket header + payload bytes.
+        // Using UnsafeMutableRawPointer avoids the capacity:1 bug which only allocates
+        // space for one MIDIPacketList struct, not packetListSize bytes (D-12).
+        let packetListSize = MemoryLayout<MIDIPacketList>.size
+            + MemoryLayout<MIDIPacket>.size
+            + data.count
+        let rawPtr = UnsafeMutableRawPointer.allocate(
+            byteCount: packetListSize,
+            alignment: MemoryLayout<MIDIPacketList>.alignment
+        )
+        defer { rawPtr.deallocate() }
 
+        let packetListPtr = rawPtr.bindMemory(to: MIDIPacketList.self, capacity: 1)
         var packet = MIDIPacketListInit(packetListPtr)
         packet = MIDIPacketListAdd(packetListPtr, packetListSize, packet, 0, data.count, data)
         MIDISend(outputPort, destination, packetListPtr)
