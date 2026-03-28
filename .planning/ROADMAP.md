@@ -25,10 +25,12 @@
 3. User is prompted for USB permission once; subsequent launches and replug events do not re-prompt.
 4. User sees an actionable error screen (not a blank state or crash) when the EP-133 is missing, permission is denied, or the device is unrecognized — with a clear step to resolve it.
 
-### Plans
-- Fix Android MIDI threading — route all `MutableStateFlow` emissions through `tryEmit()` on background thread; fix `SequencerEngine` scope leak; add `SupervisorJob` and `close()` method
-- Fix iOS CoreMIDI threading — wrap `onMIDIReceived` callback in `DispatchQueue.main.async`; define `MIDIPort` Swift protocol; fix `sendRawBytes` SysEx buffer overflow
-- Harden Android USB connection — replace 500ms hardcoded delay with `DeviceCallback.onDeviceAdded` + exponential-backoff retry; add "Awaiting permission" UI state to DeviceScreen
+**Plans:** 3 plans
+
+Plans:
+- [ ] 01-midi-foundation-01-PLAN.md — Fix Android MIDI threading + SequencerEngine scope leak + lifecycleScope migration
+- [ ] 01-midi-foundation-02-PLAN.md — Fix iOS CoreMIDI threading + sendRawBytes buffer + MIDIPort Swift protocol + app environment injection
+- [ ] 01-midi-foundation-03-PLAN.md — Harden Android USB connection + PermissionState model + three-state DeviceScreen + connection badge + disconnected overlays
 
 **UI hint**: yes
 **Dependencies**: none
@@ -109,10 +111,11 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. MIDI Foundation | 0/3 | Not started | — |
+| 1. MIDI Foundation | 0/3 | In progress | — |
 | 2. Android Device Management | 0/5 | Not started | — |
 | 3. iOS Native UI | 0/4 | Not started | — |
 | 4. Project Management | 0/5 | Not started | — |
 
 ---
 *Roadmap created: 2026-03-28*
+*Last updated: 2026-03-28 — Phase 1 plans created*
