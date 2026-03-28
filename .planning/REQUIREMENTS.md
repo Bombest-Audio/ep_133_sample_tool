@@ -7,10 +7,10 @@
 
 ### Connection
 
-- [ ] **CONN-01**: User can see live USB connection status (connected/disconnected) persistently across all screens
-- [ ] **CONN-02**: App automatically reconnects to EP-133 after cable replug without requiring manual action from the user
-- [ ] **CONN-03**: App requests USB permission once and caches it; does not re-prompt on every launch
-- [ ] **CONN-04**: User sees an actionable error state when the EP-133 is not found, permission is denied, or firmware is incompatible — with clear recovery guidance
+- [x] **CONN-01**: User can see live USB connection status (connected/disconnected) persistently across all screens
+- [x] **CONN-02**: App automatically reconnects to EP-133 after cable replug without requiring manual action from the user
+- [x] **CONN-03**: App requests USB permission once and caches it; does not re-prompt on every launch
+- [x] **CONN-04**: User sees an actionable error state when the EP-133 is not found, permission is denied, or firmware is incompatible — with clear recovery guidance
 
 ### Performance
 
@@ -80,10 +80,10 @@ Updated after roadmap creation: 2026-03-28
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CONN-01 | Phase 1 | Pending |
-| CONN-02 | Phase 1 | Pending |
-| CONN-03 | Phase 1 | Pending |
-| CONN-04 | Phase 1 | Pending |
+| CONN-01 | Phase 1 | Complete |
+| CONN-02 | Phase 1 | Complete |
+| CONN-03 | Phase 1 | Complete |
+| CONN-04 | Phase 1 | Complete |
 | PERF-01 | Phase 2 | Pending |
 | PERF-02 | Phase 2 | Pending |
 | PERF-03 | Phase 2 | Pending |

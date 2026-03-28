@@ -7,7 +7,7 @@
 
 ## Phases
 
-- [ ] **Phase 1: MIDI Foundation** — Fix threading bugs, harden USB connection, establish iOS MIDI layer
+- [x] **Phase 1: MIDI Foundation** — Fix threading bugs, harden USB connection, establish iOS MIDI layer (completed 2026-03-28)
 - [ ] **Phase 2: Android Device Management** — Real device stats, full backup/restore, performance screen hardening
 - [ ] **Phase 3: iOS Native UI** — Build all four SwiftUI screens mirroring the Android Compose screens
 - [ ] **Phase 4: Project Management** — Project browser, project-level backup, backup library, share sheet
@@ -25,12 +25,12 @@
 3. User is prompted for USB permission once; subsequent launches and replug events do not re-prompt.
 4. User sees an actionable error screen (not a blank state or crash) when the EP-133 is missing, permission is denied, or the device is unrecognized — with a clear step to resolve it.
 
-**Plans:** 3 plans
+**Plans:** 3/1 plans complete
 
 Plans:
-- [ ] 01-midi-foundation-01-PLAN.md — Fix Android MIDI threading + SequencerEngine scope leak + lifecycleScope migration
-- [ ] 01-midi-foundation-02-PLAN.md — Fix iOS CoreMIDI threading + sendRawBytes buffer + MIDIPort Swift protocol + app environment injection
-- [ ] 01-midi-foundation-03-PLAN.md — Harden Android USB connection + PermissionState model + three-state DeviceScreen + connection badge + disconnected overlays
+- [x] 01-midi-foundation-01-PLAN.md — Fix Android MIDI threading + SequencerEngine scope leak + lifecycleScope migration
+- [x] 01-midi-foundation-02-PLAN.md — Fix iOS CoreMIDI threading + sendRawBytes buffer + MIDIPort Swift protocol + app environment injection
+- [x] 01-midi-foundation-03-PLAN.md — Harden Android USB connection + PermissionState model + three-state DeviceScreen + connection badge + disconnected overlays
 
 **UI hint**: yes
 **Dependencies**: none
@@ -111,7 +111,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. MIDI Foundation | 3/3 | Planned | — |
+| 1. MIDI Foundation | 3/1 | Complete   | 2026-03-28 |
 | 2. Android Device Management | 0/5 | Not started | — |
 | 3. iOS Native UI | 0/4 | Not started | — |
 | 4. Project Management | 0/5 | Not started | — |

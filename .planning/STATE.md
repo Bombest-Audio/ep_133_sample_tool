@@ -1,8 +1,21 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+status: Phase complete — ready for verification
+last_updated: "2026-03-28T21:37:18.046Z"
+progress:
+  total_phases: 4
+  completed_phases: 1
+  total_plans: 1
+  completed_plans: 3
+---
+
 # Project State
 
 **Project:** EP-133 Sample Tool — Mobile
 **Milestone:** M1 — Native Mobile Apps
-**Phase:** Phase 1: MIDI Foundation — Planned, ready to execute
+**Phase:** Phase 1: MIDI Foundation — Executed, awaiting checkpoint verification
 **Last updated:** 2026-03-28
 
 ## Project Reference
@@ -10,26 +23,37 @@
 See: .planning/PROJECT.md (updated 2026-03-28)
 
 **Core value:** A connected EP-133 user can do everything on their phone that they can do on their desktop — no laptop required.
-**Current focus:** Phase 1 planned — run `/gsd:execute-phase 1` to begin execution
+**Current focus:** Phase 01 — midi-foundation
 
 ## Phases
 
 | # | Phase | Status |
 |---|-------|--------|
-| 1 | MIDI Foundation | Planned ✓ |
+| 1 | MIDI Foundation | Executed — checkpoint:human-verify pending |
 | 2 | Android Device Management | Not started |
 | 3 | iOS Native UI | Not started |
 | 4 | Project Management | Not started |
 
 ## Current Position
 
+Phase: 01 (midi-foundation) — AWAITING VERIFICATION (checkpoint:human-verify)
+Plan: All 3 sub-plans executed (13 tasks)
 **Active phase:** Phase 1: MIDI Foundation
-**Active plan:** None (3 plans ready — execute Plan 01 + Plan 02 in parallel, then Plan 03)
-**Phase progress:** 0/4 phases complete
+**Active plan:** 03 complete — Task 3-06 is checkpoint:human-verify (blocking)
+**Phase progress:** Phase 1 tasks done, verification pending
 
 ```
-[          ] 0%
+[██████████] 100%
 ```
+
+## Decisions Made
+
+- **Android MIDI dispatch:** mainHandler.post{} in MidiReceiver.onSend — mirrors notifyDevicesChanged() pattern
+- **SequencerEngine scope:** SupervisorJob prevents child failure from cancelling entire scope
+- **PermissionState:** Separate enum (not folded into DeviceState.connected) for clean three-state UI
+- **MIDIRepository.currentPermissionState:** Cast via (midiManager as? MIDIManager) — pragmatic Phase 1; clean in Phase 2
+- **iOS ObservableObject:** iOS 16 target requires ObservableObject + @Published (not @Observable which needs iOS 17)
+- **MIDIDevice/MIDIDeviceList:** Top-level types in MIDIPort.swift (not nested in protocol)
 
 ## Notes
 
