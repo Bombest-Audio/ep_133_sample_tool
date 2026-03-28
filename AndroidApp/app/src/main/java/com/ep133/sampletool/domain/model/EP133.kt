@@ -51,6 +51,9 @@ data class MidiPort(
     val name: String,
 )
 
+/** USB permission request lifecycle. */
+enum class PermissionState { UNKNOWN, AWAITING, GRANTED, DENIED }
+
 /** Current device connection state. */
 data class DeviceState(
     val connected: Boolean = false,
@@ -58,6 +61,7 @@ data class DeviceState(
     val outputPortId: String? = null,
     val inputPorts: List<MidiPort> = emptyList(),
     val outputPorts: List<MidiPort> = emptyList(),
+    val permissionState: PermissionState = PermissionState.UNKNOWN,
 )
 
 /**
