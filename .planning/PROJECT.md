@@ -33,7 +33,7 @@ A connected EP-133 user can do everything on their phone that they can do on the
 - [ ] iOS: Full pattern management parity with Android
 - [ ] iOS: Project management (save/load, browse, backup, share)
 - [ ] iOS: Device settings configuration
-- [ ] Both platforms: Robust USB connection handling (connect/disconnect, permissions, error states)
+- ✓ Both platforms: Robust USB connection handling (connect/disconnect, permissions, error states) — validated Phase 1
 
 ### Out of Scope
 
