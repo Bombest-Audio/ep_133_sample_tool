@@ -19,11 +19,7 @@ class SequencerEngineScopeTest {
         engine.close()
 
         // After close(), engine's internal scope is cancelled.
-        // playJob is also cancelled (stop() or close() halts playback).
-        // Verify: close() does not throw and playback state reflects stopped engine.
-        // The playing flag may still be true in state since close() cancels the scope
-        // without updating state — that is correct (app is destroying).
-        // Key assertion: close() does not throw and completes synchronously.
+        // playJob is also cancelled. Verify close() does not throw.
         // No further noteOff calls will fire since the scope is cancelled.
         assertTrue("close() completed without throwing", true)
     }
