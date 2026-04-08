@@ -8,9 +8,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.PI
 import kotlin.math.pow
 import kotlin.math.sin
@@ -22,16 +24,22 @@ import kotlin.math.sin
  * simple attack→decay→sustain envelope. Used as a fallback when no EP-133 is connected.
  *
  * Each note gets its own [AudioTrack] coroutine so multiple notes play simultaneously
- * for polyphonic chord preview.
+ * for polyphonic chord preview. Note: one AudioTrack per note is intentional for chord
+ * preview (3–4 simultaneous notes). Not suitable for rapid-fire arpeggios — AudioTrack
+ * creation latency (~5ms) would be audible.
  */
-class LocalSynth {
+class LocalSynth : SynthEngine {
 
-    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    private val activeJobs = mutableMapOf<Int, Job>()  // MIDI note → playback job
+    private val supervisorJob = SupervisorJob()
+    private val scope = CoroutineScope(Dispatchers.Default + supervisorJob)
+
+    // ConcurrentHashMap guards against concurrent noteOn/noteOff from different threads.
+    private val activeJobs = ConcurrentHashMap<Int, Job>()
+
     private val SAMPLE_RATE = 44100
 
     /** Start playing a note. Stops any previous playback on the same pitch first. */
-    fun noteOn(note: Int, velocity: Int = 90) {
+    override fun noteOn(note: Int, velocity: Int) {
         noteOff(note)
         val freq = 440.0 * 2.0.pow((note - 69) / 12.0)
         val amp = (velocity / 127.0) * 0.6
@@ -39,12 +47,12 @@ class LocalSynth {
     }
 
     /** Stop a specific note. */
-    fun noteOff(note: Int) {
+    override fun noteOff(note: Int) {
         activeJobs.remove(note)?.cancel()
     }
 
     /** Stop all currently playing notes immediately. */
-    fun allNotesOff() {
+    override fun allNotesOff() {
         activeJobs.values.forEach { it.cancel() }
         activeJobs.clear()
     }
@@ -116,7 +124,8 @@ class LocalSynth {
     }
 
     /** Release all resources. Call when the synth is no longer needed. */
-    fun close() {
+    override fun close() {
         allNotesOff()
+        scope.cancel()
     }
 }

@@ -15,10 +15,14 @@ import kotlinx.coroutines.delay
  */
 class ChordPlayer(
     private val midi: MIDIRepository,
-    private val localSynth: LocalSynth = LocalSynth(),
+    private val localSynth: SynthEngine = LocalSynth(),
 ) {
 
     private var currentNotes: List<Int> = emptyList()
+
+    // Snapshot which backend played the current notes so stopCurrentChord() always
+    // sends to the same backend, even if connection state changes mid-chord.
+    private var playedViaHardware = false
 
     private val isConnected: Boolean get() = midi.deviceState.value.connected
 
@@ -26,7 +30,8 @@ class ChordPlayer(
         stopCurrentChord()
         val notes = resolveChordMidiNotes(degree, keyRoot, octave)
         currentNotes = notes
-        if (isConnected) {
+        playedViaHardware = isConnected
+        if (playedViaHardware) {
             notes.forEach { midi.noteOn(it, velocity) }
         } else {
             notes.forEach { localSynth.noteOn(it, velocity) }
@@ -34,7 +39,7 @@ class ChordPlayer(
     }
 
     fun stopCurrentChord() {
-        if (isConnected) {
+        if (playedViaHardware) {
             currentNotes.forEach { midi.noteOff(it) }
         } else {
             localSynth.allNotesOff()
