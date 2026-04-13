@@ -1,3 +1,0 @@
-/Users/thomasphillips/workspace/ep_133_sample_tool/AndroidApp/app/.cxx/Debug/3e726224/arm64-v8a/CMakeFiles/nativesynth.dir
-/Users/thomasphillips/workspace/ep_133_sample_tool/AndroidApp/app/.cxx/Debug/3e726224/arm64-v8a/CMakeFiles/edit_cache.dir
-/Users/thomasphillips/workspace/ep_133_sample_tool/AndroidApp/app/.cxx/Debug/3e726224/arm64-v8a/CMakeFiles/rebuild_cache.dir

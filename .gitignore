@@ -19,6 +19,7 @@ iOSApp/EP133SampleTool.xcodeproj/project.xcworkspace/xcuserdata/
 AndroidApp/.gradle/
 AndroidApp/build/
 AndroidApp/app/build/
+AndroidApp/app/.cxx/
 AndroidApp/local.properties
 AndroidApp/app/src/main/assets/data/
 

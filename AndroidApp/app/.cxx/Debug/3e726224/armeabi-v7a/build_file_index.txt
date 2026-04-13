@@ -1,3 +1,0 @@
-/Users/thomasphillips/workspace/ep_133_sample_tool/AndroidApp/app/.cxx/Debug/3e726224/prefab/armeabi-v7a/prefab/lib/arm-linux-androideabi/cmake/oboe/oboeConfig.cmake
-/Users/thomasphillips/workspace/ep_133_sample_tool/AndroidApp/app/.cxx/Debug/3e726224/prefab/armeabi-v7a/prefab/lib/arm-linux-androideabi/cmake/oboe/oboeConfigVersion.cmake
-/Users/thomasphillips/workspace/ep_133_sample_tool/AndroidApp/app/CMakeLists.txt

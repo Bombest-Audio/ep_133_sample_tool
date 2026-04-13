@@ -1,7 +1,0 @@
-[
-{
-  "directory": "/Users/thomasphillips/workspace/ep_133_sample_tool/AndroidApp/app/.cxx/Debug/3e726224/armeabi-v7a",
-  "command": "/Users/thomasphillips/.valdi/android_home/ndk/25.1.8937393/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=armv7-none-linux-androideabi29 --sysroot=/Users/thomasphillips/.valdi/android_home/ndk/25.1.8937393/toolchains/llvm/prebuilt/darwin-x86_64/sysroot -Dnativesynth_EXPORTS -isystem /Users/thomasphillips/.gradle/caches/transforms-3/529c4bc72d583ca3a7109bb36ebb70f1/transformed/oboe-1.9.3/prefab/modules/oboe/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -march=armv7-a -mthumb -Wformat -Werror=format-security   -fno-limit-debug-info  -fPIC -o CMakeFiles/nativesynth.dir/src/main/cpp/native_synth.cpp.o -c /Users/thomasphillips/workspace/ep_133_sample_tool/AndroidApp/app/src/main/cpp/native_synth.cpp",
-  "file": "/Users/thomasphillips/workspace/ep_133_sample_tool/AndroidApp/app/src/main/cpp/native_synth.cpp"
-}
-]
