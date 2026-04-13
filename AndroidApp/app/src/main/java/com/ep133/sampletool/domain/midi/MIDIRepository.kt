@@ -193,7 +193,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             val note = bytes.getOrNull(1)?.toInt()?.and(0x7F) ?: 0
             val velocity = bytes.getOrNull(2)?.toInt()?.and(0x7F) ?: 0
             Log.d("EP133APP", "MIDI IN: type=0x${type.toString(16)} ch=$ch note=$note vel=$velocity")
-            if (type == 0x90 || type == 0x80) {
+            if (type == 0x90 || type == 0x80 || type == 0xC0) {
                 _incomingMidi.tryEmit(MidiEvent(type, note, velocity, ch))
             }
             channelBuffer.reset()

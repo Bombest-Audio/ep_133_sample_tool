@@ -70,19 +70,29 @@ class PadsViewModel(private val midi: MIDIRepository) : ViewModel() {
         // Listen for incoming MIDI: auto-switch group + flash the matching pad
         viewModelScope.launch {
             midi.incomingMidi.collect { event ->
-                if (event.status == 0x90 && event.velocity > 0) {
-                    val resolved = EP133Pads.resolveIncoming(event.note, event.channel) ?: return@collect
-                    val (group, index) = resolved
+                when {
+                    event.status == 0x90 && event.velocity > 0 -> {
+                        val resolved = EP133Pads.resolveIncoming(event.note, event.channel) ?: return@collect
+                        val (group, index) = resolved
 
-                    if (group != _selectedChannel.value) {
-                        _selectedChannel.value = group
-                        _pressedIndices.value = emptySet()
+                        if (group != _selectedChannel.value) {
+                            _selectedChannel.value = group
+                            _pressedIndices.value = emptySet()
+                        }
+
+                        _pressedIndices.value = _pressedIndices.value + index
+                        launch {
+                            delay(120)
+                            _pressedIndices.value = _pressedIndices.value - index
+                        }
                     }
-
-                    _pressedIndices.value = _pressedIndices.value + index
-                    launch {
-                        delay(120)
-                        _pressedIndices.value = _pressedIndices.value - index
+                    event.status == 0xC0 -> {
+                        // KO-II group button: Program Change 0=A, 1=B, 2=C, 3=D
+                        val group = PadChannel.entries.getOrNull(event.note) ?: return@collect
+                        if (group != _selectedChannel.value) {
+                            _selectedChannel.value = group
+                            _pressedIndices.value = emptySet()
+                        }
                     }
                 }
             }
@@ -149,7 +159,7 @@ fun PadsScreen(viewModel: PadsViewModel) {
             .background(MaterialTheme.colorScheme.background)
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        ChannelIndicator(selected = selectedChannel)
+        ChannelIndicator(selected = selectedChannel, onSelect = viewModel::selectChannel)
 
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -240,9 +250,9 @@ fun PadsScreen(viewModel: PadsViewModel) {
     }
 }
 
-/** Display-only group indicator — auto-switches via incoming MIDI. */
+/** Tappable group selector — also auto-switches via incoming MIDI. */
 @Composable
-private fun ChannelIndicator(selected: PadChannel) {
+private fun ChannelIndicator(selected: PadChannel, onSelect: (PadChannel) -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
@@ -251,8 +261,7 @@ private fun ChannelIndicator(selected: PadChannel) {
             val isSelected = channel == selected
             FilterChip(
                 selected = isSelected,
-                onClick = {},
-                enabled = false,
+                onClick = { onSelect(channel) },
                 label = {
                     Text(
                         text = channel.name,
@@ -260,8 +269,8 @@ private fun ChannelIndicator(selected: PadChannel) {
                     )
                 },
                 colors = FilterChipDefaults.filterChipColors(
-                    disabledSelectedContainerColor = TEColors.Orange,
-                    disabledLabelColor = if (isSelected) Color.White else Color.Gray,
+                    selectedContainerColor = TEColors.Orange,
+                    selectedLabelColor = Color.White,
                 ),
             )
         }

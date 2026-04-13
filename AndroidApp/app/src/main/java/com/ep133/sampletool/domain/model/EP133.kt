@@ -11,10 +11,10 @@ package com.ep133.sampletool.domain.model
  *   Default: receive all channels, send on MIDI channel 1.
  */
 enum class PadChannel(val baseNote: Int) {
-    A(baseNote = 36),
+    A(baseNote = 72),
     B(baseNote = 48),
     C(baseNote = 60),
-    D(baseNote = 72);
+    D(baseNote = 36);
 }
 
 /** A single pad on the EP-133 grid. */
@@ -102,8 +102,8 @@ object EP133Pads {
      * Groups B & C pad 0 are normal (base+1 on ch 0).
      */
     private val SPECIAL_PAD0 = mapOf(
-        PadChannel.A to 6,  // A0 → note 60, ch 6
-        PadChannel.D to 7,  // D0 → note 60, ch 7
+        PadChannel.A to 7,  // A0 → note 60, ch 7
+        PadChannel.D to 6,  // D0 → note 60, ch 6
     )
 
     fun padsForChannel(channel: PadChannel): List<Pad> =
@@ -119,22 +119,22 @@ object EP133Pads {
 
     /** Detect which group + pad index from an incoming MIDI event. */
     fun resolveIncoming(note: Int, ch: Int): Pair<PadChannel, Int>? {
-        // Check special pad 0 first (note 60 on ch 6 = A, ch 7 = D)
-        if (note == 60 && ch == 6) {
+        // Check special pad 0 first (note 60 on ch 7 = A, ch 6 = D)
+        if (note == 60 && ch == 7) {
             val idx = GRID_ORDER.indexOfFirst { it.first == "0" }
             return PadChannel.A to idx
         }
-        if (note == 60 && ch == 7) {
+        if (note == 60 && ch == 6) {
             val idx = GRID_ORDER.indexOfFirst { it.first == "0" }
             return PadChannel.D to idx
         }
 
         // Normal: determine group from note range
         val group = when (note) {
-            in 36..47 -> PadChannel.A
+            in 72..83 -> PadChannel.A
             in 48..59 -> PadChannel.B
             in 60..71 -> PadChannel.C
-            in 72..83 -> PadChannel.D
+            in 36..47 -> PadChannel.D
             else -> return null
         }
         val offset = note - group.baseNote
