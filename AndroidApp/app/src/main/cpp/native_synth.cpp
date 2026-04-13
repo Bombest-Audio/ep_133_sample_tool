@@ -44,8 +44,11 @@ struct Voice {
     float phaseM{0.0f};       // modulator phase [0, 1)
     float phaseLFO{0.0f};     // tremolo LFO phase [0, 1)
 
-    float modIndex{0.0f};     // current FM modulation depth
-    float modDecayRate{0.0f}; // per-sample decrease of modIndex
+    float modIndex{0.0f};      // current FM modulation depth
+    float modPeak{0.0f};       // peak modIndex (ramp target)
+    float modAttackRate{0.0f}; // per-sample increase during mod ramp-up
+    float modDecayRate{0.0f};  // per-sample decrease after peak
+    bool  modInAttack{true};   // true while modIndex is still ramping up
 
     float envGain{0.0f};
     float attackRate{0.0f};
@@ -125,14 +128,16 @@ public:
         float sr   = static_cast<float>(sampleRate);
 
         // Amplitude envelope
-        float atk = sr * 0.020f;   // 20 ms attack
+        float atk = sr * 0.035f;   // 35 ms attack (softer onset)
         float dec = sr * 0.600f;   // 600 ms decay
         float sus = amp * 0.25f;   // 25% sustain level
         float rel = sr * 0.150f;   // 150 ms release
 
-        // FM: velocity-sensitive initial modulation depth (0–2 range)
-        float peakMod      = (velocity / 127.0f) * 2.0f;
-        float modDecaySamp = sr * 0.200f; // FM brightness fades over 200 ms
+        // FM: modIndex ramps 0→peak over 15 ms, then decays to 0 over 200 ms.
+        // Starting at 0 avoids the instant sideband click at note-on.
+        float peakMod       = (velocity / 127.0f) * 0.8f;
+        float modAttackSamp = sr * 0.015f; // 15 ms ramp-up
+        float modDecaySamp  = sr * 0.200f; // 200 ms decay to pure sine
 
         // Per-note LFO phase offset staggers tremolo in chords (pseudo-random per pitch)
         float lfoOffset = fmodf(static_cast<float>(midiNote) * 0.137f, 1.0f);
@@ -143,8 +148,11 @@ public:
         target->phaseC       = 0.0f;
         target->phaseM       = 0.0f;
         target->phaseLFO     = lfoOffset;
-        target->modIndex     = peakMod;
+        target->modIndex     = 0.0f;
+        target->modPeak      = peakMod;
+        target->modAttackRate = peakMod / modAttackSamp;
         target->modDecayRate = peakMod / modDecaySamp;
+        target->modInAttack  = true;
         target->envGain      = 0.0f;
         target->attackRate   = amp / atk;
         target->decayRate    = (amp - sus) / dec;
@@ -237,9 +245,14 @@ public:
 
                 out[i] += carrier * envGain * tremolo;
 
-                // Decay FM modulation independently of amplitude envelope
-                modIndex -= modDecayRate;
-                if (modIndex < 0.0f) modIndex = 0.0f;
+                // FM modulation envelope: ramp up to peak, then decay to pure sine
+                if (v.modInAttack) {
+                    modIndex += v.modAttackRate;
+                    if (modIndex >= v.modPeak) { modIndex = v.modPeak; v.modInAttack = false; }
+                } else {
+                    modIndex -= modDecayRate;
+                    if (modIndex < 0.0f) modIndex = 0.0f;
+                }
 
                 // Phase updates — normalized [0, 1) to avoid float precision drift
                 phaseC   += freqIncr; if (phaseC   >= 1.0f) phaseC   -= 1.0f;
@@ -247,12 +260,12 @@ public:
                 phaseLFO += lfoIncr;  if (phaseLFO >= 1.0f) phaseLFO -= 1.0f;
             }
 
-            v.phaseC    = phaseC;
-            v.phaseM    = phaseM;
-            v.phaseLFO  = phaseLFO;
-            v.modIndex  = modIndex;
-            v.envGain   = envGain;
-            v.inAttack  = inAttack;
+            v.phaseC     = phaseC;
+            v.phaseM     = phaseM;
+            v.phaseLFO   = phaseLFO;
+            v.modIndex   = modIndex;
+            v.envGain    = envGain;
+            v.inAttack   = inAttack;
             if (!stillActive) v.active.store(false, std::memory_order_relaxed);
         }
 
