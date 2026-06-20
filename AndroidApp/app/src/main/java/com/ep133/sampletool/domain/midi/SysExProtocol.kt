@@ -38,6 +38,16 @@ object SysExProtocol {
     const val TE_SYSEX_FILE_METADATA = 7
     const val TE_SYSEX_FILE_INFO = 11
 
+    // ── Two-phase GET/PUT transfer sub-types (under FILE_GET / FILE_PUT) ──
+    // Project archives are multi-page .tar blobs; the real device protocol is an
+    // INIT request (returns fileSize/fileName) then a paged DATA loop. This REPLACES
+    // Phase 2's broken single-byte chunkIndex model (buildFileGetFrame/buildFilePutFrame),
+    // which is left intact for existing /sounds callers.
+    const val TE_SYSEX_FILE_GET_TYPE_INIT = 0
+    const val TE_SYSEX_FILE_GET_TYPE_DATA = 1
+    const val TE_SYSEX_FILE_PUT_TYPE_INIT = 0
+    const val TE_SYSEX_FILE_PUT_TYPE_DATA = 1
+
     // ── Status codes ──
     const val STATUS_OK = 0
     const val STATUS_SPECIFIC_SUCCESS_START = 64  // more data chunks coming
@@ -240,4 +250,113 @@ object SysExProtocol {
             requestId,
             path.toByteArray(Charsets.US_ASCII),
         )
+
+    // ── Paged GET/PUT (the real INIT/DATA protocol — multi-kilobyte archives) ──
+    //
+    // These mirror buildFileSystemFrame's [TE_SYSEX_FILE, subcommand, ...] header
+    // but use the device's two-phase paging model rather than the broken single
+    // chunkIndex. nodeId is uint16 BE, offset uint32 BE, page uint16 BE.
+    // Reference: data/index.js SysExGetFileInitRequest / SysExGetFileDataRequest.
+
+    private fun buildFileGetInitPayload(nodeId: Int, offset: Int): ByteArray =
+        byteArrayOf(
+            TE_SYSEX_FILE.toByte(),
+            TE_SYSEX_FILE_GET.toByte(),
+            TE_SYSEX_FILE_GET_TYPE_INIT.toByte(),
+            (nodeId shr 8).toByte(), (nodeId and 0xFF).toByte(),                 // uint16 BE
+            (offset shr 24).toByte(), (offset shr 16).toByte(),
+            (offset shr 8).toByte(), (offset and 0xFF).toByte(),                 // uint32 BE
+        )
+
+    private fun buildFileGetDataPayload(page: Int): ByteArray =
+        byteArrayOf(
+            TE_SYSEX_FILE.toByte(),
+            TE_SYSEX_FILE_GET.toByte(),
+            TE_SYSEX_FILE_GET_TYPE_DATA.toByte(),
+            (page shr 8).toByte(), (page and 0xFF).toByte(),                     // uint16 BE
+        )
+
+    private fun buildFilePutInitPayload(nodeId: Int, fileSize: Int): ByteArray =
+        byteArrayOf(
+            TE_SYSEX_FILE.toByte(),
+            TE_SYSEX_FILE_PUT.toByte(),
+            TE_SYSEX_FILE_PUT_TYPE_INIT.toByte(),
+            (nodeId shr 8).toByte(), (nodeId and 0xFF).toByte(),                 // uint16 BE
+            (fileSize shr 24).toByte(), (fileSize shr 16).toByte(),
+            (fileSize shr 8).toByte(), (fileSize and 0xFF).toByte(),             // uint32 BE
+        )
+
+    /** Build a paged FILE_GET INIT request. Response carries fileSize + fileName. */
+    fun buildFileGetInitFrame(deviceId: Int, nodeId: Int, offset: Int = 0, requestId: Int): ByteArray =
+        buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, buildFileGetInitPayload(nodeId, offset))
+
+    /** Build a paged FILE_GET DATA request for the given page. */
+    fun buildFileGetDataFrame(deviceId: Int, page: Int, requestId: Int): ByteArray =
+        buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, buildFileGetDataPayload(page))
+
+    /** Build a paged FILE_PUT INIT request announcing the total upload size. */
+    fun buildFilePutInitFrame(deviceId: Int, nodeId: Int, fileSize: Int, requestId: Int): ByteArray =
+        buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, buildFilePutInitPayload(nodeId, fileSize))
+
+    /**
+     * Build a paged FILE_PUT DATA request: a page header followed by the archive chunk.
+     * The chunk bytes are raw 8-bit; buildFrame 7-bit-packs the whole payload.
+     */
+    fun buildFilePutDataFrame(deviceId: Int, page: Int, chunk: ByteArray, requestId: Int): ByteArray {
+        val payload = byteArrayOf(
+            TE_SYSEX_FILE.toByte(),
+            TE_SYSEX_FILE_PUT.toByte(),
+            TE_SYSEX_FILE_PUT_TYPE_DATA.toByte(),
+            (page shr 8).toByte(), (page and 0xFF).toByte(),
+        ) + chunk
+        return buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, payload)
+    }
+
+    // ── Paged GET response parsers ─────────────────────────────────────────────
+
+    /** Parsed FILE_GET INIT response. */
+    data class GetInitResponse(val fileId: Int, val flags: Int, val fileSize: Int, val fileName: String)
+
+    /** Parsed FILE_GET DATA response. [data] empty signals end-of-file. */
+    data class GetDataResponse(val page: Int, val data: ByteArray) {
+        /** Page the next DATA request should ask for. */
+        val nextPage: Int get() = (page + 1) and 0xFFFF
+    }
+
+    /**
+     * Parse an already-unpacked FILE_GET INIT response body.
+     *
+     * HARDWARE-VERIFY (A3): response body offset after [FILE,GET,TYPE] header.
+     * The dispatcher strips the [TE_SYSEX_FILE, TE_SYSEX_FILE_GET, status] prefix
+     * before calling this; [body] starts at the INIT payload. Exact offset needs a
+     * physical EP-133 confirmation (RESEARCH Assumption A3).
+     */
+    fun parseGetInitResponse(body: ByteArray): GetInitResponse {
+        require(body.size >= 7) { "GET INIT response too short: ${body.size} bytes" }
+        val fileId = ((body[0].toInt() and 0xFF) shl 8) or (body[1].toInt() and 0xFF)
+        val flags = body[2].toInt() and 0xFF
+        val fileSize = ((body[3].toInt() and 0xFF) shl 24) or
+            ((body[4].toInt() and 0xFF) shl 16) or
+            ((body[5].toInt() and 0xFF) shl 8) or
+            (body[6].toInt() and 0xFF)
+        val nameBytes = body.copyOfRange(7, body.size)
+        val nul = nameBytes.indexOfFirst { it.toInt() == 0 }
+        val fileName = String(
+            if (nul >= 0) nameBytes.copyOfRange(0, nul) else nameBytes,
+            Charsets.US_ASCII,
+        )
+        return GetInitResponse(fileId, flags, fileSize, fileName)
+    }
+
+    /**
+     * Parse an already-unpacked FILE_GET DATA response body.
+     *
+     * HARDWARE-VERIFY (A3): response body offset after [FILE,GET,TYPE] header.
+     */
+    fun parseGetDataResponse(body: ByteArray): GetDataResponse {
+        require(body.size >= 2) { "GET DATA response too short: ${body.size} bytes" }
+        val page = ((body[0].toInt() and 0xFF) shl 8) or (body[1].toInt() and 0xFF)
+        val data = body.copyOfRange(2, body.size)
+        return GetDataResponse(page, data)
+    }
 }
