@@ -82,26 +82,28 @@ Plans:
 
 ---
 
-### Phase 4: Project Management
-**Goal**: Users on both platforms can browse EP-133 project slots, save individual project backups, manage a backup library, and share backup files.
-**Depends on**: Phase 2, Phase 3
+### Phase 4: Project Management (Android slice)
+**Goal**: Android users can browse the EP-133's 9 project slots, back up a single project to phone storage, manage a backup library, and share backup files via the system share sheet.
+**Scope note**: Narrowed to the **Android slice only** per 04-CONTEXT.md. The iOS half (SwiftUI Projects screen, fileExporter/fileImporter, ShareLink, security-scoped resources, custom UTType) is deferred to a later phase.
+**Depends on**: Phase 2
 **Requirements**: PROJ-01, PROJ-02, PROJ-03, PROJ-04
 
 ### Success Criteria
 1. User can open a Projects screen and see all 9 EP-133 project slots with their names and a content summary.
 2. User can back up a single project (not a full device dump) to a named file on phone storage.
 3. User can open a backup library and see all previously saved backups as a scrollable list with file names and timestamps.
-4. User can share any backup file from the library via the iOS Share Sheet or Android share intent — including to AirDrop, Files, Google Drive, or the desktop Electron app.
+4. User can share any backup file from the library via the Android share intent — including to AirDrop, Files, Google Drive, or the desktop Electron app.
 
-### Plans
-- Research EP-133 project-level SysEx boundary — determine what constitutes one project in the dump format and whether partial restore is supported; document in `.planning/research/SYSEX_PROTOCOL.md`
-- Build project browser on Android — enumerate 9 project slots via SysEx; `ProjectsScreen` Compose UI with slot cards
-- Implement project-level backup/restore on Android — single-project SysEx dump to file; restore with slot targeting
-- Build iOS project management — `ProjectManager.swift`; SwiftUI Projects screen; `fileExporter`/`fileImporter` with custom `UTType` (`com.ep133sampletool.project`); security-scoped resource `defer` pattern
-- Build backup library and share sheet on both platforms — scrollable backup list with timestamps; Android `ShareCompat`; iOS `ShareLink`
+**Plans:** 4 plans (4 waves)
+
+Plans:
+- [ ] 04-project-management-01-PLAN.md — Wave 0: six unit-test scaffolds + FileProvider manifest/path config
+- [ ] 04-project-management-02-PLAN.md — Wave 1 (gate): real multi-page INIT/DATA FILE_GET/PUT in SysExProtocol + MIDIRepository (replaces Phase 2's broken single-chunk model)
+- [ ] 04-project-management-03-PLAN.md — Wave 2: /projects node resolution + 9-slot enumeration + ProjectBackupManager single-project backup/restore (hardware-gated)
+- [ ] 04-project-management-04-PLAN.md — Wave 3: ProjectsScreen browser + backup library + FileProvider/ShareCompat share + nav registration
 
 **UI hint**: yes
-**Dependencies**: Phase 2, Phase 3
+**Dependencies**: Phase 2
 
 ---
 
@@ -112,8 +114,8 @@ Plans:
 | 1. MIDI Foundation | 3/1 | Complete   | 2026-03-28 |
 | 2. Android Device Management | 1/1 | Complete   | 2026-03-30 |
 | 3. iOS Native UI | 0/4 | Not started | — |
-| 4. Project Management | 0/5 | Not started | — |
+| 4. Project Management | 0/4 | Planned (Android slice) | — |
 
 ---
 *Roadmap created: 2026-03-28*
-*Last updated: 2026-03-30 — Phase 2 plan created*
+*Last updated: 2026-06-20 — Phase 4 (Android slice) planned: 4 plans across 4 waves*
