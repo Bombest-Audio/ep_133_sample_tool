@@ -41,8 +41,9 @@ Phase: 04 (project-management) — CODE-COMPLETE (Android slice), hardware UAT p
 **Active artifacts:** 04-CONTEXT / 04-RESEARCH (FEASIBLE) / 04-VALIDATION / 04-PATTERNS / 4 PLAN.md files / 04-01..04-SUMMARY / 04-HUMAN-UAT
 **Plans:** 04-01 ✅ (wave 0: test scaffold + FileProvider) → 04-02 ✅ (wave 1 GATE: multi-page GET/PUT) → 04-03 ✅ (wave 2: enumerate + ProjectBackupManager; restore hardware-gated) → 04-04 ✅ (wave 3: ProjectsScreen browser + backup library + FileProvider share + nav/MainActivity wiring; ProjectsViewModelTest/BackupLibraryTest/ShareIntentTest GREEN; :app:assembleDebug succeeds; restore behind RESTORE_ENABLED gate). Plan-check: PASS.
 **Hardware checkpoints (need physical EP-133):** recorded in 04-HUMAN-UAT.md — UAT-1 FILE_LIST nodeId-vs-path (Open Q1), UAT-2 A3 response-body byte-offsets, UAT-3 single-project restore round-trip (Open Q2), UAT-4 browser/backup/share end-to-end (PROJ-01/03/04). All DEFERRED, NOT verified; restore button stays gated (flip RESTORE_ENABLED in ProjectsScreen.kt) until UAT-3 passes.
+**Verification:** 04-VERIFICATION.md = passed-with-deferrals. Independently confirmed: `:app:testDebugUnitTest` green, `:app:assembleDebug` SUCCESS, `:app:lintDebug` SUCCESS. PROJ-01..04 mapped to real code + tests; deferred set correctly limited to device-only behaviors.
 **Next step:** run the phase-gate hardware UAT (UAT-1..4) on a physical EP-133, then /gsd:verify-work for Phase 4.
-**Deferred:** pre-existing `MIDIManager.kt:159` MutableImplicitPendingIntent lint error blocks `:app:lintDebug` — see 04 deferred-items.md (not introduced by 04-01).
+**Resolved:** the pre-existing `MIDIManager.kt:159` MutableImplicitPendingIntent lint error (deferred since Phase 2) was fixed in commit 5b8f81c — `:app:lintDebug` is now green.
 **Note:** iOS slice of Phase 4 deferred to a later phase. Out-of-band fixes landed in commit d42ffd5 (backup/sequencer/MIDI bug fixes) — not tracked as a GSD phase.
 
 ```
