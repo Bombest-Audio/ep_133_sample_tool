@@ -126,7 +126,13 @@ Plans:
 3. Converted samples are loaded onto the connected EP-133 over the existing paged FILE_PUT stack (to `/sounds`).
 4. User sees an import screen with per-file progress and a clear success/failure result for each sample.
 
-**Plans:** TBD (planning next)
+**Plans:** 4 plans (4 waves)
+
+Plans:
+- [ ] 05-splice-sample-sync-01-PLAN.md — Wave 0: four unit-test scaffolds (WavEncoder/Resampler/SampleImport/SampleImportViewModel)
+- [ ] 05-splice-sample-sync-02-PLAN.md — Wave 1: pure conversion core — WavEncoder (16-bit RIFF @ 46875) + Resampler + pass-through
+- [ ] 05-splice-sample-sync-03-PLAN.md — Wave 2: AudioDecoder (MediaCodec) + MIDIRepository.putSampleFile (paged /sounds PUT) + SampleImportManager (hardware-gated)
+- [ ] 05-splice-sample-sync-04-PLAN.md — Wave 3: SampleImportScreen + ViewModel + SAF multi-pick + Import nav/MainActivity wiring (hardware-gated)
 
 **UI hint**: yes
 **Dependencies**: Phase 4
@@ -141,8 +147,8 @@ Plans:
 | 2. Android Device Management | 1/1 | Complete   | 2026-03-30 |
 | 3. iOS Native UI | 0/4 | Not started | — |
 | 4. Project Management | 4/4 | Complete (Android slice) — hardware UAT pending | 2026-06-20 |
-| 5. Sample Import (Android) | 0/? | Research done — planning | — |
+| 5. Sample Import (Android) | 0/4 | Planned — 4 plans / 4 waves | — |
 
 ---
 *Roadmap created: 2026-03-28*
-*Last updated: 2026-06-20 — Phase 4 plan 04-03 (Wave 2 enumerate + ProjectBackupManager) executed*
+*Last updated: 2026-06-20 — Phase 5 planned (4 plans / 4 waves; SAMPLE-01..04)*
