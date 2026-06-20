@@ -129,6 +129,60 @@ class ProjectProtocolTest {
         assertEquals(0, parsed.data.size)
     }
 
+    /** Build one FILE_LIST entry: nodeId u16 BE | flags | size u32 BE | null-term name. */
+    private fun fileListEntry(nodeId: Int, flags: Int, size: Long, name: String): ByteArray =
+        byteArrayOf(
+            (nodeId shr 8).toByte(), (nodeId and 0xFF).toByte(),
+            flags.toByte(),
+            (size shr 24).toByte(), (size shr 16).toByte(),
+            (size shr 8).toByte(), (size and 0xFF).toByte(),
+        ) + name.toByteArray(Charsets.US_ASCII) + byteArrayOf(0x00)
+
+    @Test
+    fun parseFileListEntries_decodesMultipleConcatenatedEntries() {
+        val body = fileListEntry(0x0010, SysExProtocol.TE_SYSEX_FILE_FILE_TYPE_DIR, 4096L, "P00") +
+            fileListEntry(0x0011, SysExProtocol.TE_SYSEX_FILE_FILE_TYPE_DIR, 0x0001FFFFL, "P01") +
+            fileListEntry(0x0012, SysExProtocol.TE_SYSEX_FILE_FILE_TYPE_FILE, 12L, "P02")
+
+        val entries = SysExProtocol.parseFileListEntries(body)
+        assertEquals(3, entries.size)
+
+        assertEquals(0x0010, entries[0].nodeId)
+        assertEquals(SysExProtocol.TE_SYSEX_FILE_FILE_TYPE_DIR, entries[0].flags)
+        assertEquals(4096L, entries[0].sizeBytes)
+        assertEquals("P00", entries[0].name)
+
+        // uint32 BE size that exceeds Int range stays positive as a Long.
+        assertEquals(0x0001FFFFL, entries[1].sizeBytes)
+        assertEquals("P01", entries[1].name)
+
+        assertEquals(0x0012, entries[2].nodeId)
+        assertEquals(SysExProtocol.TE_SYSEX_FILE_FILE_TYPE_FILE, entries[2].flags)
+        assertEquals("P02", entries[2].name)
+    }
+
+    @Test
+    fun parseFileListEntries_stopsOnTruncatedTrailingEntry() {
+        // A complete entry followed by a truncated header (< 7 bytes) — must not overrun (T-04-07).
+        val body = fileListEntry(0x0001, 2, 8L, "P00") + byteArrayOf(0x00, 0x02, 0x01)
+        val entries = SysExProtocol.parseFileListEntries(body)
+        assertEquals(1, entries.size)
+        assertEquals("P00", entries[0].name)
+    }
+
+    @Test
+    fun parseFileListEntries_toleratesFinalEntryWithoutNulTerminator() {
+        // Last entry's name runs to the buffer end with no NUL — take the rest as the name.
+        val body = byteArrayOf(
+            0x00, 0x05, 0x02, 0x00, 0x00, 0x00, 0x40,
+        ) + "P08".toByteArray(Charsets.US_ASCII)
+        val entries = SysExProtocol.parseFileListEntries(body)
+        assertEquals(1, entries.size)
+        assertEquals(0x0005, entries[0].nodeId)
+        assertEquals(64L, entries[0].sizeBytes)
+        assertEquals("P08", entries[0].name)
+    }
+
     @Test
     fun pack7bit_roundTrips256ByteBinaryBlob() {
         // The project .tar archive bytes route through this codec (RESEARCH Pitfall 5).

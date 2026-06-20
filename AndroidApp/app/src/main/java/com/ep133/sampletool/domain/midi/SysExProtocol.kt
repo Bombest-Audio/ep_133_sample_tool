@@ -242,6 +242,73 @@ object SysExProtocol {
         )
     }
 
+    /**
+     * Build a FILE_LIST request frame that lists a node by its numeric ID (the device's
+     * actual addressing model per the reference impl: `SysExFileListRequest(page, nodeId)`).
+     *
+     * Payload: [TE_SYSEX_FILE, TE_SYSEX_FILE_LIST, page uint16 BE, nodeId uint16 BE].
+     *
+     * HARDWARE-VERIFY (Open Q1): whether `/projects` lists by resolved nodeId (this) or the
+     * Phase 2 path string (buildFileListFrame). One-line switch: callers pick the builder.
+     */
+    fun buildFileListByNodeFrame(deviceId: Int, nodeId: Int, page: Int = 0, requestId: Int): ByteArray {
+        val payload = byteArrayOf(
+            TE_SYSEX_FILE.toByte(),
+            TE_SYSEX_FILE_LIST.toByte(),
+            (page shr 8).toByte(), (page and 0xFF).toByte(),       // uint16 BE
+            (nodeId shr 8).toByte(), (nodeId and 0xFF).toByte(),   // uint16 BE
+        )
+        return buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, payload)
+    }
+
+    // ── FILE_LIST response parsing (directory entries) ──────────────────────────
+
+    /** One parsed FILE_LIST directory entry. */
+    data class FileEntry(val nodeId: Int, val flags: Int, val sizeBytes: Long, val name: String)
+
+    /** Directory-entry flag: a FILE node (vs DIR). */
+    const val TE_SYSEX_FILE_FILE_TYPE_FILE = 1
+    /** Directory-entry flag: a DIR node. */
+    const val TE_SYSEX_FILE_FILE_TYPE_DIR = 2
+
+    /**
+     * Decode concatenated FILE_LIST directory entries from an already-unpacked response body.
+     *
+     * Per-entry layout (RESEARCH "FILE_LIST response"):
+     *   nodeId   = a[0..1] uint16 BE
+     *   flags    = a[2]
+     *   fileSize = a[3..6] uint32 BE
+     *   fileName = null-terminated ASCII from a[7]
+     * Entries are concatenated; the next entry begins after the name's NUL terminator.
+     *
+     * Bounds-checks every field read and STOPS on a truncated entry rather than reading
+     * past the buffer (threat T-04-07). A missing NUL terminator on the final entry is
+     * tolerated — the rest of the buffer is taken as the name.
+     *
+     * HARDWARE-VERIFY (Open Q1 / A3): exact body offset after the status byte is stripped
+     * by the dispatcher; confirm against a physical EP-133.
+     */
+    fun parseFileListEntries(body: ByteArray): List<FileEntry> {
+        val entries = mutableListOf<FileEntry>()
+        var i = 0
+        while (i + 7 <= body.size) {
+            val nodeId = ((body[i].toInt() and 0xFF) shl 8) or (body[i + 1].toInt() and 0xFF)
+            val flags = body[i + 2].toInt() and 0xFF
+            val sizeBytes = (((body[i + 3].toInt() and 0xFF).toLong()) shl 24) or
+                (((body[i + 4].toInt() and 0xFF).toLong()) shl 16) or
+                (((body[i + 5].toInt() and 0xFF).toLong()) shl 8) or
+                ((body[i + 6].toInt() and 0xFF).toLong())
+            var nameStart = i + 7
+            var nul = nameStart
+            while (nul < body.size && body[nul].toInt() != 0) nul++
+            val name = String(body.copyOfRange(nameStart, nul), Charsets.US_ASCII)
+            entries.add(FileEntry(nodeId, flags, sizeBytes, name))
+            if (nul >= body.size) break   // no terminator → final entry, stop
+            i = nul + 1                    // skip the NUL terminator
+        }
+        return entries
+    }
+
     /** Build a FILE_METADATA request frame to query storage info for a path. */
     fun buildFileMetadataFrame(deviceId: Int, path: String, requestId: Int): ByteArray =
         buildFileSystemFrame(

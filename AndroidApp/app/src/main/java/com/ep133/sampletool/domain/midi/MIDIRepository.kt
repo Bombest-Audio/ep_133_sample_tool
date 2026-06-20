@@ -90,6 +90,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private var pendingGetPages: Channel<SysExProtocol.GetDataResponse>? = null
     private var pendingPutAckDeferred: CompletableDeferred<Boolean>? = null
 
+    // ── Project enumeration state (Phase 4 Wave 2) ──
+    // FILE_LIST by node ID returns concatenated directory entries; the dispatcher hands the
+    // accumulated body to a CompletableDeferred keyed by nodeListInFlight.
+    private var pendingNodeListDeferred: CompletableDeferred<ByteArray>? = null
+    private val nodeListBuffer = java.io.ByteArrayOutputStream(512)
+
     // ── File protocol flows (for BackupManager) ──
     data class FileListEntry(val path: String, val nodeId: Int)
 
@@ -255,6 +261,29 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             }
             SysExProtocol.TE_SYSEX_FILE_LIST -> {
                 val status = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
+
+                // Node-ID listing path (Phase 4 enumeration): accumulate the unpacked entry
+                // body across SUCCESS_START responses, resolve the deferred on STATUS_OK.
+                val nodeDeferred = pendingNodeListDeferred
+                if (nodeDeferred != null) {
+                    val listBody = if (payload.size > 1) payload.copyOfRange(1, payload.size) else ByteArray(0)
+                    if (status == SysExProtocol.STATUS_OK ||
+                        status == SysExProtocol.STATUS_SPECIFIC_SUCCESS_START
+                    ) {
+                        nodeListBuffer.write(SysExProtocol.unpack7bit(listBody))
+                    }
+                    if (status == SysExProtocol.STATUS_OK) {
+                        nodeDeferred.complete(nodeListBuffer.toByteArray())
+                        pendingNodeListDeferred = null
+                        nodeListBuffer.reset()
+                    } else if (status != SysExProtocol.STATUS_SPECIFIC_SUCCESS_START) {
+                        nodeDeferred.completeExceptionally(IllegalStateException("FILE_LIST error status $status"))
+                        pendingNodeListDeferred = null
+                        nodeListBuffer.reset()
+                    }
+                    return
+                }
+
                 if (status == SysExProtocol.STATUS_OK || status == SysExProtocol.STATUS_SPECIFIC_SUCCESS_START) {
                     fileListEntryCount++
                     // Parse entry path from payload for BackupManager (path after status byte)
@@ -525,6 +554,133 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         }
     }
 
+    // ── Project slot enumeration (Phase 4 Wave 2, PROJ-01) ──
+
+    /** A single EP-133 project slot (one of /projects/P00 .. /projects/P08). */
+    data class ProjectSlot(
+        val nodeId: Int,
+        val name: String,
+        val sizeBytes: Long,
+        val isActive: Boolean,
+    )
+
+    /**
+     * Pure decode of a FILE_LIST response body into directory entries. Delegates to the
+     * SysExProtocol parser so the byte layout lives in one place and stays unit-testable.
+     */
+    fun parseFileListEntries(body: ByteArray): List<SysExProtocol.FileEntry> =
+        SysExProtocol.parseFileListEntries(body)
+
+    /**
+     * Issue a node-ID FILE_LIST and return the assembled (unpacked) entry body. Guards
+     * against overlapping listings with [statsQueryInFlight] (shared pending fields).
+     *
+     * HARDWARE-VERIFY (Open Q1): the device may instead accept a path-string FILE_LIST
+     * (Phase 2's /sounds path). To switch, replace [SysExProtocol.buildFileListByNodeFrame]
+     * with [SysExProtocol.buildFileListFrame] and pass the path — a one-line change.
+     */
+    private suspend fun listNodeBody(nodeId: Int, requestId: Int): ByteArray? {
+        val portId = _deviceState.value.outputPortId ?: return null
+        val deferred = CompletableDeferred<ByteArray>()
+        pendingNodeListDeferred = deferred
+        nodeListBuffer.reset()
+        return try {
+            val frame = SysExProtocol.buildFileListByNodeFrame(currentDeviceId, nodeId, requestId = requestId)
+            midiManager.sendMidi(portId, frame)
+            withTimeoutOrNull(FILE_LIST_TIMEOUT_MS) { deferred.await() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("EP133APP", "node FILE_LIST failed for node $nodeId", e)
+            null
+        } finally {
+            if (pendingNodeListDeferred === deferred) {
+                pendingNodeListDeferred = null
+                nodeListBuffer.reset()
+            }
+        }
+    }
+
+    /**
+     * Resolve a path like "/projects" to a numeric node ID by walking segments from root
+     * (nodeId 0), matching each child name in turn (per RESEARCH "Node-ID resolution").
+     *
+     * Returns null if any segment is not found or the device does not respond.
+     *
+     * HARDWARE-VERIFY (Open Q1): confirm /projects lists by nodeId (this walk) vs the
+     * Phase 2 path string. The path-string fallback is a one-line switch in [listNodeBody].
+     */
+    suspend fun resolveNodeId(path: String): Int? {
+        if (statsQueryInFlight) return null
+        statsQueryInFlight = true
+        return try {
+            val segments = path.trim('/').split('/').filter { it.isNotEmpty() }
+            var nodeId = 0   // root
+            var rid = 50
+            for (segment in segments) {
+                val body = listNodeBody(nodeId, requestId = rid++) ?: return null
+                val child = SysExProtocol.parseFileListEntries(body).firstOrNull { it.name == segment }
+                    ?: return null
+                nodeId = child.nodeId
+            }
+            nodeId
+        } finally {
+            statsQueryInFlight = false
+        }
+    }
+
+    /**
+     * Enumerate the 9 EP-133 project slots (PROJ-01).
+     *
+     * Resolves /projects → nodeId, reads its metadata "active" pointer, FILE_LISTs that node,
+     * and maps each child entry to a [ProjectSlot] (marking the active slot). Returns an empty
+     * list if no device is connected or the device does not respond.
+     */
+    suspend fun listProjects(): List<ProjectSlot> {
+        if (_deviceState.value.outputPortId == null) return emptyList()
+        val projectsNode = resolveNodeId("/projects") ?: return emptyList()
+
+        // Active-slot pointer from /projects directory metadata.
+        val activeNode = queryProjectsActiveNode()
+
+        if (statsQueryInFlight) return emptyList()
+        statsQueryInFlight = true
+        val body = try {
+            listNodeBody(projectsNode, requestId = 60)
+        } finally {
+            statsQueryInFlight = false
+        } ?: return emptyList()
+
+        return SysExProtocol.parseFileListEntries(body).map { entry ->
+            ProjectSlot(
+                nodeId = entry.nodeId,
+                name = entry.name,
+                sizeBytes = entry.sizeBytes,
+                isActive = activeNode != null && entry.nodeId == activeNode,
+            )
+        }
+    }
+
+    /** Read the /projects directory metadata "active" pointer (the currently-loaded slot). */
+    private suspend fun queryProjectsActiveNode(): Int? {
+        val portId = _deviceState.value.outputPortId ?: return null
+        if (statsQueryInFlight) return null
+        statsQueryInFlight = true
+        return try {
+            val deferred = CompletableDeferred<Map<String, String>>()
+            pendingMetadataDeferred = deferred
+            val frame = SysExProtocol.buildFileMetadataFrame(currentDeviceId, "/projects", requestId = 55)
+            midiManager.sendMidi(portId, frame)
+            val meta = withTimeoutOrNull(FILE_LIST_TIMEOUT_MS) { deferred.await() }
+            meta?.get("active")?.toIntOrNull()
+        } catch (e: CancellationException) {
+            throw e
+        } finally {
+            pendingMetadataDeferred = null
+            statsQueryInFlight = false
+        }
+    }
+
     fun setChannel(ch: Int) {
         _channel.value = ch.coerceIn(0, 15)
     }
@@ -635,5 +791,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         private const val GET_INIT_TIMEOUT_MS = 5_000L
         private const val GET_PAGE_TIMEOUT_MS = 5_000L
         private const val PUT_ACK_TIMEOUT_MS = 15_000L
+        // Node-ID FILE_LIST + /projects metadata query bound (enumeration, Wave 2).
+        private const val FILE_LIST_TIMEOUT_MS = 5_000L
     }
 }
