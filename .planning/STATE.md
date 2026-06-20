@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Phase 4 in progress — plan 04-01 (Wave 0 scaffold + FileProvider) complete
-last_updated: "2026-06-20T15:53:07.184Z"
+status: Phase 4 in progress — plan 04-02 (Wave 1 GATE: multi-page GET/PUT) complete
+last_updated: "2026-06-20T16:30:00.000Z"
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 6
-  completed_plans: 5
-  percent: 83
+  total_plans: 9
+  completed_plans: 7
+  percent: 78
 ---
 
 # Project State
@@ -33,20 +33,20 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | 1 | MIDI Foundation | Complete (2026-03-28) |
 | 2 | Android Device Management | Complete (2026-03-30) |
 | 3 | iOS Native UI | Not started |
-| 4 | Project Management | In progress (Android slice) — 1/4 plans complete |
+| 4 | Project Management | In progress (Android slice) — 2/4 plans complete |
 
 ## Current Position
 
 Phase: 04 (project-management) — IN PROGRESS, scoped to Android only
-**Active artifacts:** 04-CONTEXT / 04-RESEARCH (FEASIBLE) / 04-VALIDATION / 04-PATTERNS / 4 PLAN.md files / 04-01-SUMMARY
-**Plans:** 04-01 ✅ (wave 0: test scaffold + FileProvider — DONE) → 04-02 (wave 1 GATE: multi-page GET/PUT) → 04-03 (wave 2: enumerate + ProjectBackupManager, hardware-gated) → 04-04 (wave 3: ProjectsScreen + library + share). Plan-check: PASS.
-**Hardware checkpoints (need physical EP-133):** FILE_LIST nodeId-vs-path (Open Q1); single-project restore round-trip (Open Q2) — plans 03/04 are autonomous:false for this reason.
-**Next step:** execute 04-02 (Wave 1 multi-chunk gate).
+**Active artifacts:** 04-CONTEXT / 04-RESEARCH (FEASIBLE) / 04-VALIDATION / 04-PATTERNS / 4 PLAN.md files / 04-01-SUMMARY / 04-02-SUMMARY
+**Plans:** 04-01 ✅ (wave 0: test scaffold + FileProvider — DONE) → 04-02 ✅ (wave 1 GATE: multi-page GET/PUT — DONE; paged INIT/DATA builders + dispatch state machine, ProjectProtocolTest/MultiChunkGetTest/SysExDispatchTest GREEN) → 04-03 (wave 2: enumerate + ProjectBackupManager, hardware-gated) → 04-04 (wave 3: ProjectsScreen + library + share). Plan-check: PASS.
+**Hardware checkpoints (need physical EP-133):** FILE_LIST nodeId-vs-path (Open Q1); single-project restore round-trip (Open Q2) — plans 03/04 are autonomous:false for this reason. NEW: A3 response-body byte-offset for parseGetInit/DataResponse (HARDWARE-VERIFY comments in SysExProtocol.kt) — confirm in Wave 2/3 UAT.
+**Next step:** execute 04-03 (Wave 2 enumerate + ProjectBackupManager).
 **Deferred:** pre-existing `MIDIManager.kt:159` MutableImplicitPendingIntent lint error blocks `:app:lintDebug` — see 04 deferred-items.md (not introduced by 04-01).
 **Note:** iOS slice of Phase 4 deferred to a later phase. Out-of-band fixes landed in commit d42ffd5 (backup/sequencer/MIDI bug fixes) — not tracked as a GSD phase.
 
 ```
-[█████░░░░░] Phases 1–2 complete, Phase 4 in planning
+[███████░░░] Phases 1–2 complete, Phase 4 — Wave 1 GATE done (2/4 plans)
 ```
 
 ## Decisions Made
