@@ -45,5 +45,17 @@
             android:name=".SampleManagerActivity"
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden"
             android:theme="@style/Theme.EP133SampleTool" />
+
+        <!-- Shares project backup .tar files via content:// URIs (PROJ-04).
+             exported=false + scoped file_paths.xml; READ grants only at share time. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>
