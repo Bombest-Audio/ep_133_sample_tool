@@ -12,6 +12,12 @@
 - [ ] **Phase 3: iOS Native UI** — Build all four SwiftUI screens mirroring the Android Compose screens
 - [ ] **Phase 4: Project Management** — Project browser, project-level backup, backup library, share sheet
 
+## Backlog
+
+Unscheduled ideas (999.x). Promote into a milestone via `/gsd:review-backlog`.
+
+- [ ] **Phase 999.1: Splice sample sync** — Add a way to sync Splice samples: pull samples from the user's Splice library and load them onto the EP-133 (via the file-transfer SysEx protocol / sample manager). Research questions: Splice access path (official API vs. local Splice desktop-app sample folder vs. manual import), auth, and conversion to the EP-133's expected WAV format. Captured 2026-06-20.
+
 ## Phase Details
 
 ### Phase 1: MIDI Foundation
