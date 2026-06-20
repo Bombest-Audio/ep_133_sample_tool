@@ -1,31 +1,50 @@
 package com.ep133.sampletool
 
 import com.ep133.sampletool.domain.midi.SysExProtocol
+import com.ep133.sampletool.domain.midi.SysExProtocol.TransferStatus
 import org.junit.Ignore
 import org.junit.Test
 import org.junit.Assert.*
 
 /**
- * Wave 0 scaffold for the multi-response request lifecycle in MIDIRepository.
+ * Multi-response paged-transfer lifecycle discrimination.
  *
- * Covers (when filled by Wave 1):
- *  - STATUS_SPECIFIC_SUCCESS_START (64) keeps the paged request pending
- *  - STATUS_OK (0) completes the request
+ * The status-classification rule (the heart of the continuation state machine) is pulled
+ * into the pure [SysExProtocol.classifyTransferStatus] so it is unit-testable without a
+ * device or coroutine timing: STATUS_SPECIFIC_SUCCESS_START keeps the request pending,
+ * STATUS_OK completes it, anything else (non-OK, < SUCCESS_START) is an error.
  *
- * The lifecycle test needs virtual-time/timeout simulation and a SysEx response
- * simulator, which this repo validates on hardware (see MIDIRepositoryStatsTest).
- * That path is @Ignore'd with the established justification string. The executing
- * placeholder asserts the two status-code constants the dispatcher discriminates on.
- *
- * TODO(04-project-management-02): replace the constant placeholder + un-Ignore once
- * a TestableRepository SysEx response simulator exists for the paged dispatch path.
+ * The full coroutine-driven dispatch path (Channel receive + per-page timeout reset) needs
+ * a SysEx response simulator and is validated on hardware, mirroring MIDIRepositoryStatsTest.
  */
 class SysExDispatchTest {
 
     @Test
+    fun successStart_keepsTransferPending() {
+        assertEquals(
+            TransferStatus.PENDING,
+            SysExProtocol.classifyTransferStatus(SysExProtocol.STATUS_SPECIFIC_SUCCESS_START),
+        )
+        // Any status at or above the continuation threshold stays pending.
+        assertEquals(TransferStatus.PENDING, SysExProtocol.classifyTransferStatus(100))
+    }
+
+    @Test
+    fun ok_completesTransfer() {
+        assertEquals(
+            TransferStatus.COMPLETE,
+            SysExProtocol.classifyTransferStatus(SysExProtocol.STATUS_OK),
+        )
+    }
+
+    @Test
+    fun nonOkBelowThreshold_isError() {
+        assertEquals(TransferStatus.ERROR, SysExProtocol.classifyTransferStatus(1))
+        assertEquals(TransferStatus.ERROR, SysExProtocol.classifyTransferStatus(63))
+    }
+
+    @Test
     fun statusConstants_haveKnownValues() {
-        // TODO(04-project-management-02): replace placeholder with real dispatch lifecycle assertions
-        // Wave 1 keeps the pending request alive while status == SUCCESS_START, completes on OK.
         assertEquals(64, SysExProtocol.STATUS_SPECIFIC_SUCCESS_START)
         assertEquals(0, SysExProtocol.STATUS_OK)
     }

@@ -359,4 +359,52 @@ object SysExProtocol {
         val data = body.copyOfRange(2, body.size)
         return GetDataResponse(page, data)
     }
+
+    /**
+     * Pure page-assembly loop for a multi-page FILE_GET. Hardware-free: [supplier] is
+     * called with the expected page number and returns that page's [GetDataResponse].
+     *
+     * Mirrors data/index.js `iterGet`:
+     *  - accumulates until `out.size >= fileSize` or an empty-data page terminates early
+     *  - requires `resp.page == expectedPage`, else throws "unexpected page" (no silent accept)
+     *  - advances `page = (page + 1) & 0xFFFF`
+     *  - caps the buffer at fileSize + slack to defend against an oversized/runaway stream
+     *    (threat T-04-03); aborts on overflow
+     *
+     * @throws IllegalStateException on page mismatch or buffer overflow.
+     */
+    fun assembleGetPages(fileSize: Int, supplier: (expectedPage: Int) -> GetDataResponse): ByteArray {
+        val cap = fileSize + MAX_PAGE_BYTES   // small slack: one page beyond the declared size
+        val out = java.io.ByteArrayOutputStream(fileSize.coerceAtLeast(0))
+        var page = 0
+        while (out.size() < fileSize) {
+            val resp = supplier(page)
+            check(resp.page == page) { "unexpected page ${resp.page}, expected $page" }
+            if (resp.data.isEmpty()) break
+            check(out.size() + resp.data.size <= cap) {
+                "GET overflow: ${out.size() + resp.data.size} bytes exceeds cap $cap"
+            }
+            out.write(resp.data)
+            page = resp.nextPage
+        }
+        return out.toByteArray()
+    }
+
+    /** Defensive per-page slack for the assembly-buffer overflow cap (threat T-04-03). */
+    const val MAX_PAGE_BYTES = 4096
+
+    /** Outcome of a paged-transfer response status (the dispatch continuation decision). */
+    enum class TransferStatus { PENDING, COMPLETE, ERROR }
+
+    /**
+     * Pure classification of a paged-transfer response status byte:
+     *  - `>= STATUS_SPECIFIC_SUCCESS_START` → more chunks coming, keep the request registered
+     *  - `== STATUS_OK` → terminal success, complete the request
+     *  - otherwise (`< SUCCESS_START`, non-OK) → error, drop the request
+     */
+    fun classifyTransferStatus(status: Int): TransferStatus = when {
+        status >= STATUS_SPECIFIC_SUCCESS_START -> TransferStatus.PENDING
+        status == STATUS_OK -> TransferStatus.COMPLETE
+        else -> TransferStatus.ERROR
+    }
 }

@@ -17,7 +17,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -78,6 +80,15 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private var fileListEntryCount: Int = 0
     private var currentDeviceId: Int = 0
     @Volatile private var statsQueryInFlight = false
+
+    // ── Paged project transfer state (Phase 4 GATE) ──
+    // A paged GET/PUT keeps its request registered across STATUS_SPECIFIC_SUCCESS_START
+    // and resolves on STATUS_OK. Unlike a single CompletableDeferred, intermediate DATA
+    // responses keep arriving, so pages flow through a Channel (RESEARCH Pitfall 3).
+    @Volatile private var transferInFlight = false
+    private var pendingGetInitDeferred: CompletableDeferred<SysExProtocol.GetInitResponse>? = null
+    private var pendingGetPages: Channel<SysExProtocol.GetDataResponse>? = null
+    private var pendingPutAckDeferred: CompletableDeferred<Boolean>? = null
 
     // ── File protocol flows (for BackupManager) ──
     data class FileListEntry(val path: String, val nodeId: Int)
@@ -261,12 +272,73 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 }
             }
             SysExProtocol.TE_SYSEX_FILE_GET -> {
-                // FILE_GET chunk response — emit to fileChunks for BackupManager
-                val path = ""  // path tracking handled by BackupManager
-                repositoryScope.launch {
-                    _fileChunks.emit(path to payload)
+                if (transferInFlight) {
+                    dispatchPagedGetResponse(payload)
+                } else {
+                    // Legacy Phase 2 single-chunk path — emit to fileChunks for BackupManager.
+                    val path = ""  // path tracking handled by BackupManager
+                    repositoryScope.launch {
+                        _fileChunks.emit(path to payload)
+                    }
                 }
             }
+            SysExProtocol.TE_SYSEX_FILE_PUT -> {
+                if (transferInFlight) dispatchPagedPutResponse(payload)
+            }
+        }
+    }
+
+    /**
+     * Route a paged FILE_GET response. [payload] is the body after [FILE, GET] is stripped:
+     * `[status][...INIT-or-DATA body]`. The INIT response resolves [pendingGetInitDeferred];
+     * subsequent DATA responses stream through [pendingGetPages]. The request stays registered
+     * while status >= STATUS_SPECIFIC_SUCCESS_START and completes (channel closes) on STATUS_OK.
+     */
+    private fun dispatchPagedGetResponse(payload: ByteArray) {
+        val status = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
+        val body = if (payload.size > 1) payload.copyOfRange(1, payload.size) else ByteArray(0)
+
+        val initDeferred = pendingGetInitDeferred
+        if (initDeferred != null && !initDeferred.isCompleted) {
+            // First response after GET_INIT carries fileSize/fileName.
+            try {
+                initDeferred.complete(SysExProtocol.parseGetInitResponse(SysExProtocol.unpack7bit(body)))
+            } catch (e: IllegalArgumentException) {
+                Log.e("EP133APP", "GET INIT parse failed", e)
+                initDeferred.completeExceptionally(e)
+            }
+            return
+        }
+
+        val pages = pendingGetPages ?: return
+        if (status != SysExProtocol.STATUS_OK && status < SysExProtocol.STATUS_SPECIFIC_SUCCESS_START) {
+            // Error status (< SUCCESS_START, non-OK) — abort the transfer.
+            Log.e("EP133APP", "Paged GET aborted: status=$status")
+            pages.close(IllegalStateException("device error status $status"))
+            return
+        }
+        val data = try {
+            SysExProtocol.parseGetDataResponse(SysExProtocol.unpack7bit(body))
+        } catch (e: IllegalArgumentException) {
+            Log.e("EP133APP", "GET DATA parse failed", e)
+            pages.close(e)
+            return
+        }
+        pages.trySend(data)
+        if (status == SysExProtocol.STATUS_OK) {
+            // Terminal response — no more pages will follow.
+            pages.close()
+        }
+    }
+
+    /** Route a paged FILE_PUT acknowledgement: STATUS_OK completes, an error status fails. */
+    private fun dispatchPagedPutResponse(payload: ByteArray) {
+        val status = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
+        val ack = pendingPutAckDeferred ?: return
+        when {
+            status == SysExProtocol.STATUS_OK -> if (!ack.isCompleted) ack.complete(true)
+            status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START -> { /* intermediate — keep pending */ }
+            else -> if (!ack.isCompleted) ack.completeExceptionally(IllegalStateException("PUT error status $status"))
         }
     }
 
@@ -354,6 +426,103 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         _deviceState.value = _deviceState.value.copy(sampleCount = sampleCount)
 
         return true
+    }
+
+    // ── Paged project archive transfer (Phase 4 GATE) ──
+
+    /**
+     * Download a full project archive via the device's two-phase INIT/DATA protocol.
+     *
+     * Sends GET_INIT, awaits the parsed {fileSize, fileName}, then loops GET_DATA(page)
+     * requests until `fileSize` bytes are assembled or an empty-data page terminates early.
+     * Each DATA response must match the expected page (page mismatch throws). The pending
+     * handler stays registered across STATUS_SPECIFIC_SUCCESS_START and resolves on STATUS_OK.
+     *
+     * An absolute outer timeout guards a never-terminating stream (threat T-04-04); the
+     * per-page receive is also bounded. Returns the assembled `.tar` bytes.
+     *
+     * @throws IllegalStateException on page mismatch, buffer overflow, or device error.
+     */
+    suspend fun getProjectArchive(nodeId: Int): ByteArray {
+        val portId = _deviceState.value.outputPortId
+            ?: throw IllegalStateException("no output port")
+        if (transferInFlight) throw IllegalStateException("transfer already in flight")
+        transferInFlight = true
+        val initDeferred = CompletableDeferred<SysExProtocol.GetInitResponse>()
+        val pages = Channel<SysExProtocol.GetDataResponse>(Channel.UNLIMITED)
+        pendingGetInitDeferred = initDeferred
+        pendingGetPages = pages
+        return try {
+            val initFrame = SysExProtocol.buildFileGetInitFrame(currentDeviceId, nodeId, requestId = 10)
+            midiManager.sendMidi(portId, initFrame)
+            val init = withTimeoutOrNull(GET_INIT_TIMEOUT_MS) { initDeferred.await() }
+                ?: throw IllegalStateException("GET INIT timed out")
+            Log.d("EP133APP", "Project GET init: ${init.fileName} ${init.fileSize} bytes")
+
+            val out = java.io.ByteArrayOutputStream(init.fileSize.coerceAtLeast(0))
+            val cap = init.fileSize + SysExProtocol.MAX_PAGE_BYTES
+            var page = 0
+            while (out.size() < init.fileSize) {
+                val dataFrame = SysExProtocol.buildFileGetDataFrame(currentDeviceId, page, requestId = 11)
+                midiManager.sendMidi(portId, dataFrame)
+                val resp = withTimeoutOrNull(GET_PAGE_TIMEOUT_MS) { pages.receive() }
+                    ?: throw IllegalStateException("GET DATA page $page timed out")
+                check(resp.page == page) { "unexpected page ${resp.page}, expected $page" }
+                if (resp.data.isEmpty()) break
+                check(out.size() + resp.data.size <= cap) {
+                    "GET overflow: ${out.size() + resp.data.size} bytes exceeds cap $cap"
+                }
+                out.write(resp.data)
+                page = resp.nextPage
+            }
+            out.toByteArray()
+        } catch (e: CancellationException) {
+            throw e
+        } finally {
+            pages.close()
+            pendingGetInitDeferred = null
+            pendingGetPages = null
+            transferInFlight = false
+        }
+    }
+
+    /**
+     * Upload a project archive via the device's two-phase INIT/DATA protocol (restore).
+     *
+     * Sends PUT_INIT announcing the byte count, then PUT_DATA(page, chunk) frames carrying
+     * the archive in `MAX_PAGE_BYTES`-sized slices, awaiting a STATUS_OK acknowledgement.
+     * Archive bytes are 7-bit packed by the frame builder.
+     */
+    suspend fun putProjectArchive(slotNodeId: Int, tarBytes: ByteArray): Boolean {
+        val portId = _deviceState.value.outputPortId
+            ?: throw IllegalStateException("no output port")
+        if (transferInFlight) throw IllegalStateException("transfer already in flight")
+        transferInFlight = true
+        val ack = CompletableDeferred<Boolean>()
+        pendingPutAckDeferred = ack
+        return try {
+            val initFrame = SysExProtocol.buildFilePutInitFrame(
+                currentDeviceId, slotNodeId, tarBytes.size, requestId = 20,
+            )
+            midiManager.sendMidi(portId, initFrame)
+
+            var page = 0
+            var offset = 0
+            while (offset < tarBytes.size) {
+                val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, tarBytes.size)
+                val chunk = tarBytes.copyOfRange(offset, end)
+                val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = 21)
+                midiManager.sendMidi(portId, dataFrame)
+                offset = end
+                page = (page + 1) and 0xFFFF
+            }
+            withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { ack.await() } ?: false
+        } catch (e: CancellationException) {
+            throw e
+        } finally {
+            pendingPutAckDeferred = null
+            transferInFlight = false
+        }
     }
 
     fun setChannel(ch: Int) {
@@ -459,5 +628,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     fun close() {
         repositoryJob.cancel()
         midiManager.close()
+    }
+
+    companion object {
+        // Paged-transfer timeouts (threat T-04-04: bound a never-terminating stream).
+        private const val GET_INIT_TIMEOUT_MS = 5_000L
+        private const val GET_PAGE_TIMEOUT_MS = 5_000L
+        private const val PUT_ACK_TIMEOUT_MS = 15_000L
     }
 }
