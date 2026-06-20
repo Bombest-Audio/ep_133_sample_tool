@@ -97,7 +97,7 @@ Plans:
 **Plans:** 4 plans (4 waves)
 
 Plans:
-- [ ] 04-project-management-01-PLAN.md — Wave 0: six unit-test scaffolds + FileProvider manifest/path config
+- [x] 04-project-management-01-PLAN.md — Wave 0: six unit-test scaffolds + FileProvider manifest/path config
 - [ ] 04-project-management-02-PLAN.md — Wave 1 (gate): real multi-page INIT/DATA FILE_GET/PUT in SysExProtocol + MIDIRepository (replaces Phase 2's broken single-chunk model)
 - [ ] 04-project-management-03-PLAN.md — Wave 2: /projects node resolution + 9-slot enumeration + ProjectBackupManager single-project backup/restore (hardware-gated)
 - [ ] 04-project-management-04-PLAN.md — Wave 3: ProjectsScreen browser + backup library + FileProvider/ShareCompat share + nav registration
@@ -114,8 +114,8 @@ Plans:
 | 1. MIDI Foundation | 3/1 | Complete   | 2026-03-28 |
 | 2. Android Device Management | 1/1 | Complete   | 2026-03-30 |
 | 3. iOS Native UI | 0/4 | Not started | — |
-| 4. Project Management | 0/4 | Planned (Android slice) | — |
+| 4. Project Management | 1/4 | In progress (Android slice) | — |
 
 ---
 *Roadmap created: 2026-03-28*
-*Last updated: 2026-06-20 — Phase 4 (Android slice) planned: 4 plans across 4 waves*
+*Last updated: 2026-06-20 — Phase 4 plan 04-01 (Wave 0 scaffold + FileProvider) executed*
