@@ -11,13 +11,13 @@
 - [x] **Phase 2: Android Device Management** — Real device stats, full backup/restore, performance screen hardening (completed 2026-03-30)
 - [ ] **Phase 3: iOS Native UI** — Build all four SwiftUI screens mirroring the Android Compose screens
 - [ ] **Phase 4: Project Management** — Project browser, project-level backup, backup library, share sheet
-- [ ] **Phase 5: Splice Sample Sync** — Pull samples from a user's Splice library and load them onto the EP-133 (research-gated on the Splice access path)
+- [ ] **Phase 5: Sample Import (Android)** — Import audio files via SAF, convert to EP-133 WAV, load onto the device over the Phase 4 FILE_PUT stack
 
 ## Backlog
 
 Unscheduled ideas (999.x). Promote into a milestone via `/gsd:review-backlog`.
 
-_(none — Phase 999.1 "Splice sample sync" promoted to Phase 5 on 2026-06-20)_
+- [ ] **Phase 999.2: Desktop Splice-folder sync (Electron)** — On the desktop/Electron target, watch the user's local Splice folder (`~/Splice` macOS, `C:\Documents\Splice` Windows) and sync new samples onto the EP-133. Desktop-only and ToS-clean (reads the user's own local files — no Splice API). This is where a true "Splice sync" belongs; Android can't reach Splice without violating ToS (see 05-RESEARCH.md). Captured 2026-06-20.
 
 ## Phase Details
 
@@ -114,19 +114,19 @@ Plans:
 
 ---
 
-### Phase 5: Splice Sample Sync
-**Goal**: An Android user can pull samples from their Splice library and load them onto a connected EP-133 — no desktop required.
-**Status**: RESEARCH-GATED. Programmatic Splice access is unconfirmed. Research must resolve the access path — official Splice API (does one exist + does ToS allow it?) vs. reading the local Splice desktop-app sample folder vs. manual import — before requirements and plans are locked. If no viable programmatic path exists, the phase narrows to a manual-import fallback (and a desktop/Electron path may be flagged as more appropriate than Android).
-**Depends on**: Phase 4 (reuses the file-transfer SysEx stack — `ProjectBackupManager` / multi-page `FILE_PUT`)
-**Requirements**: TBD pending feasibility research. Provisional: SPLICE-01 discover + auth the Splice source; SPLICE-02 fetch selected samples; SPLICE-03 convert to the EP-133's expected WAV; SPLICE-04 load onto the device via `FILE_PUT`.
+### Phase 5: Sample Import (Android)
+**Goal**: An Android user can import audio files from phone storage, have them converted to the EP-133's sample format, and loaded onto a connected device — no desktop required.
+**Origin**: Reshaped from "Splice Sample Sync" after research (05-RESEARCH.md) found no ToS-clean programmatic Splice path on Android. The literal Splice-folder *sync* is backlogged to the desktop/Electron target (Phase 999.2). Phase 5 ships the user-driven import that IS buildable on Android.
+**Depends on**: Phase 4 (reuses the file-transfer SysEx stack — `ProjectBackupManager` / multi-page `FILE_PUT`, re-targeted from `/projects` to `/sounds`)
+**Requirements**: SAMPLE-01, SAMPLE-02, SAMPLE-03, SAMPLE-04
 
 ### Success Criteria
-1. User can point the app at their Splice samples via whatever access path research validates.
-2. User can browse and select Splice samples to sync.
-3. Selected samples are converted to the EP-133's expected WAV format.
-4. Selected samples are loaded onto the connected EP-133 over the existing file-transfer SysEx protocol.
+1. User can pick one or more audio files from phone storage via the SAF file picker.
+2. Imported audio is converted to 16-bit PCM WAV @ 46875 Hz (mono or stereo), the EP-133's expected format.
+3. Converted samples are loaded onto the connected EP-133 over the existing paged FILE_PUT stack (to `/sounds`).
+4. User sees an import screen with per-file progress and a clear success/failure result for each sample.
 
-**Plans:** TBD (planning follows feasibility research)
+**Plans:** TBD (planning next)
 
 **UI hint**: yes
 **Dependencies**: Phase 4
@@ -141,7 +141,7 @@ Plans:
 | 2. Android Device Management | 1/1 | Complete   | 2026-03-30 |
 | 3. iOS Native UI | 0/4 | Not started | — |
 | 4. Project Management | 4/4 | Complete (Android slice) — hardware UAT pending | 2026-06-20 |
-| 5. Splice Sample Sync | 0/? | Research-gated | — |
+| 5. Sample Import (Android) | 0/? | Research done — planning | — |
 
 ---
 *Roadmap created: 2026-03-28*

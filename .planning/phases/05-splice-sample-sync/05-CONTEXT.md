@@ -1,63 +1,67 @@
-# Phase 5: Splice Sample Sync — Context
+# Phase 5: Sample Import (Android) — Context
 
 **Gathered:** 2026-06-20
-**Status:** RESEARCH-GATED — feasibility must be resolved before planning
-**Source:** Promoted from backlog 999.1; direct scoping with Thomas
+**Status:** Ready for planning (scope locked after feasibility research)
+**Source:** Promoted from backlog 999.1 "Splice sample sync"; reshaped after 05-RESEARCH.md
 
 <domain>
 ## Phase Boundary
 
-Let an Android user pull samples from their **Splice** library and load them onto a
-connected EP-133 over the existing file-transfer SysEx stack — no desktop required.
+Let an Android user import audio files from phone storage, convert them to the EP-133's
+sample format, and load them onto a connected device — no desktop required.
 
-**Target:** Android app, reusing the Phase 4 stack (`ProjectBackupManager`, multi-page
-`FILE_PUT` in `SysExProtocol`/`MIDIRepository`). Flag if a desktop/Electron path is
-actually more appropriate (e.g. if Splice access only works on desktop).
+**Reshaped from "Splice sync":** research (05-RESEARCH.md) found NO ToS-clean programmatic
+way to reach a user's Splice library on Android (no public API; the internal GraphQL surface
+violates Splice ToS and risks account termination; the local `~/Splice` folder is
+desktop-only). So Phase 5 is user-driven file **import**, which is fully buildable. The real
+Splice-folder *sync* is backlogged to the desktop/Electron target (ROADMAP Phase 999.2) —
+**do not build any Splice API/GraphQL integration in this phase.**
 </domain>
 
 <decisions>
-## The gate — resolve in research BEFORE any planning
+## Implementation Decisions (locked)
 
-**KEY FEASIBILITY UNKNOWN.** The entire phase shape depends on how (or whether) we can
-reach a user's Splice samples programmatically:
-- (a) **Official Splice API** — does a public/usable one exist for listing/downloading the
-  user's samples? Does Splice's ToS permit programmatic sample pulls from a third-party app?
-- (b) **Local Splice desktop-app sample folder** — Splice's desktop app downloads samples to
-  a known folder. On Android that folder isn't present, but a desktop/companion path or a
-  user-pointed sync folder might be. Assess.
-- (c) **Manual import** — user exports/selects sample files; app converts + loads them.
+- **Source = SAF file picker.** User picks one or more audio files (`ACTION_OPEN_DOCUMENT` /
+  `OpenMultipleDocuments`). No Splice integration of any kind.
+- **Target format = the EP-133's:** 16-bit PCM WAV, **46875 Hz**, mono or stereo
+  (`DEVICE_SAMPLE_RATE=46875`, `DEVICE_AUDIO_FORMAT="s16"`, from `data/index.js` per
+  05-RESEARCH.md).
+- **Conversion on Android:** `MediaCodec` decode → linear resample to 46875 Hz → hand-written
+  RIFF/Int16 WAV encoder. No new third-party dependencies (per research).
+- **Device load = reuse Phase 4.** Same paged INIT/DATA `FILE_PUT` (`buildFilePut*Frame`,
+  `MIDIRepository.putProjectArchive` pattern), re-targeted from `/projects` to
+  `/sounds/<name>.wav`. Mirror `ProjectBackupManager` as a new `SampleImportManager`.
+- **UI:** an import screen (likely a new entry point / action) with per-file progress and a
+  per-sample success/failure result.
 
-If **no viable programmatic path exists** (API absent or ToS-disallowed), say so plainly and
-recommend the best fallback rather than forcing a plan around a nonexistent API. A clear
-"infeasible via API → fallback X" verdict is a SUCCESSFUL research outcome.
+### Hardware note
+Actual on-device load (does the EP-133 accept the WAV at `/sounds`, does it appear on a pad)
+needs a physical device — handle like Phase 4: implement against the documented format,
+unit-test the conversion + frame building, and defer the on-device round-trip to a UAT entry.
 
-Also resolve: auth model (if API); conversion of fetched samples to the EP-133's expected
-**WAV** format (bit depth / sample rate / mono-stereo constraints); and how loading reuses
-the Phase 4 `FILE_PUT` path (target path on device, e.g. `/sounds`).
-
-## Reuse
-- Device loading: the Phase 4 multi-page `FILE_PUT` transfer + `ProjectBackupManager` pattern.
-- Do NOT re-solve the SysEx transfer; build on what Phase 4 shipped.
-
-## Claude's Discretion (post-feasibility)
-- UI for browsing/selecting Splice samples.
-- Where converted WAVs are staged before load.
+### Claude's Discretion
+- Import screen placement (new nav tab vs. action within Sounds/Device).
+- Sample naming / collision handling on `/sounds`.
+- Staging location for converted WAVs before load.
 </decisions>
 
 <canonical_refs>
 ## Canonical References
-- `.planning/phases/04-project-management/04-RESEARCH.md` — the EP-133 file protocol (FILE_PUT, paths, WAV handling under `/sounds`)
-- `AndroidApp/app/src/main/java/com/ep133/sampletool/domain/midi/SysExProtocol.kt` — multi-page FILE_PUT builders
-- `AndroidApp/app/src/main/java/com/ep133/sampletool/domain/midi/MIDIRepository.kt` — `putProjectArchive` / paged transfer dispatch
-- `AndroidApp/app/src/main/java/com/ep133/sampletool/domain/midi/ProjectBackupManager.kt` — file-load orchestration pattern
+- `.planning/phases/05-splice-sample-sync/05-RESEARCH.md` — feasibility verdict, EP-133 WAV format, MediaCodec conversion approach, FILE_PUT reuse, validation architecture
+- `.planning/phases/04-project-management/04-RESEARCH.md` — EP-133 file protocol, `/sounds` path, paged FILE_PUT
+- `AndroidApp/.../domain/midi/SysExProtocol.kt` — multi-page FILE_PUT builders
+- `AndroidApp/.../domain/midi/MIDIRepository.kt` — paged transfer dispatch (`putProjectArchive`)
+- `AndroidApp/.../domain/midi/ProjectBackupManager.kt` — file-load orchestration to mirror
+- `AndroidApp/.../ui/device/DeviceScreen.kt` — screen+ViewModel+SAF+progress+snackbar pattern
 </canonical_refs>
 
 <deferred>
-## Deferred until feasibility is known
-- Formal requirements (SPLICE-01..0N) — lock after research picks the access path.
+## Deferred
+- Desktop/Electron Splice-folder sync → ROADMAP Phase 999.2 backlog.
 - iOS.
+- On-device load verification → hardware UAT.
 </deferred>
 
 ---
 
-*Phase: 05-splice-sample-sync · Context captured 2026-06-20 (research-gated)*
+*Phase: 05-splice-sample-sync · scope locked 2026-06-20 (manual import; Splice API disqualified by ToS)*

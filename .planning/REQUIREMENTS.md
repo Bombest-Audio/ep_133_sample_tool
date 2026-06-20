@@ -33,6 +33,15 @@
 - [x] **PROJ-03**: Backup library shows all saved backups as a scrollable list with timestamps and file names
 - [x] **PROJ-04**: User can share any backup file via iOS Share Sheet or Android share intent (AirDrop, Files, etc.)
 
+### Sample Import (Android)
+
+> Phase 5. Reshaped from "Splice sync": no ToS-clean programmatic Splice path exists on Android (see 05-RESEARCH.md), so Phase 5 is user-driven file import. A true Splice-folder sync is backlogged to the desktop/Electron target.
+
+- [ ] **SAMPLE-01**: User can pick one or more audio files from phone storage via the Android file picker (SAF)
+- [ ] **SAMPLE-02**: Imported audio is converted to the EP-133's sample format (16-bit PCM WAV @ 46875 Hz, mono or stereo)
+- [ ] **SAMPLE-03**: Converted samples are loaded onto the connected EP-133 over the existing paged FILE_PUT stack (to /sounds)
+- [ ] **SAMPLE-04**: User sees an import screen with per-file progress and a clear success/failure result for each sample
+
 ### iOS Native UI
 
 - [ ] **IOS-01**: iOS app has a native SwiftUI Pads screen that triggers EP-133 sounds via CoreMIDI over USB
