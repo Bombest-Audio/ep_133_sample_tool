@@ -2,6 +2,7 @@ package com.ep133.sampletool.domain.midi
 
 import android.util.Log
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
@@ -107,13 +108,12 @@ class BackupManager(private val midi: MIDIRepository) {
             )
             midi.sendMidiDirect(portId, getFrame)
 
-            // Wait for file chunk response (simplified single-chunk model)
+            // Wait for file chunk response (simplified single-chunk model).
+            // Use first(): collect {} on a SharedFlow never completes, so the previous
+            // version always hit the timeout and returned null — every chunk was dropped
+            // and backups contained only metadata.json.
             val chunk = withTimeoutOrNull(3_000) {
-                var received: Pair<String, ByteArray>? = null
-                midi.fileChunks.collect { (path, data) ->
-                    received = path to data
-                }
-                received
+                midi.fileChunks.first()
             }
 
             if (chunk != null) {

@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -177,7 +178,10 @@ class SequencerEngine(private val midi: MIDIRepository) {
 
     // ── Internal loops ──────────────────────────────────
 
-    private suspend fun playLoop() {
+    private suspend fun playLoop() = coroutineScope {
+        // Launch note-off and clock-tick coroutines as structured children of this loop
+        // (not the engine-lifetime `scope`) so cancelling playJob in pause() also cancels
+        // them — otherwise stray MIDI clock (0xF8) keeps firing after the Stop (0xFC).
         val startTime = System.nanoTime()
         var stepCount = 0L
 
@@ -202,7 +206,7 @@ class SequencerEngine(private val midi: MIDIRepository) {
 
                 // Schedule note-off at 80% of step duration
                 val noteOffDelay = (stepDurationMs * 0.8).toLong()
-                scope.launch {
+                launch {
                     delay(noteOffDelay)
                     currentState.tracks.forEach { track ->
                         if (track.steps[step] > 0) {
@@ -213,7 +217,7 @@ class SequencerEngine(private val midi: MIDIRepository) {
 
                 // Send remaining 5 clock ticks spaced evenly across the step (D-22)
                 val clockIntervalMs = (stepDurationMs / 6.0).toLong().coerceAtLeast(1L)
-                scope.launch {
+                launch {
                     repeat(5) {
                         delay(clockIntervalMs * (it + 1))
                         midi.sendRawBytes(byteArrayOf(0xF8.toByte()))

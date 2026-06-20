@@ -42,9 +42,11 @@ class MIDIManager(
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-    private val openDevices = mutableMapOf<Int, MidiDevice>()
+    // All three are ConcurrentHashMap: openDevices is read from sendMidi()/openOrGetDevice()
+    // on the sequencer's background thread while device-callbacks mutate it on the main thread.
+    private val openDevices = java.util.concurrent.ConcurrentHashMap<Int, MidiDevice>()
     private val openInputPorts = java.util.concurrent.ConcurrentHashMap<String, MidiInputPort>()
-    private val openOutputPorts = mutableMapOf<String, MidiOutputPort>()
+    private val openOutputPorts = java.util.concurrent.ConcurrentHashMap<String, MidiOutputPort>()
 
     private val deviceCallback = object : MidiManager.DeviceCallback() {
         override fun onDeviceAdded(device: MidiDeviceInfo) {

@@ -77,6 +77,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private var pendingFileListCountDeferred: CompletableDeferred<Int>? = null
     private var fileListEntryCount: Int = 0
     private var currentDeviceId: Int = 0
+    @Volatile private var statsQueryInFlight = false
 
     // ── File protocol flows (for BackupManager) ──
     data class FileListEntry(val path: String, val nodeId: Int)
@@ -303,7 +304,19 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      */
     suspend fun queryDeviceStats(): Boolean {
         val portId = _deviceState.value.outputPortId ?: return false
+        // Guard against overlapping queries (e.g. rapid disconnect/reconnect). Two concurrent
+        // runs would race on the shared pending-deferred fields and could call complete() twice
+        // on the same CompletableDeferred — an IllegalStateException on the MIDI dispatch path.
+        if (statsQueryInFlight) return false
+        statsQueryInFlight = true
+        return try {
+            queryDeviceStatsInner(portId)
+        } finally {
+            statsQueryInFlight = false
+        }
+    }
 
+    private suspend fun queryDeviceStatsInner(portId: String): Boolean {
         // Step 1: GREET (firmware + device identity)
         val greetDeferred = CompletableDeferred<Map<String, String>>()
         pendingGreetDeferred = greetDeferred
@@ -329,7 +342,10 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             )
         }
 
-        // Step 3: FILE_LIST on /sounds (count samples)
+        // Step 3: FILE_LIST on /sounds (count samples).
+        // Reset the running count first: if a prior run timed out before STATUS_OK, the
+        // count was never cleared and would inflate this run's sampleCount.
+        fileListEntryCount = 0
         val fileListDeferred = CompletableDeferred<Int>()
         pendingFileListCountDeferred = fileListDeferred
         val listFrame = SysExProtocol.buildFileListFrame(currentDeviceId, "/sounds", requestId = 3)
