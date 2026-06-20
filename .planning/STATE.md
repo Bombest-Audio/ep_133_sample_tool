@@ -2,7 +2,7 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Phase 4 research complete — planning not started
+status: Phase 4 planned (4 plans, plan-check PASS) — ready to execute
 last_updated: "2026-06-19T00:00:00.000Z"
 progress:
   total_phases: 4
@@ -32,13 +32,15 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | 1 | MIDI Foundation | Complete (2026-03-28) |
 | 2 | Android Device Management | Complete (2026-03-30) |
 | 3 | iOS Native UI | Not started |
-| 4 | Project Management | Research complete (Android slice) — planning not started |
+| 4 | Project Management | Planned (Android slice, 4 plans) — ready to execute |
 
 ## Current Position
 
-Phase: 04 (project-management) — RESEARCH COMPLETE, scoped to Android only
-**Active artifact:** 04-CONTEXT.md (Android scope) + 04-RESEARCH.md (single-project SysEx backup = FEASIBLE)
-**Next step:** `/gsd:plan-phase 4` to produce PLAN.md files, then `/gsd:execute-phase 4`
+Phase: 04 (project-management) — PLANNED, scoped to Android only
+**Active artifacts:** 04-CONTEXT / 04-RESEARCH (FEASIBLE) / 04-VALIDATION / 04-PATTERNS / 4 PLAN.md files
+**Plans:** 04-01 (wave 0: test scaffold + FileProvider) → 04-02 (wave 1 GATE: multi-page GET/PUT) → 04-03 (wave 2: enumerate + ProjectBackupManager, hardware-gated) → 04-04 (wave 3: ProjectsScreen + library + share). Plan-check: PASS.
+**Hardware checkpoints (need physical EP-133):** FILE_LIST nodeId-vs-path (Open Q1); single-project restore round-trip (Open Q2) — plans 03/04 are autonomous:false for this reason.
+**Next step:** `/gsd:execute-phase 4`
 **Note:** iOS slice of Phase 4 deferred to a later phase. Out-of-band fixes landed in commit d42ffd5 (backup/sequencer/MIDI bug fixes) — not tracked as a GSD phase.
 
 ```
