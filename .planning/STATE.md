@@ -2,7 +2,7 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: "Phase 4 Android slice code-complete — plan 04-04 (Wave 3: ProjectsScreen + library + share) done; hardware UAT pending"
+status: "Phase 4 code-complete (hardware UAT pending). Phase 5 (Sample Import, Android) planned — plan-check PASS, ready to execute"
 last_updated: "2026-06-20T18:00:00.000Z"
 progress:
   total_phases: 4
@@ -34,6 +34,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | 2 | Android Device Management | Complete (2026-03-30) |
 | 3 | iOS Native UI | Not started |
 | 4 | Project Management | Code-complete (Android slice) — 4/4 plans; hardware UAT pending |
+| 5 | Sample Import (Android) | Planned — 4 plans, plan-check PASS; reshaped from "Splice sync" (no ToS-clean Splice path on Android) |
 
 ## Current Position
 
