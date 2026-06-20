@@ -114,7 +114,7 @@ Plans:
 | 1. MIDI Foundation | 3/1 | Complete   | 2026-03-28 |
 | 2. Android Device Management | 1/1 | Complete   | 2026-03-30 |
 | 3. iOS Native UI | 0/4 | Not started | — |
-| 4. Project Management | 3/4 | In progress (Android slice) | — |
+| 4. Project Management | 4/4 | Complete (Android slice) — hardware UAT pending | 2026-06-20 |
 
 ---
 *Roadmap created: 2026-03-28*

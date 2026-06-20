@@ -65,10 +65,37 @@ user-facing button is GATED on this hardware pass. Marked `// HARDWARE-GATE (Ope
 
 **Decision pending this pass:** enable the Wave 3 restore button (behind the restore-confirm
 AlertDialog) only after a clean backup→restore round-trip. Until verified, ship backup +
-library + share; keep restore behind the gate.
+library + share; keep restore behind the gate. **Enable mechanism (Wave 3):** flip
+`RESTORE_ENABLED` from `false` to `true` in `ui/projects/ProjectsScreen.kt` — that is the only
+change needed; the AlertDialog confirmation + `restoreProject` validation are already wired.
 
 **Fallback if it fails:** PUT framing may differ from GET (`iterPut` re-init step, capability args,
 or a different ack sequence). Re-examine `data/index.js uploadProjectArchive` and adjust
-`putProjectArchive` / `buildFilePut*Frame`; leave the restore button disabled until it passes.
+`putProjectArchive` / `buildFilePut*Frame`; leave `RESTORE_ENABLED = false` until it passes.
+
+**Status:** ☐ not verified
+
+---
+
+## UAT-4 — Projects browser, backup library, and share (Wave 3 — PROJ-01/03/04)
+
+**Assumption shipped (Wave 3):** the Projects tab renders the 9-slot browser with the teal active
+marker and a lightweight per-slot summary, the backup library lists `.tar` files newest-first with
+name + timestamp, and the share action launches the Android share sheet with a FileProvider
+`content://` URI (never `file://`). All UI is built and unit-asserted (`ProjectsViewModelTest`,
+`BackupLibraryTest`, `ShareIntentTest` GREEN); the device-facing and share-target behaviors below
+cannot be exercised without hardware + a real `Context`/FileProvider.
+
+**Steps:**
+1. Open the Projects tab → confirm 9 slots show **real device names** + the correct **active marker**
+   (validates UAT-1 addressing end-to-end through the UI; PROJ-01).
+2. Back up one slot → confirm progress shows, a `.tar` is written, and it appears in the library list
+   with name + formatted timestamp (PROJ-03).
+3. Tap Share on a library row → confirm the share sheet opens and the backup reaches
+   Files/Drive/AirDrop targets without a `FileUriExposedException` (PROJ-04; T-04-09).
+
+**Fallback if share fails (`FileUriExposedException` / no targets):** confirm the manifest
+`<provider>` authority `${applicationId}.fileprovider` and `res/xml/file_paths.xml` scope the
+`backups/` dir; `shareBackup` must use `FileProvider.getUriForFile` (not `Uri.fromFile`).
 
 **Status:** ☐ not verified

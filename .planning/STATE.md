@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: "Phase 4 in progress — plan 04-03 (Wave 2: enumerate + ProjectBackupManager) complete"
-last_updated: "2026-06-20T17:00:00.000Z"
+status: "Phase 4 Android slice code-complete — plan 04-04 (Wave 3: ProjectsScreen + library + share) done; hardware UAT pending"
+last_updated: "2026-06-20T18:00:00.000Z"
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 9
-  completed_plans: 8
-  percent: 89
+  completed_plans: 9
+  percent: 100
 ---
 
 # Project State
@@ -33,15 +33,15 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | 1 | MIDI Foundation | Complete (2026-03-28) |
 | 2 | Android Device Management | Complete (2026-03-30) |
 | 3 | iOS Native UI | Not started |
-| 4 | Project Management | In progress (Android slice) — 3/4 plans complete |
+| 4 | Project Management | Code-complete (Android slice) — 4/4 plans; hardware UAT pending |
 
 ## Current Position
 
-Phase: 04 (project-management) — IN PROGRESS, scoped to Android only
-**Active artifacts:** 04-CONTEXT / 04-RESEARCH (FEASIBLE) / 04-VALIDATION / 04-PATTERNS / 4 PLAN.md files / 04-01-SUMMARY / 04-02-SUMMARY / 04-03-SUMMARY / 04-HUMAN-UAT
-**Plans:** 04-01 ✅ (wave 0: test scaffold + FileProvider — DONE) → 04-02 ✅ (wave 1 GATE: multi-page GET/PUT — DONE) → 04-03 ✅ (wave 2: enumerate + ProjectBackupManager — DONE; resolveNodeId/listProjects/parseFileListEntries + ProjectBackupManager opaque backup/restore, ProjectProtocolTest/BackupLibraryTest GREEN; restore hardware-gated) → 04-04 (wave 3: ProjectsScreen + library + share). Plan-check: PASS.
-**Hardware checkpoints (need physical EP-133):** recorded in 04-HUMAN-UAT.md — UAT-1 FILE_LIST nodeId-vs-path (Open Q1), UAT-2 A3 response-body byte-offsets, UAT-3 single-project restore round-trip (Open Q2). All DEFERRED, NOT verified; restore button stays gated until UAT-3 passes. Plans 03/04 are autonomous:false for this reason.
-**Next step:** execute 04-04 (Wave 3 ProjectsScreen + backup library + FileProvider share).
+Phase: 04 (project-management) — CODE-COMPLETE (Android slice), hardware UAT pending
+**Active artifacts:** 04-CONTEXT / 04-RESEARCH (FEASIBLE) / 04-VALIDATION / 04-PATTERNS / 4 PLAN.md files / 04-01..04-SUMMARY / 04-HUMAN-UAT
+**Plans:** 04-01 ✅ (wave 0: test scaffold + FileProvider) → 04-02 ✅ (wave 1 GATE: multi-page GET/PUT) → 04-03 ✅ (wave 2: enumerate + ProjectBackupManager; restore hardware-gated) → 04-04 ✅ (wave 3: ProjectsScreen browser + backup library + FileProvider share + nav/MainActivity wiring; ProjectsViewModelTest/BackupLibraryTest/ShareIntentTest GREEN; :app:assembleDebug succeeds; restore behind RESTORE_ENABLED gate). Plan-check: PASS.
+**Hardware checkpoints (need physical EP-133):** recorded in 04-HUMAN-UAT.md — UAT-1 FILE_LIST nodeId-vs-path (Open Q1), UAT-2 A3 response-body byte-offsets, UAT-3 single-project restore round-trip (Open Q2), UAT-4 browser/backup/share end-to-end (PROJ-01/03/04). All DEFERRED, NOT verified; restore button stays gated (flip RESTORE_ENABLED in ProjectsScreen.kt) until UAT-3 passes.
+**Next step:** run the phase-gate hardware UAT (UAT-1..4) on a physical EP-133, then /gsd:verify-work for Phase 4.
 **Deferred:** pre-existing `MIDIManager.kt:159` MutableImplicitPendingIntent lint error blocks `:app:lintDebug` — see 04 deferred-items.md (not introduced by 04-01).
 **Note:** iOS slice of Phase 4 deferred to a later phase. Out-of-band fixes landed in commit d42ffd5 (backup/sequencer/MIDI bug fixes) — not tracked as a GSD phase.
 
@@ -66,6 +66,8 @@ Phase: 04 (project-management) — IN PROGRESS, scoped to Android only
 - [Phase 04-project-management]: FILE_LIST uses node-ID addressing (buildFileListByNodeFrame) with a one-line path-string fallback — node-list dispatch accumulates across SUCCESS_START on a deferred, resolves on STATUS_OK, separate from the Phase 2 /sounds path-string count
 - [Phase 04-project-management]: Project backup is an opaque .tar device blob — download, write, done; no ZIP re-archiving and never inspect the tar (contrast Phase 2's /sounds .pak)
 - [Phase 04-project-management]: restoreProject double-guards the destructive PUT — P(NN).tar filename regex + source-must-be-in-backups-dir canonical-path check (T-04-06/T-04-08), on top of the Wave 3 AlertDialog gate
+- [Phase 04-project-management]: ProjectsViewModel co-located in ProjectsScreen.kt (CLAUDE.md rule); MIDIRepository.listProjects() made `open` so the VM test fake returns canned 9-slot enumeration without the real SysEx cycle
+- [Phase 04-project-management]: restore disabled by a compile-time RESTORE_ENABLED=false const (Open Q2) — AlertDialog + restoreProject validation fully wired; flip one boolean after UAT-3. Project backup writes to app-specific storage (no SAF launcher, unlike DeviceScreen)
 
 ## Notes
 
