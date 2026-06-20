@@ -1,31 +1,27 @@
 package com.ep133.sampletool
 
+import com.ep133.sampletool.ui.projects.SHARE_MIME
 import org.junit.Ignore
 import org.junit.Test
 import org.junit.Assert.*
 
 /**
- * Wave 0 scaffold for the share intent construction (PROJ-04).
+ * Share intent construction (PROJ-04).
  *
- * Covers (when filled by Wave 3):
- *  - ShareCompat.IntentBuilder + FileProvider content:// URI + ACTION_SEND
+ * Asserts the actual [SHARE_MIME] constant the share builder feeds into
+ * `ShareCompat.IntentBuilder(...).setType(SHARE_MIME)` — an opaque octet-stream (T-04-09),
+ * never a typed/over-broad MIME.
  *
- * A real share-intent test needs a Context and a registered FileProvider; Robolectric
- * is not in the dependency set, so the intent path is @Ignore'd with the repo's
- * hardware/instrumented justification string. The executing placeholder asserts the
- * MIME constant the share builder will use.
- *
- * TODO(04-project-management-04): replace the MIME placeholder + un-Ignore once a
- * Robolectric/instrumented harness can construct the FileProvider share intent.
+ * A real share-intent test needs a Context and a registered FileProvider; Robolectric is not
+ * in the dependency set, so the FileProvider URI + ACTION_SEND path is @Ignore'd with the
+ * repo's hardware/instrumented justification string and validated on a device.
  */
 class ShareIntentTest {
 
     @Test
     fun shareMimeType_isOctetStream() {
-        // TODO(04-project-management-04): replace placeholder with real ShareCompat/FileProvider intent assertions
-        // Wave 3 builds ShareCompat.IntentBuilder(context).setType(SHARE_MIME).setStream(uri)...
-        val shareMime = "application/octet-stream"
-        assertEquals("application/octet-stream", shareMime)
+        // ProjectsScreen builds ShareCompat.IntentBuilder(context).setType(SHARE_MIME).setStream(uri)...
+        assertEquals("application/octet-stream", SHARE_MIME)
     }
 
     @Ignore("ShareCompat/FileProvider intent construction requires a real Context + registered FileProvider — Robolectric not in the dep set; validated on an instrumented/physical device")

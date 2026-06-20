@@ -636,7 +636,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * and maps each child entry to a [ProjectSlot] (marking the active slot). Returns an empty
      * list if no device is connected or the device does not respond.
      */
-    suspend fun listProjects(): List<ProjectSlot> {
+    open suspend fun listProjects(): List<ProjectSlot> {
         if (_deviceState.value.outputPortId == null) return emptyList()
         val projectsNode = resolveNodeId("/projects") ?: return emptyList()
 
