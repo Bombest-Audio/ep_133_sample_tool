@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: "Phase 4 code-complete (hardware UAT pending). Phase 5 (Sample Import, Android) planned — plan-check PASS, ready to execute"
-last_updated: "2026-06-20T18:00:00.000Z"
+status: Phase 4 code-complete (hardware UAT pending). Phase 5 (Sample Import, Android) planned — plan-check PASS, ready to execute
+last_updated: "2026-06-20T23:38:33.231Z"
 progress:
-  total_phases: 4
-  completed_phases: 2
-  total_plans: 9
-  completed_plans: 9
-  percent: 100
+  total_phases: 5
+  completed_phases: 3
+  total_plans: 10
+  completed_plans: 8
+  percent: 80
 ---
 
 # Project State
@@ -24,7 +24,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-28)
 
 **Core value:** A connected EP-133 user can do everything on their phone that they can do on their desktop — no laptop required.
-**Current focus:** Phase 04 — project-management (Android slice; research done, planning not started)
+**Current focus:** Phase 05 — splice-sample-sync
 
 ## Phases
 
@@ -38,7 +38,8 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 
 ## Current Position
 
-Phase: 04 (project-management) — CODE-COMPLETE (Android slice), hardware UAT pending
+Phase: 05 (splice-sample-sync) — EXECUTING
+Plan: 1 of 4
 **Active artifacts:** 04-CONTEXT / 04-RESEARCH (FEASIBLE) / 04-VALIDATION / 04-PATTERNS / 4 PLAN.md files / 04-01..04-SUMMARY / 04-HUMAN-UAT
 **Plans:** 04-01 ✅ (wave 0: test scaffold + FileProvider) → 04-02 ✅ (wave 1 GATE: multi-page GET/PUT) → 04-03 ✅ (wave 2: enumerate + ProjectBackupManager; restore hardware-gated) → 04-04 ✅ (wave 3: ProjectsScreen browser + backup library + FileProvider share + nav/MainActivity wiring; ProjectsViewModelTest/BackupLibraryTest/ShareIntentTest GREEN; :app:assembleDebug succeeds; restore behind RESTORE_ENABLED gate). Plan-check: PASS.
 **Hardware checkpoints (need physical EP-133):** recorded in 04-HUMAN-UAT.md — UAT-1 FILE_LIST nodeId-vs-path (Open Q1), UAT-2 A3 response-body byte-offsets, UAT-3 single-project restore round-trip (Open Q2), UAT-4 browser/backup/share end-to-end (PROJ-01/03/04). All DEFERRED, NOT verified; restore button stays gated (flip RESTORE_ENABLED in ProjectsScreen.kt) until UAT-3 passes.
