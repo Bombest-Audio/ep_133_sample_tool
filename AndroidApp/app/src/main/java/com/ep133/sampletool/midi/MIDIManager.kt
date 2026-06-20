@@ -156,10 +156,13 @@ class MIDIManager(
                 // asynchronously, so state must reflect "awaiting" while dialog is showing (D-19).
                 currentPermissionState = PermissionState.AWAITING
                 notifyDevicesChanged()
+                // Explicit Intent (setPackage) keeps the PendingIntent from being an
+                // implicit-mutable one — clears Lint MutableImplicitPendingIntent. FLAG_MUTABLE
+                // is still required so UsbManager can inject the granted-device extra.
                 val permissionIntent = PendingIntent.getBroadcast(
                     context,
                     0,
-                    Intent(ACTION_USB_PERMISSION),
+                    Intent(ACTION_USB_PERMISSION).apply { setPackage(context.packageName) },
                     PendingIntent.FLAG_MUTABLE
                 )
                 usbManager.requestPermission(device, permissionIntent)
