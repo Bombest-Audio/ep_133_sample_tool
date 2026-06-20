@@ -19,6 +19,7 @@ import android.media.AudioManager
 import com.ep133.sampletool.domain.midi.ChordPlayer
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.NativeSynth
+import com.ep133.sampletool.domain.midi.ProjectBackupManager
 import com.ep133.sampletool.domain.sequencer.SequencerEngine
 import com.ep133.sampletool.midi.MIDIManager
 import androidx.lifecycle.lifecycleScope
@@ -27,6 +28,7 @@ import com.ep133.sampletool.ui.beats.BeatsViewModel
 import com.ep133.sampletool.ui.chords.ChordsViewModel
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
+import com.ep133.sampletool.ui.projects.ProjectsViewModel
 import com.ep133.sampletool.ui.sounds.SoundsViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -69,6 +71,8 @@ class MainActivity : ComponentActivity() {
         val beatsViewModel = BeatsViewModel(sequencer, midiRepo)
         val soundsViewModel = SoundsViewModel(midiRepo)
         val chordsViewModel = ChordsViewModel(chordPlayer, midiRepo)
+        val projectBackupManager = ProjectBackupManager(midiRepo)
+        val projectsViewModel = ProjectsViewModel(midiRepo, projectBackupManager)
         val deviceViewModel = DeviceViewModel(midiRepo)
 
         // SAF launchers for backup/restore — MUST be registered before setContent (Activity lifecycle)
@@ -90,6 +94,7 @@ class MainActivity : ComponentActivity() {
                 beatsViewModel = beatsViewModel,
                 soundsViewModel = soundsViewModel,
                 chordsViewModel = chordsViewModel,
+                projectsViewModel = projectsViewModel,
                 deviceViewModel = deviceViewModel,
                 isConnected = deviceState.connected,
             )
