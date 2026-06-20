@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Phase 4 in progress — plan 04-02 (Wave 1 GATE: multi-page GET/PUT) complete
-last_updated: "2026-06-20T16:30:00.000Z"
+status: "Phase 4 in progress — plan 04-03 (Wave 2: enumerate + ProjectBackupManager) complete"
+last_updated: "2026-06-20T17:00:00.000Z"
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 9
-  completed_plans: 7
-  percent: 78
+  completed_plans: 8
+  percent: 89
 ---
 
 # Project State
@@ -33,20 +33,20 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | 1 | MIDI Foundation | Complete (2026-03-28) |
 | 2 | Android Device Management | Complete (2026-03-30) |
 | 3 | iOS Native UI | Not started |
-| 4 | Project Management | In progress (Android slice) — 2/4 plans complete |
+| 4 | Project Management | In progress (Android slice) — 3/4 plans complete |
 
 ## Current Position
 
 Phase: 04 (project-management) — IN PROGRESS, scoped to Android only
-**Active artifacts:** 04-CONTEXT / 04-RESEARCH (FEASIBLE) / 04-VALIDATION / 04-PATTERNS / 4 PLAN.md files / 04-01-SUMMARY / 04-02-SUMMARY
-**Plans:** 04-01 ✅ (wave 0: test scaffold + FileProvider — DONE) → 04-02 ✅ (wave 1 GATE: multi-page GET/PUT — DONE; paged INIT/DATA builders + dispatch state machine, ProjectProtocolTest/MultiChunkGetTest/SysExDispatchTest GREEN) → 04-03 (wave 2: enumerate + ProjectBackupManager, hardware-gated) → 04-04 (wave 3: ProjectsScreen + library + share). Plan-check: PASS.
-**Hardware checkpoints (need physical EP-133):** FILE_LIST nodeId-vs-path (Open Q1); single-project restore round-trip (Open Q2) — plans 03/04 are autonomous:false for this reason. NEW: A3 response-body byte-offset for parseGetInit/DataResponse (HARDWARE-VERIFY comments in SysExProtocol.kt) — confirm in Wave 2/3 UAT.
-**Next step:** execute 04-03 (Wave 2 enumerate + ProjectBackupManager).
+**Active artifacts:** 04-CONTEXT / 04-RESEARCH (FEASIBLE) / 04-VALIDATION / 04-PATTERNS / 4 PLAN.md files / 04-01-SUMMARY / 04-02-SUMMARY / 04-03-SUMMARY / 04-HUMAN-UAT
+**Plans:** 04-01 ✅ (wave 0: test scaffold + FileProvider — DONE) → 04-02 ✅ (wave 1 GATE: multi-page GET/PUT — DONE) → 04-03 ✅ (wave 2: enumerate + ProjectBackupManager — DONE; resolveNodeId/listProjects/parseFileListEntries + ProjectBackupManager opaque backup/restore, ProjectProtocolTest/BackupLibraryTest GREEN; restore hardware-gated) → 04-04 (wave 3: ProjectsScreen + library + share). Plan-check: PASS.
+**Hardware checkpoints (need physical EP-133):** recorded in 04-HUMAN-UAT.md — UAT-1 FILE_LIST nodeId-vs-path (Open Q1), UAT-2 A3 response-body byte-offsets, UAT-3 single-project restore round-trip (Open Q2). All DEFERRED, NOT verified; restore button stays gated until UAT-3 passes. Plans 03/04 are autonomous:false for this reason.
+**Next step:** execute 04-04 (Wave 3 ProjectsScreen + backup library + FileProvider share).
 **Deferred:** pre-existing `MIDIManager.kt:159` MutableImplicitPendingIntent lint error blocks `:app:lintDebug` — see 04 deferred-items.md (not introduced by 04-01).
 **Note:** iOS slice of Phase 4 deferred to a later phase. Out-of-band fixes landed in commit d42ffd5 (backup/sequencer/MIDI bug fixes) — not tracked as a GSD phase.
 
 ```
-[███████░░░] Phases 1–2 complete, Phase 4 — Wave 1 GATE done (2/4 plans)
+[████████░░] Phases 1–2 complete, Phase 4 — Wave 2 done (3/4 plans)
 ```
 
 ## Decisions Made
@@ -63,6 +63,9 @@ Phase: 04 (project-management) — IN PROGRESS, scoped to Android only
 - [Phase 02-android-device-management]: MIDI-dependent unit tests @Ignore — android.util.Log not available in JVM tests; validated via instrumented tests
 - [Phase 04-project-management]: Wave 0 VM test doubles renamed (ProjectsSpyMIDIPort/ProjectsFakeMIDIRepo) — private top-level decls collide with ChordsViewModelTest across the shared module test source set
 - [Phase 04-project-management]: FileProvider paths scoped to backups/ only (no root/external wildcard) per STRIDE threat register T-04-01/T-04-02
+- [Phase 04-project-management]: FILE_LIST uses node-ID addressing (buildFileListByNodeFrame) with a one-line path-string fallback — node-list dispatch accumulates across SUCCESS_START on a deferred, resolves on STATUS_OK, separate from the Phase 2 /sounds path-string count
+- [Phase 04-project-management]: Project backup is an opaque .tar device blob — download, write, done; no ZIP re-archiving and never inspect the tar (contrast Phase 2's /sounds .pak)
+- [Phase 04-project-management]: restoreProject double-guards the destructive PUT — P(NN).tar filename regex + source-must-be-in-backups-dir canonical-path check (T-04-06/T-04-08), on top of the Wave 3 AlertDialog gate
 
 ## Notes
 
