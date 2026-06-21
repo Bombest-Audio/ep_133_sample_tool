@@ -80,6 +80,7 @@ Plan: 4 of 4 complete
 | 260621-cu5 | Harden Android sample import — ASCII-safe/length-capped sanitizeName (prevents US_ASCII filename corruption) + Resampler input guards | 2026-06-21 | e13cd3c | [260621-cu5-harden-sample-import](./quick/260621-cu5-harden-sample-import/) |
 | 260621-czf | Serialize batch sample uploads via uploadMutex — fixes multi-pick imports failing with "transfer already in flight" | 2026-06-21 | 2808491 | [260621-czf-serialize-batch-uploads](./quick/260621-czf-serialize-batch-uploads/) |
 | 260621-lg4 | Rework /sounds upload to device's node-ID INIT protocol (ground truth from data/index.js) + AudioDecoder KEY_PCM_ENCODING fix + 20s/rate guards | 2026-06-21 | 9f907e8 | [260621-lg4-sounds-upload-protocol](./quick/260621-lg4-sounds-upload-protocol/) |
+| 260621-mju | Remove wrong A0/D0 note-60 pad special-case (hardware capture: A0 = note 37 ch 0, not 60 ch 6) — fixes A0 triggering a group C pad | 2026-06-21 | b4c6eb4 | [260621-mju-fix-pad0-mapping](./quick/260621-mju-fix-pad0-mapping/) |
 
 ## Notes
 
