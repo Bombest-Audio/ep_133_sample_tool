@@ -78,6 +78,7 @@ Plan: 4 of 4 complete
 |---|-------------|------|--------|-----------|
 | 260620-tng | Fix Codex adversarial-review findings in Phase 5 sample import (path-string /sounds PUT addressing + fail-closed on no-ack) | 2026-06-21 | 7a5c22b | [260620-tng-codex-import-fixes](./quick/260620-tng-codex-import-fixes/) |
 | 260621-cu5 | Harden Android sample import — ASCII-safe/length-capped sanitizeName (prevents US_ASCII filename corruption) + Resampler input guards | 2026-06-21 | e13cd3c | [260621-cu5-harden-sample-import](./quick/260621-cu5-harden-sample-import/) |
+| 260621-czf | Serialize batch sample uploads via uploadMutex — fixes multi-pick imports failing with "transfer already in flight" | 2026-06-21 | 2808491 | [260621-czf-serialize-batch-uploads](./quick/260621-czf-serialize-batch-uploads/) |
 
 ## Notes
 
