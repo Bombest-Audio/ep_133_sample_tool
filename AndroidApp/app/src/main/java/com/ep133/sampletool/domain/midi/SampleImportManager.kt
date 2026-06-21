@@ -10,6 +10,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 private const val TAG = "EP133APP"
@@ -45,12 +47,24 @@ sealed class SampleImportProgress {
  * - [importSampleBytes]: testability seam — accepts pre-read WAV bytes (no URI, no decode),
  *   used by [SampleImportViewModelTest] to exercise the state-machine without SAF/hardware.
  *
+ * Concurrency: device uploads are serialized via [uploadMutex]. Concurrent batch imports
+ * (e.g. N files launched in parallel from [onFilesPicked]) queue at the device-transfer
+ * step rather than colliding with [MIDIRepository]'s single-in-flight-transfer guard.
+ * Decode/convert still overlaps across files for throughput — only the [MIDIRepository.putSampleFile]
+ * call is held under the mutex.
+ *
  * Security (T-05-03):
  * - T-05-03-02: name is sanitized to a safe basename + ".wav" before any device write.
  * - T-05-03-03: converted size is pre-flighted against available /sounds storage.
  * - T-05-03-04: [importSample] reads bytes inside the caller's picker-callback grant (Landmine 7).
  */
 class SampleImportManager(private val midi: MIDIRepository) {
+
+    /**
+     * Serializes device-upload calls so concurrent batch imports queue instead of
+     * colliding with [MIDIRepository]'s single-in-flight-transfer guard.
+     */
+    private val uploadMutex = Mutex()
 
     /**
      * Import a sample from a SAF content:// URI.
@@ -95,7 +109,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
         }
 
         val ok = try {
-            midi.putSampleFile(safeName, wavBytes)
+            uploadMutex.withLock { midi.putSampleFile(safeName, wavBytes) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -147,7 +161,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
         }
 
         val ok = try {
-            midi.putSampleFile(safeName, wavBytes)
+            uploadMutex.withLock { midi.putSampleFile(safeName, wavBytes) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
