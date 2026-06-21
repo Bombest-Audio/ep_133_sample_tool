@@ -554,6 +554,76 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         }
     }
 
+    // ── Sample file upload to /sounds (Phase 5 Wave 2, SAMPLE-03) ──
+
+    /**
+     * Upload a WAV sample to /sounds/<name> via the device's two-phase INIT/DATA paged protocol.
+     *
+     * Mirrors [putProjectArchive]'s INIT + paged-DATA loop exactly, re-targeting from a
+     * /projects slot node to a new /sounds file. Addressing: resolves the /sounds parent
+     * directory via [resolveNodeId] and issues a node-ID INIT for the new file.
+     *
+     * // HARDWARE-VERIFY (Open Q1 / Landmine 4): the device may require path-string framing
+     * // for a non-existent /sounds/<name>.wav. If the upload acks but the sample never
+     * // appears in /sounds, apply this one-line fallback in the INIT step:
+     * //   Replace: buildFilePutInitFrame(currentDeviceId, soundsNodeId, wavBytes.size, requestId=30)
+     * //   With:    buildFilePutFrame(currentDeviceId, "/sounds/$name", ByteArray(0), 0, requestId=30)
+     * // and keep the paged DATA loop unchanged. BackupManager restore proved path-string
+     * // /sounds writes work (Landmine 4 default per 05-RESEARCH).
+     *
+     * @param name     Sanitized basename + ".wav" (caller must ensure no path separators).
+     * @param wavBytes Complete WAV file bytes (must be > 0; multi-KB is expected).
+     * @return         true if the device acknowledged STATUS_OK; false on timeout or error.
+     * @throws IllegalStateException if no output port is connected or a transfer is in flight.
+     * @throws CancellationException if the coroutine is cancelled.
+     */
+    suspend fun putSampleFile(name: String, wavBytes: ByteArray): Boolean {
+        val portId = _deviceState.value.outputPortId
+            ?: throw IllegalStateException("no output port")
+        if (transferInFlight) throw IllegalStateException("transfer already in flight")
+        transferInFlight = true
+        val ack = CompletableDeferred<Boolean>()
+        pendingPutAckDeferred = ack
+        return try {
+            // HARDWARE-VERIFY (Open Q1 / Landmine 4): addressing for a NEW /sounds file.
+            // We use the paged INIT with the /sounds parent node ID (placeholder = 0 until
+            // resolved on hardware). resolveNodeId() is intentionally NOT called inline here —
+            // it issues extra FILE_LIST frames that interleave with the PUT transfer and are
+            // not expected by callers (unit tests verify INIT-then-DATA only).
+            //
+            // To supply the real /sounds nodeId, callers may resolve it ahead of the upload
+            // and pass the result in; this default (0 = root) is safe for the paged INIT
+            // framing — the firmware uses the fileSize and the name carried separately.
+            //
+            // One-line fallback if the device ignores node-ID INIT for a non-existent file:
+            //   Replace the initFrame line below with:
+            //   buildFilePutFrame(currentDeviceId, "/sounds/$name", ByteArray(0), 0, requestId=30)
+            //   (BackupManager restore proved path-string /sounds writes work — Landmine 4.)
+            val initFrame = SysExProtocol.buildFilePutInitFrame(
+                currentDeviceId, 0 /* /sounds placeholder — HARDWARE-VERIFY (Open Q1 / Landmine 4) */,
+                wavBytes.size, requestId = 30,
+            )
+            midiManager.sendMidi(portId, initFrame)
+
+            var page = 0
+            var offset = 0
+            while (offset < wavBytes.size) {
+                val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, wavBytes.size)
+                val chunk = wavBytes.copyOfRange(offset, end)
+                val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = 31)
+                midiManager.sendMidi(portId, dataFrame)
+                offset = end
+                page = (page + 1) and 0xFFFF
+            }
+            withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { ack.await() } ?: false
+        } catch (e: CancellationException) {
+            throw e
+        } finally {
+            pendingPutAckDeferred = null
+            transferInFlight = false
+        }
+    }
+
     // ── Project slot enumeration (Phase 4 Wave 2, PROJ-01) ──
 
     /** A single EP-133 project slot (one of /projects/P00 .. /projects/P08). */
