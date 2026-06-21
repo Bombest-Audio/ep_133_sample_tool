@@ -108,12 +108,9 @@ class SampleImportManager(private val midi: MIDIRepository) {
             emit(SampleImportProgress.Progress(1, 1))
             emit(SampleImportProgress.Done(safeName))
         } else {
-            // Frames were sent but no STATUS_OK received (timeout). Treat as done:
-            // the EP-133 may not ack new-file creates reliably without hardware UAT
-            // (UAT-SOUNDS-PUT). If the sample does not appear on the device, apply the
-            // Landmine 4 path-string fallback documented in MIDIRepository.putSampleFile.
-            emit(SampleImportProgress.Progress(1, 1))
-            emit(SampleImportProgress.Done(safeName))
+            emit(SampleImportProgress.Error(
+                "Upload not confirmed by EP-133 (no STATUS_OK) — reconnect and retry $safeName"
+            ))
         }
     }
 
@@ -159,10 +156,14 @@ class SampleImportManager(private val midi: MIDIRepository) {
             return@flow
         }
 
-        // Treat both true (ack) and false (timeout/no ack) as Done when no exception was thrown.
-        // The frames were sent; hardware UAT (UAT-SOUNDS-PUT) verifies the sample appears.
-        emit(SampleImportProgress.Progress(1, 1))
-        emit(SampleImportProgress.Done(safeName))
+        if (ok) {
+            emit(SampleImportProgress.Progress(1, 1))
+            emit(SampleImportProgress.Done(safeName))
+        } else {
+            emit(SampleImportProgress.Error(
+                "Upload not confirmed by EP-133 (no STATUS_OK) — reconnect and retry $safeName"
+            ))
+        }
     }
 
     /**
