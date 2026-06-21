@@ -2,22 +2,22 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Phase 4 code-complete (hardware UAT pending). Phase 5 (Sample Import, Android) planned — plan-check PASS, ready to execute
-last_updated: "2026-06-20T23:38:33.231Z"
+status: Phase 05 complete
+last_updated: "2026-06-21T03:51:00.205Z"
 progress:
   total_phases: 5
-  completed_phases: 3
-  total_plans: 10
-  completed_plans: 8
-  percent: 80
+  completed_phases: 5
+  total_plans: 14
+  completed_plans: 14
+  percent: 100
 ---
 
 # Project State
 
 **Project:** EP-133 Sample Tool — Mobile
 **Milestone:** M1 — Native Mobile Apps
-**Phase:** 4
-**Last updated:** 2026-06-19
+**Phase:** 5
+**Last updated:** 2026-06-21
 
 ## Project Reference
 
@@ -34,22 +34,21 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | 2 | Android Device Management | Complete (2026-03-30) |
 | 3 | iOS Native UI | Not started |
 | 4 | Project Management | Code-complete (Android slice) — 4/4 plans; hardware UAT pending |
-| 5 | Sample Import (Android) | Planned — 4 plans, plan-check PASS; reshaped from "Splice sync" (no ToS-clean Splice path on Android) |
+| 5 | Sample Import (Android) | Code-complete (Android slice) — 4/4 plans; SAMPLE-01..04 verified; hardware UAT pending |
 
 ## Current Position
 
-Phase: 05 (splice-sample-sync) — EXECUTING
-Plan: 1 of 4
-**Active artifacts:** 04-CONTEXT / 04-RESEARCH (FEASIBLE) / 04-VALIDATION / 04-PATTERNS / 4 PLAN.md files / 04-01..04-SUMMARY / 04-HUMAN-UAT
-**Plans:** 04-01 ✅ (wave 0: test scaffold + FileProvider) → 04-02 ✅ (wave 1 GATE: multi-page GET/PUT) → 04-03 ✅ (wave 2: enumerate + ProjectBackupManager; restore hardware-gated) → 04-04 ✅ (wave 3: ProjectsScreen browser + backup library + FileProvider share + nav/MainActivity wiring; ProjectsViewModelTest/BackupLibraryTest/ShareIntentTest GREEN; :app:assembleDebug succeeds; restore behind RESTORE_ENABLED gate). Plan-check: PASS.
-**Hardware checkpoints (need physical EP-133):** recorded in 04-HUMAN-UAT.md — UAT-1 FILE_LIST nodeId-vs-path (Open Q1), UAT-2 A3 response-body byte-offsets, UAT-3 single-project restore round-trip (Open Q2), UAT-4 browser/backup/share end-to-end (PROJ-01/03/04). All DEFERRED, NOT verified; restore button stays gated (flip RESTORE_ENABLED in ProjectsScreen.kt) until UAT-3 passes.
-**Verification:** 04-VERIFICATION.md = passed-with-deferrals. Independently confirmed: `:app:testDebugUnitTest` green, `:app:assembleDebug` SUCCESS, `:app:lintDebug` SUCCESS. PROJ-01..04 mapped to real code + tests; deferred set correctly limited to device-only behaviors.
-**Next step:** run the phase-gate hardware UAT (UAT-1..4) on a physical EP-133, then /gsd:verify-work for Phase 4.
-**Resolved:** the pre-existing `MIDIManager.kt:159` MutableImplicitPendingIntent lint error (deferred since Phase 2) was fixed in commit 5b8f81c — `:app:lintDebug` is now green.
-**Note:** iOS slice of Phase 4 deferred to a later phase. Out-of-band fixes landed in commit d42ffd5 (backup/sequencer/MIDI bug fixes) — not tracked as a GSD phase.
+Phase: 05 — COMPLETE (Android slice; hardware UAT pending)
+Plan: 4 of 4 complete
+**Active artifacts:** 05-CONTEXT / 05-RESEARCH / 05-VALIDATION / 05-PATTERNS / 4 PLAN.md files / 05-01..04-SUMMARY / 05-HUMAN-UAT / 05-VERIFICATION
+**Plans:** 05-01 ✅ (wave 0: RED test scaffold — WavEncoder/Resampler/SampleImport/SampleImportViewModel) → 05-02 ✅ (wave 1: pure WavEncoder @ 46875/s16 + Resampler no-op-at-rate/no-upsample, GREEN) → 05-03 ✅ (wave 2: AudioDecoder MediaCodec + MIDIRepository.putSampleFile additive paged /sounds PUT + SampleImportManager; Phase 4 code intact) → 05-04 ✅ (wave 3: SampleImportScreen + ViewModel + SAF OpenMultipleDocuments + Import nav/MainActivity wiring). Full unit suite GREEN (22 test classes, 0 failures), :app:assembleDebug SUCCESS.
+**Hardware checkpoints (need physical EP-133 + USB-host Android):** recorded in 05-HUMAN-UAT.md — UAT-DECODE (MediaCodec decode), UAT-SOUNDS-PUT (new /sounds file addressing: node-ID vs path string, Open Q1/Landmine 4), UAT-PITCH (46875 Hz conversion pitch correctness), UAT-IMPORT-UI (end-to-end import through the UI). All DEFERRED, NOT verified; documented with assumptions + fallbacks.
+**Verification:** 05-VERIFICATION.md = passed (4/4 SAMPLE-01..04 verified code-complete), status human_needed for hardware UAT. Independently confirmed: `:app:testDebugUnitTest` green, `:app:assembleDebug` SUCCESS. Non-blocking warning: SampleImportManager treats PUT-no-ack (ok=false) as Done — intentional, resolved by UAT-SOUNDS-PUT.
+**Execution note:** Wave 2's first worktree attempt forked from a stale pre-Phase-4 base and regressed Phase 4 (MIDIRepository/SysExProtocol deletions); it was discarded and re-run in sequential mode, yielding additive-only changes (MIDIRepository +70, 0 deletions).
+**Next step:** run the hardware UAT (UAT-DECODE/SOUNDS-PUT/PITCH/IMPORT-UI) on a physical EP-133, then /gsd:verify-work for Phase 5.
 
 ```
-[████████░░] Phases 1–2 complete, Phase 4 — Wave 2 done (3/4 plans)
+[██████████] Phases 1–2, 4, 5 complete (Android); Phase 3 (iOS) not started
 ```
 
 ## Decisions Made
