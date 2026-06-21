@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: Phase 05 complete
-last_updated: "2026-06-21T03:51:00.205Z"
+last_updated: "2026-06-21T04:30:00.000Z"
 progress:
   total_phases: 5
   completed_phases: 5
@@ -43,7 +43,8 @@ Plan: 4 of 4 complete
 **Active artifacts:** 05-CONTEXT / 05-RESEARCH / 05-VALIDATION / 05-PATTERNS / 4 PLAN.md files / 05-01..04-SUMMARY / 05-HUMAN-UAT / 05-VERIFICATION
 **Plans:** 05-01 ✅ (wave 0: RED test scaffold — WavEncoder/Resampler/SampleImport/SampleImportViewModel) → 05-02 ✅ (wave 1: pure WavEncoder @ 46875/s16 + Resampler no-op-at-rate/no-upsample, GREEN) → 05-03 ✅ (wave 2: AudioDecoder MediaCodec + MIDIRepository.putSampleFile additive paged /sounds PUT + SampleImportManager; Phase 4 code intact) → 05-04 ✅ (wave 3: SampleImportScreen + ViewModel + SAF OpenMultipleDocuments + Import nav/MainActivity wiring). Full unit suite GREEN (22 test classes, 0 failures), :app:assembleDebug SUCCESS.
 **Hardware checkpoints (need physical EP-133 + USB-host Android):** recorded in 05-HUMAN-UAT.md — UAT-DECODE (MediaCodec decode), UAT-SOUNDS-PUT (new /sounds file addressing: node-ID vs path string, Open Q1/Landmine 4), UAT-PITCH (46875 Hz conversion pitch correctness), UAT-IMPORT-UI (end-to-end import through the UI). All DEFERRED, NOT verified; documented with assumptions + fallbacks.
-**Verification:** 05-VERIFICATION.md = passed (4/4 SAMPLE-01..04 verified code-complete), status human_needed for hardware UAT. Independently confirmed: `:app:testDebugUnitTest` green, `:app:assembleDebug` SUCCESS. Non-blocking warning: SampleImportManager treats PUT-no-ack (ok=false) as Done — intentional, resolved by UAT-SOUNDS-PUT.
+**Verification:** 05-VERIFICATION.md = passed (4/4 SAMPLE-01..04 verified code-complete), status human_needed for hardware UAT. Independently confirmed: `:app:testDebugUnitTest` green, `:app:assembleDebug` SUCCESS.
+**Codex adversarial-review fixes (quick task 260620-tng):** Two correctness findings fixed post-verification. (1) `putSampleFile` now uses path-string framing — `buildFilePutFrame(deviceId, "/sounds/$name", chunk, chunkIndex)` on every chunk so the destination name is actually transmitted (was a name-less `buildFilePutInitFrame(nodeId=0)` that could never create `/sounds/<name>`); mirrors BackupManager's proven /sounds write. (2) `SampleImportManager` now fails closed — emits Error on PUT no-ack (ok=false) instead of Done. Changes additive/local; Phase 4 + SysExProtocol byte-for-byte intact. Full suite still green.
 **Execution note:** Wave 2's first worktree attempt forked from a stale pre-Phase-4 base and regressed Phase 4 (MIDIRepository/SysExProtocol deletions); it was discarded and re-run in sequential mode, yielding additive-only changes (MIDIRepository +70, 0 deletions).
 **Next step:** run the hardware UAT (UAT-DECODE/SOUNDS-PUT/PITCH/IMPORT-UI) on a physical EP-133, then /gsd:verify-work for Phase 5.
 
@@ -70,6 +71,12 @@ Plan: 4 of 4 complete
 - [Phase 04-project-management]: restoreProject double-guards the destructive PUT — P(NN).tar filename regex + source-must-be-in-backups-dir canonical-path check (T-04-06/T-04-08), on top of the Wave 3 AlertDialog gate
 - [Phase 04-project-management]: ProjectsViewModel co-located in ProjectsScreen.kt (CLAUDE.md rule); MIDIRepository.listProjects() made `open` so the VM test fake returns canned 9-slot enumeration without the real SysEx cycle
 - [Phase 04-project-management]: restore disabled by a compile-time RESTORE_ENABLED=false const (Open Q2) — AlertDialog + restoreProject validation fully wired; flip one boolean after UAT-3. Project backup writes to app-specific storage (no SAF launcher, unlike DeviceScreen)
+
+## Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260620-tng | Fix Codex adversarial-review findings in Phase 5 sample import (path-string /sounds PUT addressing + fail-closed on no-ack) | 2026-06-21 | 7a5c22b | [260620-tng-codex-import-fixes](./quick/260620-tng-codex-import-fixes/) |
 
 ## Notes
 
