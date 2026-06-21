@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.platform.LocalContext
 import com.ep133.sampletool.SampleManagerActivity
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.LibraryMusic
@@ -52,6 +53,8 @@ import com.ep133.sampletool.ui.projects.ProjectsViewModel
 import com.ep133.sampletool.ui.sounds.SoundsScreen
 import com.ep133.sampletool.ui.sounds.SoundsViewModel
 import com.ep133.sampletool.ui.theme.EP133Theme
+import com.ep133.sampletool.ui.`import`.SampleImportScreen
+import com.ep133.sampletool.ui.`import`.SampleImportViewModel
 
 private enum class NavRoute(
     val route: String,
@@ -64,6 +67,7 @@ private enum class NavRoute(
     CHORDS("chords", "CHORDS", Icons.Default.MusicNote),
     PROJECTS("projects", "PROJECTS", Icons.Default.FolderOpen),
     DEVICE("device", "DEVICE", Icons.Default.Usb),
+    IMPORT("import", "IMPORT", Icons.Default.FileUpload),
 }
 
 @Composable
@@ -74,6 +78,7 @@ fun EP133App(
     chordsViewModel: ChordsViewModel,
     projectsViewModel: ProjectsViewModel,
     deviceViewModel: DeviceViewModel,
+    sampleImportViewModel: SampleImportViewModel,
     isConnected: Boolean = false,
 ) {
     EP133Theme {
@@ -164,6 +169,9 @@ fun EP133App(
                         viewModel = deviceViewModel,
                         onNavigateToWebView = { SampleManagerActivity.launch(context) },
                     )
+                }
+                composable(NavRoute.IMPORT.route) {
+                    SampleImportScreen(sampleImportViewModel)
                 }
             }
         }
