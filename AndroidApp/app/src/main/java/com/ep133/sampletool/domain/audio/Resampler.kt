@@ -47,6 +47,7 @@ object Resampler {
      * @param dstRate   Target sample rate in Hz (default 46875 — the device rate).
      * @param channels  Number of audio channels: 1 (mono) or 2 (stereo).
      * @return          Resampled samples at [dstRate], interleaved for stereo.
+     * @throws IllegalArgumentException if [channels] < 1, [srcRate] <= 0, or [dstRate] <= 0.
      */
     fun toRate(
         pcm: ShortArray,
@@ -54,6 +55,11 @@ object Resampler {
         dstRate: Int = DEVICE_SAMPLE_RATE,
         channels: Int = 1
     ): ShortArray {
+        // Input guards — prevent ArithmeticException (div-by-zero on channels or rates).
+        require(channels >= 1) { "channels must be >= 1, was $channels" }
+        require(srcRate > 0) { "srcRate must be > 0, was $srcRate" }
+        require(dstRate > 0) { "dstRate must be > 0, was $dstRate" }
+
         // Fast-path: no-op at the device rate (Landmine 2 — no resample artifact)
         if (srcRate == dstRate) return pcm
 

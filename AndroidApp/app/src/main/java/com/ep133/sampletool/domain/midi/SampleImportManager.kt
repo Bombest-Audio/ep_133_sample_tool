@@ -197,23 +197,61 @@ class SampleImportManager(private val midi: MIDIRepository) {
         }
 
     /**
-     * Sanitize [rawName] to a safe basename + ".wav" for /sounds.
+     * Sanitize [rawName] to a device-safe basename + ".wav" for /sounds.
      *
-     * Rejects any name containing "/", "..", or control characters (V5 / T-05-03-02
-     * path-traversal mitigation). Strips the extension and appends ".wav".
-     * Returns null if the name is invalid after stripping.
+     * Produces a pure-ASCII basename safe for `SysExProtocol.buildFilePutFrame`, which
+     * encodes the destination path with `Charsets.US_ASCII`. Non-ASCII characters (e.g.
+     * accented letters, emoji) would otherwise be lossily mangled into `?` bytes, corrupting
+     * the on-device `/sounds/<name>` path (T-05-03-02 path-traversal + encoding mitigation).
+     *
+     * Steps:
+     * 1. Extract the basename: strips any leading path components (`/` or `\` separated)
+     *    then drops the file extension.
+     * 2. Replace every character NOT in `[A-Za-z0-9 _-]` with `_` — makes the result pure
+     *    ASCII and losslessly encodable. This subsumes the old `/`, `\`, `..`, control-char
+     *    rejection; those characters all become `_`.
+     * 3. Collapse runs of whitespace to a single space, then `trim()` leading/trailing
+     *    whitespace and trim leading/trailing `.`, `_`, `-` for a clean device name.
+     * 4. Truncate the basename to [MAX_BASENAME_LEN] characters, then re-trim trailing
+     *    `_`, `-`, or space that may be exposed at the cut point.
+     * 5. Return `null` if the result is empty (caller emits "Invalid sample name").
+     * 6. Return `"$base.wav"`.
+     *
+     * Guaranteed: `sanitizeName("kick.wav") == "kick.wav"`, same for `"snare.wav"` and
+     * `"hihat.wav"` (regression contract for existing tests).
+     *
+     * @param rawName Original filename as received from the SAF picker or caller.
+     * @return        Sanitized `"<basename>.wav"` or `null` if no safe name can be derived.
      */
     fun sanitizeName(rawName: String): String? {
-        // Reject traversal vectors: slash, backslash, double-dot, or control chars.
-        if (rawName.contains('/') ||
-            rawName.contains('\\') ||
-            rawName.contains("..") ||
-            rawName.any { it.code < 32 }
-        ) return null
+        // Step 1: extract the basename (strip path components, then drop extension).
+        val withoutPath = rawName.substringAfterLast('/').substringAfterLast('\\')
+        val stem = withoutPath.substringBeforeLast('.')
 
-        // Strip extension (if any) and append .wav.
-        val base = rawName.substringBeforeLast('.').ifEmpty { return null }
-        return "$base.wav"
+        // Step 2: replace every character outside [A-Za-z0-9 _-] with '_'.
+        val replaced = stem.replace(Regex("[^A-Za-z0-9 _\\-]"), "_")
+
+        // Step 3: collapse whitespace runs, trim leading/trailing whitespace and punctuation.
+        val collapsed = replaced.replace(Regex("\\s+"), " ").trim()
+        val trimmed = collapsed.trim('.', '_', '-').trim()
+
+        // Step 4: cap length, then re-trim any punctuation exposed at the cut point.
+        val capped = if (trimmed.length > MAX_BASENAME_LEN) {
+            trimmed.substring(0, MAX_BASENAME_LEN).trimEnd('_', '-', ' ')
+        } else {
+            trimmed
+        }
+
+        // Step 5: reject empty result.
+        if (capped.isEmpty()) return null
+
+        // Step 6: append device extension.
+        return "$capped.wav"
+    }
+
+    companion object {
+        /** Maximum device-safe basename length (excludes the ".wav" extension). */
+        const val MAX_BASENAME_LEN = 32
     }
 
     /**

@@ -80,4 +80,23 @@ class ResamplerTest {
             result.size < input.size,
         )
     }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Input guard tests — channels == 0, srcRate == 0, dstRate == 0
+    // ──────────────────────────────────────────────────────────────────────────
+
+    @Test(expected = IllegalArgumentException::class)
+    fun throws_whenChannelsIsZero() {
+        Resampler.toRate(shortArrayOf(1, 2, 3, 4), srcRate = 44100, dstRate = 46875, channels = 0)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun throws_whenSrcRateIsZero() {
+        Resampler.toRate(shortArrayOf(1, 2), srcRate = 0, dstRate = 46875, channels = 1)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun throws_whenDstRateIsZero() {
+        Resampler.toRate(shortArrayOf(1, 2), srcRate = 44100, dstRate = 0, channels = 1)
+    }
 }
