@@ -3,6 +3,7 @@ package com.ep133.sampletool.domain.midi
 import android.util.Log
 import com.ep133.sampletool.domain.model.DeviceState
 import com.ep133.sampletool.domain.model.MidiPort
+import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.domain.model.PermissionState
 import com.ep133.sampletool.domain.model.Scale
 import com.ep133.sampletool.midi.MIDIManager
@@ -21,6 +22,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
 
 /**
  * High-level MIDI interface for the EP-133.
@@ -95,6 +97,25 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     // accumulated body to a CompletableDeferred keyed by nodeListInFlight.
     private var pendingNodeListDeferred: CompletableDeferred<ByteArray>? = null
     private val nodeListBuffer = java.io.ByteArrayOutputStream(512)
+
+    // ── Metadata JSON round-trip state (Step 1 — active-group sync) ──
+    // The nodeId-form METADATA GET response streams pages of JSON fragments; we accumulate
+    // them into a StringBuilder and complete the deferred on the terminator page.
+    // METADATA SET posts a single frame and awaits an ack on the matching response.
+    // FILE_INFO (getNode) completes a single-shot deferred with the parsed NodeInfo.
+    //
+    // Branch guard: metadataJsonInFlight is true while getMetadataJson/setMetadata owns the
+    // METADATA dispatcher slot. When false, incoming METADATA responses fall through to the
+    // legacy greet-style parse used by queryProjectsActiveNode (Phase-4 storage queries).
+    @Volatile private var metadataJsonInFlight = false
+    private var pendingMetadataJsonDeferred: CompletableDeferred<String>? = null
+    private val metadataJsonBuffer = StringBuilder(256)
+    private var metadataJsonExpectedPage = 0
+
+    @Volatile private var metadataSetInFlight = false
+    private var pendingMetadataSetAckDeferred: CompletableDeferred<Boolean>? = null
+
+    private var pendingNodeInfoDeferred: CompletableDeferred<SysExProtocol.NodeInfo>? = null
 
     // ── File protocol flows (for BackupManager) ──
     data class FileListEntry(val path: String, val nodeId: Int)
@@ -254,10 +275,65 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private fun dispatchFileResponse(fileCmd: Int, payload: ByteArray) {
         when (fileCmd) {
             SysExProtocol.TE_SYSEX_FILE_METADATA -> {
-                val parsed = SysExProtocol.parseGreetResponse(payload)  // same key:value format
-                Log.d("EP133APP", "FILE_METADATA response: $parsed")
-                pendingMetadataDeferred?.complete(parsed)
-                pendingMetadataDeferred = null
+                // HW-VERIFY-3 raw-byte log (Task 3 — greppable for live device capture)
+                val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+                Log.d("EP133APP", "MIDI META: inbound METADATA payload[${ payload.size}] $hexDump")
+
+                when {
+                    metadataJsonInFlight -> {
+                        // nodeId-form METADATA GET: accumulate JSON pages until terminator.
+                        // payload here is the 7-bit-packed body after stripping [TE_SYSEX_FILE, METADATA].
+                        // The dispatcher unpacks in dispatchSysEx → filePayload already unpacked? No —
+                        // filePayload is the raw packed slice; we unpack here to recover the page header + JSON.
+                        val unpacked = SysExProtocol.unpack7bit(payload)
+                        if (SysExProtocol.isMetadataTerminator(unpacked)) {
+                            // Final page — may still carry a fragment before the NUL.
+                            if (unpacked.size > 2) {
+                                try {
+                                    val (_, fragment) = SysExProtocol.parseMetadataPage(unpacked)
+                                    metadataJsonBuffer.append(fragment)
+                                } catch (_: Exception) { /* ignore malformed fragment on terminator */ }
+                            }
+                            val accumulated = metadataJsonBuffer.toString()
+                            Log.d("EP133APP", "MIDI META: METADATA GET complete, accumulated JSON: $accumulated")
+                            pendingMetadataJsonDeferred?.complete(accumulated)
+                            pendingMetadataJsonDeferred = null
+                        } else {
+                            try {
+                                val (page, fragment) = SysExProtocol.parseMetadataPage(unpacked)
+                                if (page == metadataJsonExpectedPage) {
+                                    metadataJsonBuffer.append(fragment)
+                                    metadataJsonExpectedPage++
+                                } else {
+                                    Log.e("EP133APP", "MIDI META: unexpected metadata page $page, expected $metadataJsonExpectedPage")
+                                    pendingMetadataJsonDeferred?.completeExceptionally(
+                                        IllegalStateException("unexpected metadata page $page, expected $metadataJsonExpectedPage"),
+                                    )
+                                    pendingMetadataJsonDeferred = null
+                                }
+                            } catch (e: Exception) {
+                                Log.e("EP133APP", "MIDI META: METADATA page parse failed", e)
+                                pendingMetadataJsonDeferred?.completeExceptionally(e)
+                                pendingMetadataJsonDeferred = null
+                            }
+                        }
+                    }
+                    metadataSetInFlight -> {
+                        // nodeId-form METADATA SET ack: any response (even empty) on the matching
+                        // frame completes the round-trip. The dispatcher already stripped the opcode
+                        // prefix so payload is whatever the device echoes. Treat non-error as success.
+                        Log.d("EP133APP", "MIDI META: METADATA SET ack received")
+                        pendingMetadataSetAckDeferred?.complete(true)
+                        pendingMetadataSetAckDeferred = null
+                    }
+                    else -> {
+                        // Legacy path-form METADATA response (Phase-4 storage queries / queryProjectsActiveNode).
+                        val parsed = SysExProtocol.parseGreetResponse(payload)
+                        Log.d("EP133APP", "FILE_METADATA response: $parsed")
+                        pendingMetadataDeferred?.complete(parsed)
+                        pendingMetadataDeferred = null
+                    }
+                }
             }
             SysExProtocol.TE_SYSEX_FILE_LIST -> {
                 val status = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
@@ -313,6 +389,23 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             }
             SysExProtocol.TE_SYSEX_FILE_PUT -> {
                 if (transferInFlight) dispatchPagedPutResponse(payload)
+            }
+            SysExProtocol.TE_SYSEX_FILE_INFO -> {
+                // HW-VERIFY-3 raw-byte log (Task 3)
+                val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+                Log.d("EP133APP", "MIDI META: inbound FILE_INFO payload[${payload.size}] $hexDump")
+
+                val deferred = pendingNodeInfoDeferred ?: return
+                try {
+                    val unpacked = SysExProtocol.unpack7bit(payload)
+                    val info = SysExProtocol.parseFileInfo(unpacked)
+                    Log.d("EP133APP", "MIDI META: FILE_INFO nodeId=${info.nodeId} name='${info.name}' flags=${info.flags}")
+                    deferred.complete(info)
+                } catch (e: Exception) {
+                    Log.e("EP133APP", "MIDI META: FILE_INFO parse failed", e)
+                    deferred.completeExceptionally(e)
+                }
+                pendingNodeInfoDeferred = null
             }
         }
     }
@@ -761,6 +854,202 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         }
     }
 
+    // ── Active-group sync: nodeId-form metadata round-trips (Step 1) ─────────────
+    //
+    // These implement the reference tool's group-select mechanism:
+    //   getActiveGroupIndex: /projects→active→projName→/projects/<p>/groups→active→getNode→name
+    //   setActiveGroup:      resolve group nodeId, SET groups-dir {active:<nodeId>}
+    //
+    // All three functions below guard with statsQueryInFlight so they don't collide with
+    // Phase-4 storage/list queries that use the same pendingNodeListDeferred path.
+    // The metadata GET/SET use their own metadataJsonInFlight / metadataSetInFlight flags.
+
+    /**
+     * Fetch metadata for [nodeId] using the nodeId-form GET (METADATA_GET = 2).
+     *
+     * Pages are accumulated until [SysExProtocol.isMetadataTerminator] fires, then
+     * the accumulated JSON string is parsed into a [JSONObject].
+     *
+     * **Defensive (HW-VERIFY-3):** if JSON parsing fails (device returned greet-style
+     * `key:value` text instead), falls back to [SysExProtocol.parseGreetResponse] and
+     * wraps the result in a JSONObject. This handles Phase-4 metadata (greet-format) when
+     * reached via the nodeId path until hardware confirms the response format.
+     *
+     * @return Parsed [JSONObject] (may be empty on timeout or parse failure).
+     */
+    suspend fun getMetadataJson(nodeId: Int): JSONObject {
+        val portId = _deviceState.value.outputPortId ?: return JSONObject()
+        metadataJsonInFlight = true
+        metadataJsonBuffer.clear()
+        metadataJsonExpectedPage = 0
+        val deferred = CompletableDeferred<String>()
+        pendingMetadataJsonDeferred = deferred
+        return try {
+            val frame = SysExProtocol.buildMetadataGetFrame(currentDeviceId, nodeId, page = 0, requestId = METADATA_GET_REQUEST_ID)
+            // Task 3: raw-byte log for HW-VERIFY-3
+            val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+            Log.d("EP133APP", "MIDI META: outbound METADATA GET nodeId=$nodeId frame[${frame.size}] $hexDump")
+            midiManager.sendMidi(portId, frame)
+            val accumulated = withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() }
+                ?: return JSONObject()
+            // JSON-first parse; defensive greet fallback for HW-VERIFY-3.
+            try {
+                JSONObject(accumulated)
+            } catch (_: Exception) {
+                Log.d("EP133APP", "MIDI META: JSON parse failed, trying greet fallback for nodeId=$nodeId")
+                val greetMap = SysExProtocol.parseGreetResponse(accumulated.toByteArray(Charsets.US_ASCII))
+                val fallback = JSONObject()
+                greetMap.forEach { (k, v) -> fallback.put(k, v) }
+                fallback
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } finally {
+            metadataJsonInFlight = false
+            if (pendingMetadataJsonDeferred === deferred) pendingMetadataJsonDeferred = null
+        }
+    }
+
+    /**
+     * Write [json] as the metadata for [nodeId] via a single METADATA SET frame (METADATA_SET = 1).
+     *
+     * Awaits the ack deferred completed by [dispatchFileResponse] on the matching response.
+     *
+     * @return true if the device responded (any non-error ack), false on timeout.
+     */
+    suspend fun setMetadata(nodeId: Int, json: String): Boolean {
+        val portId = _deviceState.value.outputPortId ?: return false
+        metadataSetInFlight = true
+        val deferred = CompletableDeferred<Boolean>()
+        pendingMetadataSetAckDeferred = deferred
+        return try {
+            val frame = SysExProtocol.buildMetadataSetFrame(currentDeviceId, nodeId, json, requestId = METADATA_SET_REQUEST_ID)
+            // Task 3: raw-byte log for HW-VERIFY-3
+            val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+            Log.d("EP133APP", "MIDI META: outbound METADATA SET nodeId=$nodeId json=$json frame[${frame.size}] $hexDump")
+            midiManager.sendMidi(portId, frame)
+            withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() } ?: false
+        } catch (e: CancellationException) {
+            throw e
+        } finally {
+            metadataSetInFlight = false
+            if (pendingMetadataSetAckDeferred === deferred) pendingMetadataSetAckDeferred = null
+        }
+    }
+
+    /**
+     * Fetch the [SysExProtocol.NodeInfo] for a specific [nodeId] via FILE_INFO (op 11).
+     *
+     * @return Parsed [NodeInfo] or null on timeout / parse error.
+     */
+    suspend fun getNodeInfo(nodeId: Int): SysExProtocol.NodeInfo? {
+        val portId = _deviceState.value.outputPortId ?: return null
+        val deferred = CompletableDeferred<SysExProtocol.NodeInfo>()
+        pendingNodeInfoDeferred = deferred
+        return try {
+            val frame = SysExProtocol.buildFileInfoFrame(currentDeviceId, nodeId, requestId = FILE_INFO_REQUEST_ID)
+            // Task 3: raw-byte log for HW-VERIFY-3
+            val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+            Log.d("EP133APP", "MIDI META: outbound FILE_INFO nodeId=$nodeId frame[${frame.size}] $hexDump")
+            midiManager.sendMidi(portId, frame)
+            withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("EP133APP", "MIDI META: getNodeInfo failed for nodeId=$nodeId", e)
+            null
+        } finally {
+            if (pendingNodeInfoDeferred === deferred) pendingNodeInfoDeferred = null
+        }
+    }
+
+    /**
+     * Read the device's current active group and return its index (0=A, 1=B, 2=C, 3=D).
+     *
+     * Walk: /projects → active-project nodeId → project name → /projects/<name>/groups →
+     * groups-dir active pointer → group nodeId → getNode → name → PadChannel index.
+     *
+     * Group name on device is literally "A", "B", "C", or "D" per `GROUPS=["A","B","C","D"]`
+     * in the reference tool. Name-based lookup is used (HW-VERIFY-2 will confirm).
+     *
+     * @return Group index 0–3, or null if the device is disconnected / no active project.
+     */
+    suspend fun getActiveGroupIndex(): Int? {
+        if (statsQueryInFlight) return null
+        statsQueryInFlight = true
+        return try {
+            val projectsNode = resolveNodeIdInternal("/projects") ?: return null
+            val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
+                .takeIf { it >= 0 } ?: return null
+            val projName = getNodeInfo(activeProjNodeId)?.name ?: return null
+            // HW-VERIFY-2: log the project name so we can confirm node-name format.
+            Log.d("EP133APP", "MIDI META: active project name='$projName' nodeId=$activeProjNodeId")
+            val groupsNode = resolveNodeIdInternal("/projects/$projName/groups") ?: return null
+            val activeGroupNodeId = getMetadataJson(groupsNode).optInt("active", -1)
+                .takeIf { it >= 0 } ?: return null
+            val groupInfo = getNodeInfo(activeGroupNodeId) ?: return null
+            // HW-VERIFY-2: log the group name — should be "A".."D".
+            Log.d("EP133APP", "MIDI META: active group name='${groupInfo.name}' nodeId=${groupInfo.nodeId}")
+            val idx = PadChannel.entries.indexOfFirst { it.name == groupInfo.name }
+            idx.takeIf { it >= 0 }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("EP133APP", "MIDI META: getActiveGroupIndex failed", e)
+            null
+        } finally {
+            statsQueryInFlight = false
+        }
+    }
+
+    /**
+     * Set the device's active group to [index] (0=A, 1=B, 2=C, 3=D).
+     *
+     * Resolves: /projects → active-project name → /projects/<name>/groups/<letter> (target nodeId)
+     * → /projects/<name>/groups (groups-dir nodeId) → SET groups-dir `{active:<targetNodeId>}`.
+     *
+     * @return true if the SET ack was received, false on error or timeout.
+     */
+    suspend fun setActiveGroup(index: Int): Boolean {
+        val channel = PadChannel.entries.getOrNull(index) ?: return false
+        if (statsQueryInFlight) return false
+        statsQueryInFlight = true
+        return try {
+            val projectsNode = resolveNodeIdInternal("/projects") ?: return false
+            val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
+                .takeIf { it >= 0 } ?: return false
+            val projName = getNodeInfo(activeProjNodeId)?.name ?: return false
+            val groupNode = resolveNodeIdInternal("/projects/$projName/groups/${channel.name}") ?: return false
+            val groupsNode = resolveNodeIdInternal("/projects/$projName/groups") ?: return false
+            setMetadata(groupsNode, """{"active":$groupNode}""")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("EP133APP", "MIDI META: setActiveGroup($index) failed", e)
+            false
+        } finally {
+            statsQueryInFlight = false
+        }
+    }
+
+    /**
+     * Internal path resolution that assumes [statsQueryInFlight] is already held by the caller.
+     * Unlike the public [resolveNodeId], this does NOT take the lock — use only from within
+     * functions that already own the flag (getActiveGroupIndex, setActiveGroup).
+     */
+    private suspend fun resolveNodeIdInternal(path: String): Int? {
+        val segments = path.trim('/').split('/').filter { it.isNotEmpty() }
+        var nodeId = 0   // root
+        var rid = 70
+        for (segment in segments) {
+            val body = listNodeBody(nodeId, requestId = rid++) ?: return null
+            val child = SysExProtocol.parseFileListEntries(body).firstOrNull { it.name == segment }
+                ?: return null
+            nodeId = child.nodeId
+        }
+        return nodeId
+    }
+
     fun setChannel(ch: Int) {
         _channel.value = ch.coerceIn(0, 15)
     }
@@ -873,5 +1162,13 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         private const val PUT_ACK_TIMEOUT_MS = 15_000L
         // Node-ID FILE_LIST + /projects metadata query bound (enumeration, Wave 2).
         private const val FILE_LIST_TIMEOUT_MS = 5_000L
+        // Metadata GET/SET + FILE_INFO round-trip timeout (Step 1 — active-group sync).
+        private const val METADATA_TIMEOUT_MS = 5_000L
+        // Fixed request IDs for the new metadata/info round-trips (non-overlapping with
+        // Phase-4 IDs: greet=1, meta=/sounds=2, list=/sounds=3, GET=10/11, PUT=20/21/30/31,
+        // list=60, /projects=55, resolve=50+).
+        private const val METADATA_GET_REQUEST_ID = 80
+        private const val METADATA_SET_REQUEST_ID = 81
+        private const val FILE_INFO_REQUEST_ID    = 82
     }
 }

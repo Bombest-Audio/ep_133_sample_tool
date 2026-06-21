@@ -39,10 +39,15 @@ object SysExProtocol {
     const val TE_SYSEX_FILE_INFO = 11
 
     // ── FILE_PUT INIT capability + file-type flags ──
-    // capabilities is ORed into flags: READ=4, file-type FILE=1, DIR=2.
+    // capabilities is ORed into flags: READ=4, WRITE=8, file-type FILE=1, DIR=2.
     // New-file INIT: flags = TE_SYSEX_FILE_CAPABILITY_READ or TE_SYSEX_FILE_TYPE_FILE = 5.
     const val TE_SYSEX_FILE_CAPABILITY_READ = 4
+    const val TE_SYSEX_FILE_CAPABILITY_WRITE = 8
     const val TE_SYSEX_FILE_TYPE_FILE = 1
+
+    // ── FILE_METADATA sub-opcodes ──
+    const val TE_SYSEX_FILE_METADATA_SET = 1
+    const val TE_SYSEX_FILE_METADATA_GET = 2
 
     // ── Two-phase GET/PUT transfer sub-types (under FILE_GET / FILE_PUT) ──
     // Project archives are multi-page .tar blobs; the real device protocol is an
@@ -523,4 +528,193 @@ object SysExProtocol {
         status == STATUS_OK -> TransferStatus.COMPLETE
         else -> TransferStatus.ERROR
     }
+
+    // ── Metadata nodeId-form builders (Step 1 — active-group sync) ──────────────
+    //
+    // These use the reference tool's nodeId+page+key form rather than the legacy
+    // path-string form (buildFileMetadataFrame). The path-form is kept intact for
+    // Phase-4 /sounds storage stats and /projects active-node reads.
+    //
+    // Wire layout (after TE_SYSEX_FILE subsystem byte; these bytes become the
+    // payload passed to buildFrame, which prepends the 5 and 7-bit-packs everything):
+    //
+    //   GET: [7, 2, nodeId u16 BE, page u16 BE, (key ASCII + 0x00)?]
+    //   SET: [7, 1, nodeId u16 BE, json ASCII, 0x00]
+    //   INFO:[11, nodeId u16 BE]
+    //
+    // Reference: data/index.js SysExFileGetMetadataRequest / SysExFileSetMetadataRequest
+    //            / SysExFileInfoRequest — verified 2026-06-21.
+
+    /**
+     * Build a nodeId-form METADATA GET frame (METADATA_GET = 2).
+     *
+     * Payload inside buildFrame: [TE_SYSEX_FILE, METADATA, GET, nodeId u16, page u16, (key+NUL)?]
+     *
+     * @param nodeId    Numeric node ID of the directory or file to query.
+     * @param page      Page index (0-based); devices return `[page u16][JSON fragment]` pages.
+     * @param key       Optional key filter (ASCII string). When null, full metadata is returned.
+     * @param requestId Matched by the dispatcher to route the response.
+     */
+    fun buildMetadataGetFrame(
+        deviceId: Int,
+        nodeId: Int,
+        page: Int = 0,
+        key: String? = null,
+        requestId: Int,
+    ): ByteArray {
+        val out = java.io.ByteArrayOutputStream(8 + (key?.length?.plus(1) ?: 0))
+        out.write(TE_SYSEX_FILE)
+        out.write(TE_SYSEX_FILE_METADATA)
+        out.write(TE_SYSEX_FILE_METADATA_GET)
+        out.write(nodeId shr 8); out.write(nodeId and 0xFF)    // u16 BE
+        out.write(page shr 8);   out.write(page and 0xFF)      // u16 BE
+        if (key != null) {
+            out.write(key.toByteArray(Charsets.US_ASCII))
+            out.write(0)
+        }
+        return buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, out.toByteArray())
+    }
+
+    /**
+     * Build a nodeId-form METADATA SET frame (METADATA_SET = 1).
+     *
+     * Payload: [TE_SYSEX_FILE, METADATA, SET, nodeId u16, json ASCII, 0x00]
+     *
+     * For active-group selection the JSON is `{"active":<groupNodeId>}` — always
+     * single-frame (far below any device chunk size).
+     *
+     * @param nodeId Numeric node ID of the directory whose metadata to update.
+     * @param json   JSON string to write (e.g. `{"active":1234}`).
+     */
+    fun buildMetadataSetFrame(
+        deviceId: Int,
+        nodeId: Int,
+        json: String,
+        requestId: Int,
+    ): ByteArray {
+        val jsonBytes = json.toByteArray(Charsets.US_ASCII)
+        val out = java.io.ByteArrayOutputStream(5 + jsonBytes.size + 1)
+        out.write(TE_SYSEX_FILE)
+        out.write(TE_SYSEX_FILE_METADATA)
+        out.write(TE_SYSEX_FILE_METADATA_SET)
+        out.write(nodeId shr 8); out.write(nodeId and 0xFF)    // u16 BE
+        out.write(jsonBytes)
+        out.write(0)
+        return buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, out.toByteArray())
+    }
+
+    /**
+     * Build a FILE_INFO (getNode) frame (op 11).
+     *
+     * Payload: [TE_SYSEX_FILE, FILE_INFO, nodeId u16 BE]
+     *
+     * Response layout: nodeId u16, parentId u16, flags u8, size u32, name@9 NUL-terminated ASCII.
+     * Parse with [parseFileInfo].
+     *
+     * Reference: data/index.js SysExFileInfoRequest, byte ~833656.
+     */
+    fun buildFileInfoFrame(deviceId: Int, nodeId: Int, requestId: Int): ByteArray =
+        buildFrame(
+            deviceId,
+            CMD_PRODUCT_SPECIFIC,
+            requestId,
+            byteArrayOf(
+                TE_SYSEX_FILE.toByte(),
+                TE_SYSEX_FILE_INFO.toByte(),
+                (nodeId shr 8).toByte(),
+                (nodeId and 0xFF).toByte(),
+            ),
+        )
+
+    // ── FILE_INFO response ────────────────────────────────────────────────────
+
+    /**
+     * Parsed FILE_INFO (getNode) response.
+     *
+     * @param nodeId    Numeric ID of the node.
+     * @param parentId  Numeric ID of the parent directory.
+     * @param flags     Raw capability + type flags byte.
+     * @param sizeBytes File size in bytes (0 for directories).
+     * @param name      Node name (filename or directory name, e.g. "A", "01", "kick.wav").
+     */
+    data class NodeInfo(
+        val nodeId: Int,
+        val parentId: Int,
+        val flags: Int,
+        val sizeBytes: Long,
+        val name: String,
+    ) {
+        /** True if the CAPABILITY_WRITE flag is set — required for the active-group write gate. */
+        val isWritable: Boolean get() = flags and TE_SYSEX_FILE_CAPABILITY_WRITE != 0
+        /** True if the FILE_TYPE_FILE flag is NOT set (i.e. this is a directory node). */
+        val isDir: Boolean get() = flags and TE_SYSEX_FILE_TYPE_FILE == 0
+    }
+
+    /**
+     * Parse an already-unpacked FILE_INFO response body into [NodeInfo].
+     *
+     * Body layout (SysexFileInfoResponse, data/index.js byte ~833859):
+     *   [0..1] nodeId   u16 BE
+     *   [2..3] parentId u16 BE
+     *   [4]    flags    u8
+     *   [5..8] fileSize u32 BE
+     *   [9..]  fileName null-terminated ASCII
+     *
+     * This is distinct from FILE_LIST per-entry layout (which has no parentId field).
+     *
+     * @throws IllegalArgumentException if [body] is too short to contain the fixed header.
+     */
+    fun parseFileInfo(body: ByteArray): NodeInfo {
+        require(body.size >= 9) { "FILE_INFO response too short: ${body.size} bytes" }
+        val nodeId   = ((body[0].toInt() and 0xFF) shl 8) or (body[1].toInt() and 0xFF)
+        val parentId = ((body[2].toInt() and 0xFF) shl 8) or (body[3].toInt() and 0xFF)
+        val flags    = body[4].toInt() and 0xFF
+        val sizeBytes = (((body[5].toInt() and 0xFF).toLong()) shl 24) or
+            (((body[6].toInt() and 0xFF).toLong()) shl 16) or
+            (((body[7].toInt() and 0xFF).toLong()) shl  8) or
+            ((body[8].toInt() and 0xFF).toLong())
+        val nameStart = 9
+        var nul = nameStart
+        while (nul < body.size && body[nul].toInt() != 0) nul++
+        val name = String(body.copyOfRange(nameStart, nul), Charsets.US_ASCII)
+        return NodeInfo(nodeId, parentId, flags, sizeBytes, name)
+    }
+
+    // ── Metadata GET response paging ──────────────────────────────────────────
+
+    /**
+     * Parse one page from a nodeId-form METADATA GET response body.
+     *
+     * Body layout: `[page u16 BE][JSON fragment ASCII … NUL?]`
+     *
+     * The JSON fragment is trimmed of a trailing NUL byte (the device NUL-terminates the
+     * last page; intermediate pages have no trailing NUL). Callers accumulate the fragment
+     * strings and call [isMetadataTerminator] to detect the end of the sequence.
+     *
+     * @return Pair of (page index, JSON fragment string).
+     * @throws IllegalArgumentException if [body] is shorter than 2 bytes.
+     */
+    fun parseMetadataPage(body: ByteArray): Pair<Int, String> {
+        require(body.size >= 2) { "METADATA GET response too short: ${body.size} bytes" }
+        val page = ((body[0].toInt() and 0xFF) shl 8) or (body[1].toInt() and 0xFF)
+        val fragmentBytes = body.copyOfRange(2, body.size)
+        // Trim trailing NUL — the device appends 0x00 on the final page.
+        val end = if (fragmentBytes.isNotEmpty() && fragmentBytes.last().toInt() == 0) {
+            fragmentBytes.size - 1
+        } else {
+            fragmentBytes.size
+        }
+        val fragment = String(fragmentBytes.copyOfRange(0, end), Charsets.US_ASCII)
+        return page to fragment
+    }
+
+    /**
+     * True if [body] represents the terminating page of a METADATA GET sequence.
+     *
+     * Two terminator conditions (reference: data/index.js FileHandler.getMetadata loop):
+     *  (a) body.size <= 2 — empty or page-only response, no JSON fragment.
+     *  (b) body.last() == 0x00 — last byte is NUL, signalling the final page.
+     */
+    fun isMetadataTerminator(body: ByteArray): Boolean =
+        body.size <= 2 || body.last().toInt() == 0
 }

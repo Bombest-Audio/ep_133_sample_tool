@@ -38,14 +38,18 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.LaunchedEffect
 
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.model.EP133Pads
@@ -67,7 +71,10 @@ class PadsViewModel(private val midi: MIDIRepository) : ViewModel() {
     val pressedIndices: StateFlow<Set<Int>> = _pressedIndices.asStateFlow()
 
     init {
-        // Listen for incoming MIDI: auto-switch group + flash the matching pad
+        // Listen for incoming MIDI: auto-switch group + flash the matching pad.
+        // The 0xC0 Program-Change group branch has been removed — the device does not
+        // send Program Change for group changes; real group sync goes through FILE_METADATA.
+        // The 0x90 noteOn auto-switch is retained (confirmed on hardware).
         viewModelScope.launch {
             midi.incomingMidi.collect { event ->
                 when {
@@ -86,25 +93,33 @@ class PadsViewModel(private val midi: MIDIRepository) : ViewModel() {
                             _pressedIndices.value = _pressedIndices.value - index
                         }
                     }
-                    event.status == 0xC0 -> {
-                        // KO-II group button: Program Change 0=A, 1=B, 2=C, 3=D
-                        val group = PadChannel.entries.getOrNull(event.note) ?: return@collect
-                        if (group != _selectedChannel.value) {
-                            _selectedChannel.value = group
-                            _pressedIndices.value = emptySet()
-                        }
-                    }
                 }
             }
         }
     }
 
     fun selectChannel(channel: PadChannel) {
-        if (channel != _selectedChannel.value) {
-            midi.programChange(channel.ordinal)
-        }
+        // Optimistic: update UI immediately so the tap feels instant.
         _selectedChannel.value = channel
         _pressedIndices.value = emptySet()
+        // Async: propagate to device via FILE_METADATA SET.
+        viewModelScope.launch { midi.setActiveGroup(channel.ordinal) }
+    }
+
+    /**
+     * Poll the device for the current active group and reconcile with the UI.
+     * Called from the PadsScreen RESUMED lifecycle loop every 1500 ms.
+     * No-op if the device is not connected or returns null.
+     */
+    fun refreshActiveGroupFromDevice() {
+        viewModelScope.launch {
+            val idx = midi.getActiveGroupIndex() ?: return@launch
+            val deviceGroup = PadChannel.entries.getOrNull(idx) ?: return@launch
+            if (deviceGroup != _selectedChannel.value) {
+                _selectedChannel.value = deviceGroup
+                _pressedIndices.value = emptySet()
+            }
+        }
     }
 
     // D-17: scale state delegated from MIDIRepository (single source of truth)
@@ -153,6 +168,20 @@ fun PadsScreen(viewModel: PadsViewModel) {
         derivedStateOf {
             val scale = selectedScale
             if (scale == null) emptySet() else computeInScaleSet(scale, selectedRootNote)
+        }
+    }
+
+    // Device→app active-group poll: runs every 1500 ms while the screen is RESUMED.
+    // Pauses automatically when the lifecycle drops below RESUMED (screen hidden/backgrounded)
+    // to avoid background MIDI churn. Reconciles device state with the UI without blocking
+    // the main thread (refreshActiveGroupFromDevice launches on viewModelScope internally).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) {
+                delay(1500)
+                viewModel.refreshActiveGroupFromDevice()
+            }
         }
     }
 
