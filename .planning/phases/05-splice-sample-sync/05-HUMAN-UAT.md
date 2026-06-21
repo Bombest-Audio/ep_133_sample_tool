@@ -53,6 +53,13 @@ the Phase 2 path-string framing for a non-existent `/sounds` file. One-line swit
 
 **Status:** ☐ not verified
 
+> **Codex fix note (2026-06-21):** Default framing is now path-string (`/sounds/$name` on every
+> chunk frame via `buildFilePutFrame`) rather than the old node-ID INIT + paged-DATA loop.
+> `SampleImportManager` now fails closed: if the device sends no STATUS_OK, an
+> `Error("Upload not confirmed by EP-133 (no STATUS_OK) — reconnect and retry $name")` is
+> emitted instead of treating timeout as Done. UAT-SOUNDS-PUT now only needs to verify that
+> multi-chunk path-string PUT creates the file and triggers a STATUS_OK ack on real hardware.
+
 ---
 
 ## UAT-PITCH — Playback-pitch correctness of the 46875 Hz conversion (SAMPLE-02)

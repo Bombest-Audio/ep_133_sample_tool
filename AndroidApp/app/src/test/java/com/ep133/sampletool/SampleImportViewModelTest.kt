@@ -74,6 +74,11 @@ private class SampleImportFakeRepo(
         _state.value = state
         _deviceState.value = state
     }
+
+    // putSampleFile returns true when connected, false when disconnected — matches
+    // SampleImportManager's corrected fail-closed contract (Codex fix #2).
+    override suspend fun putSampleFile(name: String, wavBytes: ByteArray): Boolean =
+        _state.value.connected
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
