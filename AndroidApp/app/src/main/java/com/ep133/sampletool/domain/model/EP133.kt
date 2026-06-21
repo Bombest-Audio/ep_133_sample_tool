@@ -84,7 +84,8 @@ data class DeviceState(
  *   4 =base+6, 5 =base+7, 6  =base+8
  *   7 =base+9, 8 =base+10, 9 =base+11
  *
- *   A=36–47, B=48–59, C=60–71, D=72–83. All on MIDI ch 1.
+ *   A=36–47, B=48–59, C=60–71, D=72–83. All on MIDI ch 0 (hardware-confirmed).
+ *   Every pad uses note = channel.baseNote + offset on the default channel.
  */
 object EP133Pads {
 
@@ -96,40 +97,15 @@ object EP133Pads {
         "." to 0,  "0" to 1,  "ENT" to 2,
     )
 
-    /**
-     * Pad 0 on groups A & D is special: sends note 60 on a unique MIDI channel.
-     *   A0 → ch=6 note=60,  D0 → ch=7 note=60
-     * Groups B & C pad 0 are normal (base+1 on ch 0).
-     */
-    private val SPECIAL_PAD0 = mapOf(
-        PadChannel.A to 6,  // A0 → note 60, ch 6
-        PadChannel.D to 7,  // D0 → note 60, ch 7
-    )
-
     fun padsForChannel(channel: PadChannel): List<Pad> =
         GRID_ORDER.map { (suffix, offset) ->
             val label = "${channel.name}$suffix"
-            val specialCh = SPECIAL_PAD0[channel]
-            if (suffix == "0" && specialCh != null) {
-                Pad(label, note = 60, midiChannel = specialCh, defaultSound = DEFAULT_DRUM_MAP[label])
-            } else {
-                Pad(label, note = channel.baseNote + offset, defaultSound = DEFAULT_DRUM_MAP[label])
-            }
+            Pad(label, note = channel.baseNote + offset, defaultSound = DEFAULT_DRUM_MAP[label])
         }
 
     /** Detect which group + pad index from an incoming MIDI event. */
+    @Suppress("UNUSED_PARAMETER")
     fun resolveIncoming(note: Int, ch: Int): Pair<PadChannel, Int>? {
-        // Check special pad 0 first (note 60 on ch 6 = A, ch 7 = D)
-        if (note == 60 && ch == 6) {
-            val idx = GRID_ORDER.indexOfFirst { it.first == "0" }
-            return PadChannel.A to idx
-        }
-        if (note == 60 && ch == 7) {
-            val idx = GRID_ORDER.indexOfFirst { it.first == "0" }
-            return PadChannel.D to idx
-        }
-
-        // Normal: determine group from note range
         val group = when (note) {
             in 36..47 -> PadChannel.A
             in 48..59 -> PadChannel.B
