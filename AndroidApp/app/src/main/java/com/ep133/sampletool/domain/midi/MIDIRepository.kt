@@ -557,21 +557,24 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     // ── Sample file upload to /sounds (Phase 5 Wave 2, SAMPLE-03) ──
 
     /**
-     * Upload a WAV sample to /sounds/<name> via path-string framing proved by BackupManager.restore.
+     * Upload a WAV sample to /sounds by creating a new file via the device's node-ID
+     * INIT protocol, matching the reference tool (data/index.js uploadSound / fileHandler.put).
      *
-     * Each frame is built with [SysExProtocol.buildFilePutFrame], carrying the full
-     * "/sounds/<name>" path string on every chunk (Landmine 4 default, Codex fix #1).
-     * Large WAVs still page: wavBytes is sliced into [SysExProtocol.MAX_PAGE_BYTES]-sized
-     * chunks, one [buildFilePutFrame] call per chunk.
+     * Protocol (verified verbatim from data/index.js):
+     *  1. Resolve the /sounds directory to a numeric node ID BEFORE starting the transfer,
+     *     so its FILE_LIST round-trips don't interleave with the PUT frames.
+     *  2. Send FILE_PUT INIT via [SysExProtocol.buildFileCreatePutInitFrame]: parentId=/sounds
+     *     node, fileId=0 (device assigns), fileSize=wavBytes.size, filename=name.
+     *  3. Page the WAV bytes in [SysExProtocol.MAX_PAGE_BYTES] slices via
+     *     [SysExProtocol.buildFilePutDataFrame] (existing, unchanged).
+     *  4. Send a zero-length DATA frame as the terminator (reference: "sendSysExFileRequest
+     *     serial, new SysExFilePutDataRequest(page, new Uint8Array(0))").
+     *  5. Await STATUS_OK via [pendingPutAckDeferred] / [dispatchPagedPutResponse] (same
+     *     machinery as [putProjectArchive]).
      *
-     * The ack flow is unchanged from [putProjectArchive]: [pendingPutAckDeferred] is
-     * registered before the first frame, and [withTimeoutOrNull] resolves on STATUS_OK.
-     * [transferInFlight] guards against concurrent transfers. The dispatcher routes
-     * TE_SYSEX_FILE_PUT responses to [dispatchPagedPutResponse] as before.
-     *
-     * HARDWARE-VERIFY (UAT-SOUNDS-PUT): does multi-chunk path-string PUT actually create
-     * the file and ack on real hardware? All code-level correctness concerns (name never
-     * transmitted, no-ack treated as Done) are now resolved.
+     * HARDWARE-VERIFY: metadata is omitted (null) — if a sample lands but plays with wrong
+     * default params (pitch, tuning), a post-upload setMetadata call may be needed (see
+     * 05-OPEN-QUESTIONS-RESEARCH §"gaps").
      *
      * @param name     Sanitized basename + ".wav" (caller must ensure no path separators).
      * @param wavBytes Complete WAV file bytes (must be > 0; multi-KB is expected).
@@ -582,36 +585,45 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     open suspend fun putSampleFile(name: String, wavBytes: ByteArray): Boolean {
         val portId = _deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
+
+        // Resolve /sounds BEFORE setting transferInFlight so its FILE_LIST round-trips don't
+        // interleave with the PUT frames (resolveNodeId uses statsQueryInFlight, independent).
+        val parent = resolveNodeId("/sounds")
+        if (parent == null) {
+            Log.e("EP133APP", "putSampleFile: cannot resolve /sounds node — aborting upload of $name")
+            return false
+        }
+
         if (transferInFlight) throw IllegalStateException("transfer already in flight")
         transferInFlight = true
         val ack = CompletableDeferred<Boolean>()
         pendingPutAckDeferred = ack
         return try {
-            val path = "/sounds/$name"
+            // INIT: announce parent dir, fileId=0 (new file), size, and filename.
+            val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
+                currentDeviceId,
+                parentNodeId = parent,
+                fileSize = wavBytes.size,
+                filename = name,
+                requestId = 30,
+            )
+            midiManager.sendMidi(portId, initFrame)
 
-            // Edge case: empty bytes — send a single zero-length path frame so the ack
-            // contract is satisfied, then wait for STATUS_OK (a real WAV is always multi-KB).
-            if (wavBytes.isEmpty()) {
-                val frame = SysExProtocol.buildFilePutFrame(
-                    currentDeviceId, path, ByteArray(0), chunkIndex = 0, requestId = 30,
-                )
-                midiManager.sendMidi(portId, frame)
-            } else {
-                var chunkIndex = 0
-                var offset = 0
-                while (offset < wavBytes.size) {
-                    val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, wavBytes.size)
-                    val chunk = wavBytes.copyOfRange(offset, end)
-                    val frame = SysExProtocol.buildFilePutFrame(
-                        currentDeviceId, path, chunk,
-                        chunkIndex = chunkIndex,
-                        requestId = 30 + (chunkIndex and 0xFF),
-                    )
-                    midiManager.sendMidi(portId, frame)
-                    offset = end
-                    chunkIndex++
-                }
+            // DATA pages: slice wavBytes into MAX_PAGE_BYTES chunks.
+            var page = 0
+            var offset = 0
+            while (offset < wavBytes.size) {
+                val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, wavBytes.size)
+                val chunk = wavBytes.copyOfRange(offset, end)
+                val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = 31)
+                midiManager.sendMidi(portId, dataFrame)
+                offset = end
+                page = (page + 1) and 0xFFFF
             }
+
+            // Zero-length DATA terminator (required by reference tool).
+            val terminatorFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = 31)
+            midiManager.sendMidi(portId, terminatorFrame)
 
             withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { ack.await() } ?: false
         } catch (e: CancellationException) {
@@ -678,7 +690,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * HARDWARE-VERIFY (Open Q1): confirm /projects lists by nodeId (this walk) vs the
      * Phase 2 path string. The path-string fallback is a one-line switch in [listNodeBody].
      */
-    suspend fun resolveNodeId(path: String): Int? {
+    open suspend fun resolveNodeId(path: String): Int? {
         if (statsQueryInFlight) return null
         statsQueryInFlight = true
         return try {

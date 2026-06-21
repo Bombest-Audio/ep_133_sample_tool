@@ -1,6 +1,7 @@
 package com.ep133.sampletool.domain.audio
 
 import android.content.Context
+import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -13,6 +14,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.roundToInt
 
 private const val TAG = "EP133APP"
 
@@ -61,10 +63,15 @@ object AudioDecoder {
      * Must be called while the SAF picker grant for [uri] is still active (Landmine 7).
      * Runs under [Dispatchers.IO] — safe to call from any coroutine scope.
      *
+     * PCM encoding: MediaCodec output is NOT guaranteed to be 16-bit at API 29+. FLAC and
+     * HD-audio decoders can emit ENCODING_PCM_FLOAT or ENCODING_PCM_24BIT_PACKED. The output
+     * format is read on INFO_OUTPUT_FORMAT_CHANGED and tracked across the drain loop; all
+     * output bytes are converted to s16 via [pcmBytesToShorts] at the end.
+     *
      * @param context Android [Context] to access the content resolver.
      * @param uri     SAF content:// URI from [ActivityResultContracts.OpenMultipleDocuments].
      * @return        [DecodedPcm] containing the raw PCM samples, source rate, and channel count.
-     * @throws IOException on decode failure or oversized PCM accumulation.
+     * @throws IOException on decode failure, oversized PCM accumulation, or unsupported encoding.
      * @throws CancellationException if the coroutine is cancelled — always rethrown.
      */
     suspend fun decode(context: Context, uri: Uri): DecodedPcm = withContext(Dispatchers.IO) {
@@ -89,13 +96,19 @@ object AudioDecoder {
 
             Log.d(TAG, "AudioDecoder: mime=$mime srcRate=$srcRate channels=$channels")
 
+            // Request 16-bit output where supported (a hint, not a guarantee — FLAC may ignore it).
+            format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+
+            // Read the initial output PCM encoding from the input format (may change later).
+            var pcmEncoding = readPcmEncoding(format)
+
             // Configure and start the decoder.
             codec = MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
             codec.start()
 
-            val pcmBytes = drainDecoder(codec, extractor)
-            val pcm = bytesToShortArray(pcmBytes)
+            val (pcmBytes, finalEncoding) = drainDecoder(codec, extractor, pcmEncoding)
+            val pcm = pcmBytesToShorts(pcmBytes, finalEncoding)
 
             DecodedPcm(pcm, srcRate, channels)
         } catch (e: CancellationException) {
@@ -126,19 +139,37 @@ object AudioDecoder {
     }
 
     /**
+     * Read the PCM encoding from a [MediaFormat]. Returns [AudioFormat.ENCODING_PCM_16BIT]
+     * if the key is absent (API 29 guarantee for standard formats like MP3/AAC).
+     */
+    private fun readPcmEncoding(fmt: MediaFormat): Int =
+        if (fmt.containsKey(MediaFormat.KEY_PCM_ENCODING))
+            fmt.getInteger(MediaFormat.KEY_PCM_ENCODING)
+        else
+            AudioFormat.ENCODING_PCM_16BIT
+
+    /**
      * Drain [codec] using [extractor] for input until [MediaCodec.BUFFER_FLAG_END_OF_STREAM].
      *
      * Accumulates raw PCM output bytes into a [ByteArrayOutputStream] bounded by
-     * [MAX_PCM_BYTES] (T-05-03-01). Returns the raw PCM bytes in the codec's native
-     * format (should be 16-bit PCM for most platform decoders at API 29+).
+     * [MAX_PCM_BYTES] (T-05-03-01). Tracks [INFO_OUTPUT_FORMAT_CHANGED] events and updates
+     * [currentEncoding] to reflect the actual output encoding (FLAC/HD decoders may emit
+     * float or 24-bit rather than 16-bit even when 16-bit was requested).
+     *
+     * Returns a pair of (raw PCM bytes, final encoding constant).
      *
      * @throws IOException if the accumulated PCM size exceeds [MAX_PCM_BYTES].
      */
-    private fun drainDecoder(codec: MediaCodec, extractor: MediaExtractor): ByteArray {
+    private fun drainDecoder(
+        codec: MediaCodec,
+        extractor: MediaExtractor,
+        initialEncoding: Int,
+    ): Pair<ByteArray, Int> {
         val TIMEOUT_US = 10_000L   // 10 ms per buffer operation
         val info = MediaCodec.BufferInfo()
         val out = ByteArrayOutputStream(64 * 1024)
         var inputDone = false
+        var currentEncoding = initialEncoding
 
         while (true) {
             // Feed input buffers while the extractor has data.
@@ -181,25 +212,70 @@ object AudioDecoder {
                     }
                     codec.releaseOutputBuffer(outIdx, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                        return out.toByteArray()
+                        return out.toByteArray() to currentEncoding
                     }
                 }
                 outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                    // Format change notification — no action needed (format already read).
-                    Log.d(TAG, "AudioDecoder: output format changed")
+                    // Re-read PCM encoding from the actual output format (FLAC/HD may differ).
+                    currentEncoding = readPcmEncoding(codec.outputFormat)
+                    Log.d(TAG, "AudioDecoder: output format changed, pcmEncoding=$currentEncoding")
                 }
                 // INFO_TRY_AGAIN_LATER or INFO_OUTPUT_BUFFERS_CHANGED — just loop.
             }
         }
     }
 
-    /**
-     * Convert raw PCM bytes (assumed 16-bit little-endian from MediaCodec) to a [ShortArray].
-     * MediaCodec PCM output is always 16-bit LE at API 29+ for standard audio formats.
-     */
-    private fun bytesToShortArray(bytes: ByteArray): ShortArray {
-        val shorts = ShortArray(bytes.size / 2)
-        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
-        return shorts
+}
+
+/**
+ * Convert raw PCM bytes from MediaCodec output to a [ShortArray] of signed 16-bit samples.
+ *
+ * Supported encodings:
+ * - [AudioFormat.ENCODING_PCM_16BIT]: LE Int16 — read directly.
+ * - [AudioFormat.ENCODING_PCM_FLOAT]: LE Float32 — scale to [-32767, 32767] with ±1.0 clamping.
+ * - [AudioFormat.ENCODING_PCM_24BIT_PACKED]: 3-byte LE — downshift to 16-bit (drop low byte).
+ * - [AudioFormat.ENCODING_PCM_32BIT]: 4-byte LE — downshift to 16-bit (drop low 2 bytes).
+ *
+ * Pure, JVM-testable function: no Android runtime dependencies beyond the [AudioFormat]
+ * constants (which are plain Int values). Accessible as [AudioDecoder.pcmBytesToShorts]
+ * from Kotlin via the object's static scope, or directly from test code.
+ *
+ * @param bytes    Raw PCM bytes from MediaCodec output.
+ * @param encoding One of the [AudioFormat].ENCODING_PCM_* constants.
+ * @throws IOException for any unrecognized encoding constant.
+ */
+fun pcmBytesToShorts(bytes: ByteArray, encoding: Int): ShortArray {
+    val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+    return when (encoding) {
+        AudioFormat.ENCODING_PCM_16BIT -> {
+            val shorts = ShortArray(bytes.size / 2)
+            buf.asShortBuffer().get(shorts)
+            shorts
+        }
+        AudioFormat.ENCODING_PCM_FLOAT -> {
+            val count = bytes.size / 4
+            val floatBuf = buf.asFloatBuffer()
+            ShortArray(count) {
+                (floatBuf.get().coerceIn(-1f, 1f) * 32767f).roundToInt().toShort()
+            }
+        }
+        AudioFormat.ENCODING_PCM_24BIT_PACKED -> {
+            // 3 bytes per sample, LE: [lo, mid, hi]. Shift right 8 bits → Int16.
+            val count = bytes.size / 3
+            ShortArray(count) { i ->
+                val lo  = bytes[i * 3].toInt() and 0xFF
+                val mid = bytes[i * 3 + 1].toInt() and 0xFF
+                val hi  = bytes[i * 3 + 2].toInt()    // signed for sign extension
+                val s32 = (hi shl 16) or (mid shl 8) or lo
+                (s32 shr 8).toShort()
+            }
+        }
+        AudioFormat.ENCODING_PCM_32BIT -> {
+            // 4 bytes per sample, LE Int32. Shift right 16 bits → Int16.
+            val count = bytes.size / 4
+            val intBuf = buf.asIntBuffer()
+            ShortArray(count) { (intBuf.get() shr 16).toShort() }
+        }
+        else -> throw IOException("unsupported PCM encoding: $encoding")
     }
 }

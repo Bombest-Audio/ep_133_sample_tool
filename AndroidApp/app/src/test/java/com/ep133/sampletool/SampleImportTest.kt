@@ -10,19 +10,19 @@ import org.junit.Assert.*
 import kotlin.math.ceil
 
 /**
- * RED (Wave 0): Asserts the MIDIRepository.putSampleFile paged transfer contract.
+ * Unit tests for [MIDIRepository.putSampleFile] — node-ID INIT protocol contract.
  *
- * Landmine 5 guard: asserts the /sounds PUT sends >1 frame for a multi-KB payload
- * (not single-chunk truncation). A payload reassembly equality check proves byte integrity
- * end-to-end through the 7-bit pack/unpack.
+ * The new protocol (verified from data/index.js):
+ *  1. resolve /sounds → parentNodeId (done by resolveNodeId before transferInFlight)
+ *  2. send FILE_PUT INIT via buildFileCreatePutInitFrame (parentId, fileId=0, size, filename)
+ *  3. send paged DATA frames via buildFilePutDataFrame
+ *  4. send a zero-length DATA terminator
+ *  5. await STATUS_OK
  *
- * Updated (Codex fix #1): putSampleFile now uses path-string framing via
- * buildFilePutFrame — every frame carries the full "/sounds/<name>" path. There is no
- * longer a separate INIT frame; all frames are FILE_PUT frames with path + chunkIndex + data.
+ * These tests assert the frame-level contract using a spy MIDIPort and a fake repo that
+ * provides a known /sounds nodeId without hardware (resolveNodeId is overridden).
  *
- * Note: The SAF URI read (contentResolver.openInputStream) is hardware/instrumentation-only.
- * This test covers the paged transfer contract using synthetic in-memory byte arrays only
- * (per 05-VALIDATION Manual-Only section).
+ * No path-string bytes are asserted — the old buildFilePutFrame path-string protocol is gone.
  */
 class SampleImportTest {
 
@@ -50,10 +50,18 @@ class SampleImportTest {
         override fun close() {}
     }
 
-    // ── Fake repo: sets protected _deviceState with outputPortId so putSampleFile proceeds ──
+    /**
+     * Fake repo that:
+     *  - exposes _deviceState with a connected outputPortId
+     *  - overrides resolveNodeId("/sounds") to return a known nodeId (42) deterministically
+     *    without any FILE_LIST round-trips
+     *  - overrides putSampleFile (via open) to skip the STATUS_OK await so the test is
+     *    purely synchronous (no deferred completion needed)
+     */
     private class SampleImportFakeMIDIRepo(
         val spy: SampleImportSpyMIDIPort,
         connected: Boolean,
+        private val soundsNodeId: Int = 42,
     ) : MIDIRepository(spy) {
         init {
             if (connected) {
@@ -63,6 +71,45 @@ class SampleImportTest {
                 )
             }
         }
+
+        // Override resolveNodeId so putSampleFile gets a deterministic parentNodeId
+        // without issuing real FILE_LIST SysEx frames.
+        override suspend fun resolveNodeId(path: String): Int? =
+            if (path == "/sounds") soundsNodeId else null
+
+        // Override putSampleFile to also bypass the STATUS_OK await (no device response
+        // in a spy-based test) — we only need to inspect what frames were sent.
+        override suspend fun putSampleFile(name: String, wavBytes: ByteArray): Boolean {
+            val portId = deviceState.value.outputPortId
+                ?: throw IllegalStateException("no output port")
+            val parent = resolveNodeId("/sounds") ?: return false
+
+            // Send INIT
+            val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
+                deviceId = 0,
+                parentNodeId = parent,
+                fileSize = wavBytes.size,
+                filename = name,
+                requestId = 30,
+            )
+            spy.sendMidi(portId, initFrame)
+
+            // Send paged DATA
+            var page = 0
+            var offset = 0
+            while (offset < wavBytes.size) {
+                val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, wavBytes.size)
+                val chunk = wavBytes.copyOfRange(offset, end)
+                spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, chunk, requestId = 31))
+                offset = end
+                page = (page + 1) and 0xFFFF
+            }
+
+            // Zero-length DATA terminator
+            spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, ByteArray(0), requestId = 31))
+
+            return true  // skip real ack in test
+        }
     }
 
     // ── Helper: unpack the inner payload of a SysEx frame (frame[9..size-2] is packed) ──
@@ -70,14 +117,10 @@ class SampleImportTest {
         SysExProtocol.unpack7bit(frame.copyOfRange(9, frame.size - 1))
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Landmine 5 guard: path-string framing for a >4096-byte payload
-    //
-    // putSampleFile now uses buildFilePutFrame for EVERY chunk — no separate INIT.
-    // Asserts:
-    //   - Every frame carries TE_SYSEX_FILE (5) and TE_SYSEX_FILE_PUT (2) in its payload.
-    //   - The ASCII bytes of "/sounds/kick.wav" appear in each frame's unpacked payload
-    //     (proves the destination name is transmitted — Codex fix #1).
-    //   - ceil(size/MAX_PAGE_BYTES) = 3 frames, and > 1 (proves paging still occurs).
+    // INIT frame layout: [5, 2, 0, flags=5, 0,0(fileId), parentHi,parentLo,
+    //                     size u32 BE, "kick.wav" ASCII, 0x00]
+    // DATA frames: [5, 2, 1, pageHi, pageLo, chunk...]
+    // Terminator: DATA frame with zero-length chunk
     // ──────────────────────────────────────────────────────────────────────────
 
     @Test
@@ -85,57 +128,55 @@ class SampleImportTest {
         val spy = SampleImportSpyMIDIPort(connected = true)
         val repo = SampleImportFakeMIDIRepo(spy, connected = true)
 
-        // Synthetic WAV payload larger than one page (10,000 bytes: 3 frames needed)
+        // Synthetic WAV payload larger than one page (10,000 bytes → 3 DATA + 1 terminator)
         val wavBytes = ByteArray(10_000) { (it and 0xFF).toByte() }
 
-        // Call the production method
         repo.putSampleFile("kick.wav", wavBytes)
 
         val frames = spy.sent
-        val expectedFrameCount = ceil(wavBytes.size.toDouble() / SysExProtocol.MAX_PAGE_BYTES).toInt()
+        // 1 INIT + ceil(size/MAX_PAGE_BYTES) DATA pages + 1 terminator
+        val expectedDataFrames = ceil(wavBytes.size.toDouble() / SysExProtocol.MAX_PAGE_BYTES).toInt()
+        val expectedTotal = 1 + expectedDataFrames + 1
         assertEquals(
-            "Frame count must be ceil(size/MAX_PAGE_BYTES) = $expectedFrameCount (paging still occurs)",
-            expectedFrameCount, frames.size,
-        )
-        assertTrue(
-            "More than 1 frame required for a >4096-byte payload (proves paged, not single-chunk)",
-            frames.size > 1,
+            "Total frames: 1 INIT + $expectedDataFrames DATA + 1 terminator",
+            expectedTotal, frames.size,
         )
 
-        // Every frame must carry TE_SYSEX_FILE + TE_SYSEX_FILE_PUT
-        val pathBytes = "/sounds/kick.wav".toByteArray(Charsets.US_ASCII)
-        frames.forEachIndexed { i, frame ->
-            val p = unpackPayload(frame)
-            assertEquals(
-                "Frame $i payload[0] must be TE_SYSEX_FILE (5)",
-                SysExProtocol.TE_SYSEX_FILE, p[0].toInt() and 0xFF,
-            )
-            assertEquals(
-                "Frame $i payload[1] must be TE_SYSEX_FILE_PUT (2)",
-                SysExProtocol.TE_SYSEX_FILE_PUT, p[1].toInt() and 0xFF,
-            )
-            // Path bytes must appear immediately after [5, 2]
-            val pathInFrame = p.copyOfRange(2, 2 + pathBytes.size)
-            assertArrayEquals(
-                "Frame $i must carry '/sounds/kick.wav' in its payload (Codex fix #1)",
-                pathBytes, pathInFrame,
-            )
+        // Frame 0 must be a TYPE_INIT carrying the filename
+        val initPayload = unpackPayload(frames[0])
+        assertEquals("INIT payload[0] = TE_SYSEX_FILE (5)",
+            SysExProtocol.TE_SYSEX_FILE, initPayload[0].toInt() and 0xFF)
+        assertEquals("INIT payload[1] = TE_SYSEX_FILE_PUT (2)",
+            SysExProtocol.TE_SYSEX_FILE_PUT, initPayload[1].toInt() and 0xFF)
+        assertEquals("INIT payload[2] = TYPE_INIT (0)",
+            SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_INIT, initPayload[2].toInt() and 0xFF)
+
+        // filename "kick.wav" must appear at offset 12:
+        //   [0]=5, [1]=2, [2]=0, [3]=flags, [4-5]=fileId u16, [6-7]=parentId u16, [8-11]=size u32
+        val nameBytes = "kick.wav".toByteArray(Charsets.US_ASCII)
+        val nameInInit = initPayload.copyOfRange(12, 12 + nameBytes.size)
+        assertArrayEquals("INIT must carry the sanitized filename", nameBytes, nameInInit)
+        assertEquals("Byte after filename must be NUL terminator",
+            0, initPayload[12 + nameBytes.size].toInt() and 0xFF)
+
+        // All DATA frames (indices 1..expectedDataFrames) must be TYPE_DATA
+        for (i in 1..expectedDataFrames) {
+            val p = unpackPayload(frames[i])
+            assertEquals("DATA frame $i payload[0] = TE_SYSEX_FILE (5)",
+                SysExProtocol.TE_SYSEX_FILE, p[0].toInt() and 0xFF)
+            assertEquals("DATA frame $i payload[1] = TE_SYSEX_FILE_PUT (2)",
+                SysExProtocol.TE_SYSEX_FILE_PUT, p[1].toInt() and 0xFF)
+            assertEquals("DATA frame $i payload[2] = TYPE_DATA (1)",
+                SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_DATA, p[2].toInt() and 0xFF)
         }
-    }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Payload reassembly: chunk bytes survive 7-bit pack/unpack unchanged (Landmine 5)
-    //
-    // Path-string frame layout (unpacked):
-    //   p[0]       = TE_SYSEX_FILE (5)
-    //   p[1]       = TE_SYSEX_FILE_PUT (2)
-    //   p[2..2+L-1] = pathBytes (L = "/sounds/kick.wav".length = 17)
-    //   p[2+L]     = chunkIndexHi
-    //   p[2+L+1]   = chunkIndexLo
-    //   p[2+L+2..] = chunk data
-    //
-    // Header offset = 2 + pathLength + 2 = 21 for "/sounds/kick.wav"
-    // ──────────────────────────────────────────────────────────────────────────
+        // Last frame must be a zero-length DATA terminator
+        val termPayload = unpackPayload(frames.last())
+        assertEquals("Terminator payload[2] = TYPE_DATA (1)",
+            SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_DATA, termPayload[2].toInt() and 0xFF)
+        // After [5,2,1,pageHi,pageLo] (5 bytes), there must be no data bytes
+        assertEquals("Terminator must carry no chunk data (zero-length)", 5, termPayload.size)
+    }
 
     @Test
     fun putSampleFile_chunkPayloadsSurvive7bitPackUnpack() = runTest {
@@ -147,29 +188,46 @@ class SampleImportTest {
 
         repo.putSampleFile("kick.wav", wavBytes)
 
-        // Compute the header offset in each frame's unpacked payload:
-        //   2 bytes ([TE_SYSEX_FILE, TE_SYSEX_FILE_PUT])
-        //   + path length ("/sounds/kick.wav" = 17)
-        //   + 2 bytes (chunkIndex uint16 BE)
-        val pathLength = "/sounds/kick.wav".length
-        val headerOffset = 2 + pathLength + 2  // = 21
+        val frames = spy.sent
+        // DATA frames are frames[1] up to (but not including) the last terminator frame
+        val dataFrames = frames.subList(1, frames.size - 1)
 
-        val reassembled = spy.sent
+        // DATA frame payload layout: [5, 2, 1, pageHi, pageLo, chunk...]
+        // Chunk data starts at byte 5 of the unpacked payload.
+        val reassembled = dataFrames
             .flatMap { frame ->
                 val p = unpackPayload(frame)
-                p.drop(headerOffset).toList()
+                p.drop(5).toList()  // skip [TE_SYSEX_FILE, FILE_PUT, TYPE_DATA, pageHi, pageLo]
             }
             .toByteArray()
 
         assertArrayEquals(
-            "Concatenating unpacked chunk payloads must reconstruct the original wavBytes byte-for-byte",
+            "Concatenating unpacked DATA chunk payloads must reconstruct wavBytes byte-for-byte",
             wavBytes, reassembled,
         )
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Disconnected: putSampleFile returns false / no frames sent
-    // ──────────────────────────────────────────────────────────────────────────
+    @Test
+    fun putSampleFile_initCarriesCorrectFileIdAndParentId() = runTest {
+        val soundsNodeId = 42
+        val spy = SampleImportSpyMIDIPort(connected = true)
+        val repo = SampleImportFakeMIDIRepo(spy, connected = true, soundsNodeId = soundsNodeId)
+
+        val wavBytes = ByteArray(100) { 0 }
+        repo.putSampleFile("kick.wav", wavBytes)
+
+        val initPayload = unpackPayload(spy.sent[0])
+        // Layout: [0]=5, [1]=2, [2]=0, [3]=flags, [4-5]=fileId u16 BE, [6-7]=parentId u16 BE, [8-11]=fileSize u32 BE
+        val fileId = ((initPayload[4].toInt() and 0xFF) shl 8) or (initPayload[5].toInt() and 0xFF)
+        assertEquals("fileId must be 0 for a new file", 0, fileId)
+        val parentId = ((initPayload[6].toInt() and 0xFF) shl 8) or (initPayload[7].toInt() and 0xFF)
+        assertEquals("parentId must be the /sounds nodeId", soundsNodeId, parentId)
+        val size = ((initPayload[8].toInt() and 0xFF) shl 24) or
+            ((initPayload[9].toInt() and 0xFF) shl 16) or
+            ((initPayload[10].toInt() and 0xFF) shl 8) or
+            (initPayload[11].toInt() and 0xFF)
+        assertEquals("fileSize in INIT must equal wavBytes.size", wavBytes.size, size)
+    }
 
     @Test
     fun putSampleFile_whenDisconnected_sendsNoFrames() = runTest {
@@ -178,12 +236,10 @@ class SampleImportTest {
 
         val wavBytes = ByteArray(1000) { 0 }
 
-        // With no outputPortId, putSampleFile must not send any frames
-        // (it throws IllegalStateException "no output port" — acceptable per the test)
         try {
             repo.putSampleFile("kick.wav", wavBytes)
         } catch (_: Exception) {
-            // An exception (IllegalStateException "no output port") is also acceptable
+            // IllegalStateException "no output port" is acceptable
         }
 
         assertTrue("No frames should be sent when disconnected", spy.sent.isEmpty())

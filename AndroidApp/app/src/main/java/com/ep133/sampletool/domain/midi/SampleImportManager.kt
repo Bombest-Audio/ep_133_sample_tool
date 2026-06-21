@@ -202,9 +202,25 @@ class SampleImportManager(private val midi: MIDIRepository) {
                 return@withContext rawBytes
             }
 
-            // Slow path: decode → resample → encode.
+            // Slow path: decode → validate → resample → encode.
             withContext(Dispatchers.Default) {
                 val (pcm, srcRate, channels) = AudioDecoder.decode(context, uri)
+
+                // Device input guards (verified from data/index.js):
+                //   - source sample rate must be in [3000, 768000] Hz.
+                //   - total duration must not exceed 20.0 seconds.
+                // These throw IllegalArgumentException, which importSample's existing
+                // catch(e: Exception) turns into an Error("Convert failed: …") row.
+                if (srcRate < 3000 || srcRate > 768_000) {
+                    throw IllegalArgumentException("invalid sample rate: $srcRate Hz (must be 3000–768000)")
+                }
+                val durationSec = (pcm.size / channels).toDouble() / srcRate
+                if (durationSec > 20.0) {
+                    throw IllegalArgumentException(
+                        "max sample length is 20 seconds (was %.1fs)".format(durationSec)
+                    )
+                }
+
                 val resampled = Resampler.toRate(pcm, srcRate, DEVICE_SAMPLE_RATE, channels)
                 WavEncoder.encodeWav(resampled, DEVICE_SAMPLE_RATE, channels)
             }

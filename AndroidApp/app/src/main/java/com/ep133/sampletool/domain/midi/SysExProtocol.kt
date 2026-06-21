@@ -38,6 +38,12 @@ object SysExProtocol {
     const val TE_SYSEX_FILE_METADATA = 7
     const val TE_SYSEX_FILE_INFO = 11
 
+    // ── FILE_PUT INIT capability + file-type flags ──
+    // capabilities is ORed into flags: READ=4, file-type FILE=1, DIR=2.
+    // New-file INIT: flags = TE_SYSEX_FILE_CAPABILITY_READ or TE_SYSEX_FILE_TYPE_FILE = 5.
+    const val TE_SYSEX_FILE_CAPABILITY_READ = 4
+    const val TE_SYSEX_FILE_TYPE_FILE = 1
+
     // ── Two-phase GET/PUT transfer sub-types (under FILE_GET / FILE_PUT) ──
     // Project archives are multi-page .tar blobs; the real device protocol is an
     // INIT request (returns fileSize/fileName) then a paged DATA loop. This REPLACES
@@ -364,6 +370,49 @@ object SysExProtocol {
     /** Build a paged FILE_PUT INIT request announcing the total upload size. */
     fun buildFilePutInitFrame(deviceId: Int, nodeId: Int, fileSize: Int, requestId: Int): ByteArray =
         buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, buildFilePutInitPayload(nodeId, fileSize))
+
+    /**
+     * Build a FILE_PUT INIT for CREATING a new file under [parentNodeId] (e.g. the /sounds dir).
+     *
+     * Matches the device reference tool (data/index.js SysExFilePutInitRequest): announces the
+     * parent directory node ID, a fileId of 0 (device assigns the real id on the response), the
+     * byte size, and the filename (truncated to 54 chars, NUL-terminated). Metadata is optional
+     * and omitted when null.
+     *
+     * Wire payload (before 7-bit packing, with leading TE_SYSEX_FILE subsystem byte prepended
+     * by buildFrame — matching existing builders):
+     *   [5, 2, 0, flags, fileId u16 BE, parentId u16 BE, fileSize u32 BE, filename ASCII + 0x00,
+     *    (metadata ASCII + 0x00 only when non-null)]
+     *
+     * Default flags = TE_SYSEX_FILE_CAPABILITY_READ or TE_SYSEX_FILE_TYPE_FILE = 5, matching
+     * uploadSound in the reference tool. Default fileId = 0 (new file — device assigns the id).
+     */
+    fun buildFileCreatePutInitFrame(
+        deviceId: Int,
+        parentNodeId: Int,
+        fileSize: Int,
+        filename: String,
+        requestId: Int,
+        flags: Int = TE_SYSEX_FILE_CAPABILITY_READ or TE_SYSEX_FILE_TYPE_FILE,
+        fileId: Int = 0,
+        metadataJson: String? = null,
+    ): ByteArray {
+        val nameBytes = filename.take(54).toByteArray(Charsets.US_ASCII)
+        val out = java.io.ByteArrayOutputStream(16 + nameBytes.size)
+        out.write(TE_SYSEX_FILE)
+        out.write(TE_SYSEX_FILE_PUT)
+        out.write(TE_SYSEX_FILE_PUT_TYPE_INIT)
+        out.write(flags)
+        out.write(fileId shr 8); out.write(fileId and 0xFF)              // fileId u16 BE
+        out.write(parentNodeId shr 8); out.write(parentNodeId and 0xFF)  // parentId u16 BE
+        out.write(fileSize shr 24); out.write(fileSize shr 16)
+        out.write(fileSize shr 8); out.write(fileSize and 0xFF)          // fileSize u32 BE
+        out.write(nameBytes); out.write(0)                                // filename + NUL
+        if (metadataJson != null) {
+            out.write(metadataJson.toByteArray(Charsets.US_ASCII)); out.write(0)
+        }
+        return buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, out.toByteArray())
+    }
 
     /**
      * Build a paged FILE_PUT DATA request: a page header followed by the archive chunk.
