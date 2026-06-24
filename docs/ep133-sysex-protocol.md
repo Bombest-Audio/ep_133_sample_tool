@@ -11,9 +11,12 @@ have to spend a night with a MIDI sniffer to get the device to talk back.
 
 ## Status & confidence
 
-- **Verified on hardware:** EP-133 K.O. II, firmware **2.0.5**, over USB-MIDI to macOS, using
-  `sendmidi`/`receivemidi`. The frame envelope, the greet, the `FILE_INIT` requirement, the
-  command-byte framing, and the `INIT → LIST` round-trip are confirmed against a real device.
+- **Verified on hardware:** EP-133 K.O. II, firmware **2.0.5**, over USB-MIDI, using both
+  `sendmidi`/`receivemidi` on macOS and a native Android app talking to the device. Confirmed
+  end-to-end: the frame envelope, greet (+ device-ID adoption), the `FILE_INIT` requirement, the
+  command-byte framing, the response **status byte**, the **LSB-first** 7-bit packing, `FILE_LIST`
+  (real node IDs + names), and `FILE_METADATA` GET (`{"active":…}`). `FILE_PUT` framing matches
+  the reference; full upload still being verified on hardware.
 - **Derived from the official web tool:** the subcommand opcodes and request/response field
   layouts were extracted from Teenage Engineering's own EP-133 web sample tool (the minified
   JS bundle it ships) and cross-checked against hardware. These are marked _(from reference)_.
@@ -50,6 +53,21 @@ F0  00 20 76  <deviceId>  40  <flags>  <reqId7>  <command>  <7-bit-packed payloa
 | `command` | Top-level command (see below). |
 | payload | **7-bit packed** (see "7-bit packing"). |
 | `F7` | SysEx end |
+
+### Responses (important)
+
+Responses use the same envelope, but with one critical difference: there is a **1-byte status
+code immediately after the `command` byte, *before* the packed payload** (`0x00` = OK). The
+is-request flag is cleared and the `reqId` is echoed. So a response decodes as:
+
+```
+F0 00 20 76 <deviceId> 40 <flags> <reqId> <command> <STATUS> <7-bit-packed payload…> F7
+```
+
+> **Gotcha #0 (the one that cost the most):** you must consume the status byte *before*
+> unpacking. Starting the 7-bit unpack one byte early shifts every group boundary and silently
+> corrupts the payload — ASCII still half-reads, but node IDs / sizes turn to garbage. (Verified
+> on hardware: requests have no status byte; responses do.)
 
 ### Top-level commands
 
@@ -131,8 +149,9 @@ Response payload: `[ page (u16 BE), entries… ]`. Each entry _(from reference)_
 `nodeId (u16 BE), flags (u8), fileSize (u32 BE), fileName (NUL-terminated ASCII)`.
 `flags & TYPE_DIR` distinguishes directories.
 
-A verified `INIT → LIST(node=0)` on hardware returns the root containing `sounds` and
-`projects` (with their node IDs).
+A verified `INIT → LIST(node=0)` on hardware returns the root containing `sounds` (node **1000**)
+and `projects` (node **2000**). Listing the `projects` node returns the project dirs named
+`01`…`09` (nodes `3000`, `4000`, … — i.e. allocated in round 1000s on the tested unit).
 
 ### FILE_PUT — create a file (from reference, byte-cross-checked)
 
@@ -147,21 +166,41 @@ To create a new file (e.g. upload a sample to `/sounds`):
 4. **Terminator:** one final `PUT DATA` with a zero-length chunk.
 5. Await success status.
 
+> **Gotcha #3:** **await the PUT INIT response before sending any DATA.** Firing DATA pages
+> immediately after INIT (before the device acks it) makes the device reject with the ASCII
+> error `unexpected page`. Resolve the parent and open the file session (`FILE_INIT`) first, send
+> INIT, wait for its ack, *then* page the data.
+
 ### FILE_METADATA — active group / project
 
-Group/project state isn't a MIDI message; it's file metadata. The active project is a pointer
-in `/projects` metadata; reading it (via `FILE_METADATA` GET on the resolved node) is how you
-detect the active group. _(end-to-end active-group read: in progress)_
+Group/project state isn't a MIDI message; it's file **metadata** (JSON). A `FILE_METADATA` GET
+on a node returns a small JSON blob wrapped in a 2-byte page prefix and a trailing NUL — strip
+those and parse the `{…}`. Verified: GET on the `/projects` node returns `{"active":<nodeId>}`
+pointing at the active project (e.g. `{"active":3000}` = project `01`).
+
+To detect the **active pad group** (A/B/C/D): read `/projects` active → that project's node →
+its `groups` listing → that node's metadata `active` → the active group node, whose name is
+`A`…`D`. _(this drill-down is implemented but the last hop's node lookup is still being verified
+on hardware.)_
+
+The hardware **group buttons emit no MIDI**, so polling this metadata is the only way to track
+the active group from the host.
 
 ## 7-bit packing
 
-MIDI data bytes must be ≤ 0x7F, so payloads are packed: for each group of up to 7 bytes, a
-leading "high-bits" byte carries the 8th (MSB) of each following byte, then the 7 bytes follow
-with their MSB cleared.
+MIDI data bytes must be ≤ 0x7F, so payloads are packed in groups of 8: a leading "high-bits"
+byte, then up to 7 data bytes (MSB cleared). **The high-bits byte is LSB-first: data byte _k_
+(0-indexed within the group) takes its 8th bit from bit _k_ of the high-bits byte** — verified
+on hardware and matching TE's tool (`unpackInPlace` / `packToBuffer`).
 
-> **Gotcha #2:** confirm the exact bit order (which group position maps to which bit of the
-> high-bits byte) against a known device response before trusting decoded binary fields. ASCII
-> fields survive a wrong bit order; node IDs / sizes won't.
+```
+packed:   [H] [d0] [d1] … [d6]   [H] [d7] [d8] …
+unpacked: d0 |= (H>>0 & 1)<<7,  d1 |= (H>>1 & 1)<<7,  …  d6 |= (H>>6 & 1)<<7
+```
+
+> **Gotcha #2 (resolved):** it's LSB-first, **not** MSB-first. Getting the bit order backwards
+> leaves ASCII readable but corrupts every binary field (node IDs, sizes). This bit, the status
+> byte (Gotcha #0), and the command byte (Gotcha #1) are the three that each cost real hours.
 
 ## Reproducing this
 
