@@ -287,7 +287,14 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 // We log the raw bytes first for HW capture greppability.
                 val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
                 Log.d("EP133MIDI", "MIDI META: inbound FILE response cmd=5 payload[${payload.size}] $hexDump")
-                val body = if (payload.isNotEmpty()) SysExProtocol.unpack7bit(payload) else ByteArray(0)
+                // Hardware-verified (2026-06-24) — responses carry a STATUS byte BEFORE the packed
+                // body (reference data/index.js: `let o=9; if(response) status=s[o++]`). So payload[0]
+                // is the status; the 7-bit-packed body starts at payload[1]. Unpacking from payload[0]
+                // shifts every group boundary and corrupts the data.
+                val fileStatus = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: 0
+                val packedBody = if (payload.size > 1) payload.copyOfRange(1, payload.size) else ByteArray(0)
+                val body = if (packedBody.isNotEmpty()) SysExProtocol.unpack7bit(packedBody) else ByteArray(0)
+                Log.d("EP133MIDI", "MIDI META: FILE response status=$fileStatus body[${body.size}] ${body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }}")
                 if (body.isEmpty()) return
 
                 // Hardware-verified (2026-06-23): device FILE responses do NOT echo the subcommand.

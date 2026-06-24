@@ -91,7 +91,8 @@ object SysExProtocol {
             var highBits = 0
             for (j in 0 until groupSize) {
                 if (data[i + j].toInt() and 0x80 != 0) {
-                    highBits = highBits or (1 shl (6 - j))
+                    // Device convention (data/index.js packToBuffer): bit j, LSB-first.
+                    highBits = highBits or (1 shl j)
                 }
             }
             output.write(highBits)
@@ -116,12 +117,14 @@ object SysExProtocol {
         while (i < data.size) {
             val highBits = data[i].toInt() and 0x7F
             i++
-            var j = 6
-            while (j >= 0 && i < data.size) {
-                val highBit = if (highBits and (1 shl j) != 0) 0x80 else 0x00
+            // Device convention (data/index.js unpackInPlace): data byte k's high bit
+            // = bit k of the high-bits byte, LSB-first.
+            var k = 0
+            while (k <= 6 && i < data.size) {
+                val highBit = if (highBits and (1 shl k) != 0) 0x80 else 0x00
                 output.write((data[i].toInt() and 0x7F) or highBit)
                 i++
-                j--
+                k++
             }
         }
         return output.toByteArray()
