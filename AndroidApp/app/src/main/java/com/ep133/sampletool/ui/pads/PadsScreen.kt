@@ -113,6 +113,7 @@ class PadsViewModel(private val midi: MIDIRepository) : ViewModel() {
      */
     fun refreshActiveGroupFromDevice() {
         viewModelScope.launch {
+            android.util.Log.d("EP133APP", "MIDI META: poll tick → refreshActiveGroupFromDevice")
             val idx = midi.getActiveGroupIndex() ?: return@launch
             val deviceGroup = PadChannel.entries.getOrNull(idx) ?: return@launch
             if (deviceGroup != _selectedChannel.value) {

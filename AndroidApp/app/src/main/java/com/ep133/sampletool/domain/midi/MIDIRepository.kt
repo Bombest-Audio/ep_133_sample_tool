@@ -975,6 +975,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * @return Group index 0–3, or null if the device is disconnected / no active project.
      */
     suspend fun getActiveGroupIndex(): Int? {
+        Log.d("EP133APP", "MIDI META: getActiveGroupIndex() called, statsQueryInFlight=$statsQueryInFlight outputPort=${_deviceState.value.outputPortId}")
         if (statsQueryInFlight) return null
         statsQueryInFlight = true
         return try {
@@ -1042,9 +1043,14 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         var nodeId = 0   // root
         var rid = 70
         for (segment in segments) {
-            val body = listNodeBody(nodeId, requestId = rid++) ?: return null
-            val child = SysExProtocol.parseFileListEntries(body).firstOrNull { it.name == segment }
-                ?: return null
+            val body = listNodeBody(nodeId, requestId = rid++)
+            if (body == null) {
+                Log.d("EP133APP", "MIDI META: resolveInternal('$path') seg='$segment' parent=$nodeId → listNodeBody NULL")
+                return null
+            }
+            val entries = SysExProtocol.parseFileListEntries(body)
+            Log.d("EP133APP", "MIDI META: resolveInternal('$path') seg='$segment' parent=$nodeId body=${body.size}B entries=${entries.map { it.name }}")
+            val child = entries.firstOrNull { it.name == segment } ?: return null
             nodeId = child.nodeId
         }
         return nodeId
