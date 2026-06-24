@@ -80,7 +80,12 @@ private class ConcurrencyFakeRepo(spy: ConcurrencySpyPort) : MIDIRepository(spy)
 
     private val inFlight = AtomicBoolean(false)
 
-    override suspend fun putSampleFile(name: String, wavBytes: ByteArray): Boolean {
+    override suspend fun putSampleFile(
+        name: String,
+        pcmBytes: ByteArray,
+        channels: Int,
+        sampleRate: Int,
+    ): Boolean {
         if (!inFlight.compareAndSet(false, true)) {
             // Another call is in flight — collision detected.
             collisions.incrementAndGet()

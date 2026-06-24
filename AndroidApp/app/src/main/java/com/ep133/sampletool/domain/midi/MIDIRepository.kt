@@ -765,32 +765,37 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     // ── Sample file upload to /sounds (Phase 5 Wave 2, SAMPLE-03) ──
 
     /**
-     * Upload a WAV sample to /sounds by creating a new file via the device's node-ID
+     * Upload raw s16 LE PCM bytes to /sounds by creating a new file via the device's node-ID
      * INIT protocol, matching the reference tool (data/index.js uploadSound / fileHandler.put).
      *
      * Protocol (verified verbatim from data/index.js):
      *  1. Resolve the /sounds directory to a numeric node ID BEFORE starting the transfer,
      *     so its FILE_LIST round-trips don't interleave with the PUT frames.
-     *  2. Send FILE_PUT INIT via [SysExProtocol.buildFileCreatePutInitFrame]: parentId=/sounds
-     *     node, fileId=0 (device assigns), fileSize=wavBytes.size, filename=name.
-     *  3. Page the WAV bytes in [SysExProtocol.MAX_PAGE_BYTES] slices via
+     *  2. Build metadata JSON `{"channels":<n>,"samplerate":<r>}` (exact key names from
+     *     data/index.js `prepareTeenageMeta`) and pass it to [SysExProtocol.buildFileCreatePutInitFrame].
+     *  3. Send FILE_PUT INIT via [SysExProtocol.buildFileCreatePutInitFrame]: parentId=/sounds
+     *     node, fileId=0 (device assigns), fileSize=pcmBytes.size, filename=name, metadataJson.
+     *  4. Page the PCM bytes in [SysExProtocol.MAX_PAGE_BYTES] slices via
      *     [SysExProtocol.buildFilePutDataFrame] (existing, unchanged).
-     *  4. Send a zero-length DATA frame as the terminator (reference: "sendSysExFileRequest
+     *  5. Send a zero-length DATA frame as the terminator (reference: "sendSysExFileRequest
      *     serial, new SysExFilePutDataRequest(page, new Uint8Array(0))").
-     *  5. Await STATUS_OK via [pendingPutAckDeferred] / [dispatchPagedPutResponse] (same
+     *  6. Await STATUS_OK via [pendingPutAckDeferred] / [dispatchPagedPutResponse] (same
      *     machinery as [putProjectArchive]).
      *
-     * HARDWARE-VERIFY: metadata is omitted (null) — if a sample lands but plays with wrong
-     * default params (pitch, tuning), a post-upload setMetadata call may be needed (see
-     * 05-OPEN-QUESTIONS-RESEARCH §"gaps").
-     *
-     * @param name     Sanitized basename + ".wav" (caller must ensure no path separators).
-     * @param wavBytes Complete WAV file bytes (must be > 0; multi-KB is expected).
-     * @return         true if the device acknowledged STATUS_OK; false on timeout or error.
+     * @param name      Sanitized basename + ".wav" (caller must ensure no path separators).
+     * @param pcmBytes  Raw interleaved s16 LE PCM — NO RIFF/WAV header. Must be > 0 bytes.
+     * @param channels  Number of audio channels (1 = mono, 2 = stereo).
+     * @param sampleRate Sample rate in Hz (always 46875 for device-format audio).
+     * @return          true if the device acknowledged STATUS_OK; false on timeout or error.
      * @throws IllegalStateException if no output port is connected or a transfer is in flight.
      * @throws CancellationException if the coroutine is cancelled.
      */
-    open suspend fun putSampleFile(name: String, wavBytes: ByteArray): Boolean {
+    open suspend fun putSampleFile(
+        name: String,
+        pcmBytes: ByteArray,
+        channels: Int = 1,
+        sampleRate: Int = 46875,
+    ): Boolean {
         val portId = _deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
 
@@ -802,6 +807,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             return false
         }
 
+        // Build metadata JSON matching data/index.js prepareTeenageMeta key names.
+        val metadataJson = """{"channels":$channels,"samplerate":$sampleRate}"""
+
         if (transferInFlight) throw IllegalStateException("transfer already in flight")
         transferInFlight = true
         // Hardware-verified (2026-06-24): device sends "unexpected page" if DATA frames arrive
@@ -812,13 +820,14 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         val ack = CompletableDeferred<Boolean>()
         pendingPutAckDeferred = ack
         return try {
-            // INIT: announce parent dir, fileId=0 (new file), size, and filename.
+            // INIT: announce parent dir, fileId=0 (new file), size, filename, and metadata.
             val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
                 currentDeviceId,
                 parentNodeId = parent,
-                fileSize = wavBytes.size,
+                fileSize = pcmBytes.size,
                 filename = name,
                 requestId = 30,
+                metadataJson = metadataJson,
             )
             midiManager.sendMidi(portId, initFrame)
 
@@ -829,14 +838,14 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 Log.e("EP133APP", "putSampleFile: PUT INIT ack failed or timed out — aborting $name")
                 return false
             }
-            Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name (${wavBytes.size} bytes)")
+            Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name (${pcmBytes.size} bytes, ch=$channels sr=$sampleRate)")
 
-            // DATA pages: slice wavBytes into MAX_PAGE_BYTES chunks.
+            // DATA pages: slice pcmBytes into MAX_PAGE_BYTES chunks.
             var page = 0
             var offset = 0
-            while (offset < wavBytes.size) {
-                val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, wavBytes.size)
-                val chunk = wavBytes.copyOfRange(offset, end)
+            while (offset < pcmBytes.size) {
+                val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, pcmBytes.size)
+                val chunk = pcmBytes.copyOfRange(offset, end)
                 val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = 31)
                 midiManager.sendMidi(portId, dataFrame)
                 offset = end

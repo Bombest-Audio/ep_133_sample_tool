@@ -13,11 +13,41 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 private const val TAG = "EP133APP"
 
 /** Target device sample rate — must match WavEncoder.DEVICE_SAMPLE_RATE. */
 private const val DEVICE_SAMPLE_RATE = 46875
+
+/**
+ * Result of [SampleImportManager.convert]: raw s16 LE PCM bytes ready for upload,
+ * plus the format parameters needed for the PUT INIT metadata JSON.
+ *
+ * [pcm] is interleaved little-endian signed 16-bit PCM — NO RIFF/WAV header.
+ * [channels] is 1 (mono) or 2 (stereo).
+ * [sampleRate] is always [DEVICE_SAMPLE_RATE] (46875) after conversion.
+ */
+data class ConvertedSample(
+    val pcm: ByteArray,
+    val channels: Int,
+    val sampleRate: Int,
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is ConvertedSample) return false
+        return channels == other.channels && sampleRate == other.sampleRate &&
+            pcm.contentEquals(other.pcm)
+    }
+
+    override fun hashCode(): Int {
+        var result = pcm.contentHashCode()
+        result = 31 * result + channels
+        result = 31 * result + sampleRate
+        return result
+    }
+}
 
 /**
  * Progress events emitted by [SampleImportManager.importSample].
@@ -93,7 +123,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
 
         emit(SampleImportProgress.Progress(0, 1))
 
-        val wavBytes = try {
+        val converted = try {
             convert(context, uri)
         } catch (e: CancellationException) {
             throw e
@@ -103,13 +133,15 @@ class SampleImportManager(private val midi: MIDIRepository) {
             return@flow
         }
 
-        if (!preflightStorage(wavBytes.size)) {
+        if (!preflightStorage(converted.pcm.size)) {
             emit(SampleImportProgress.Error("Not enough space on EP-133 for $safeName"))
             return@flow
         }
 
         val ok = try {
-            uploadMutex.withLock { midi.putSampleFile(safeName, wavBytes) }
+            uploadMutex.withLock {
+                midi.putSampleFile(safeName, converted.pcm, converted.channels, converted.sampleRate)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -134,12 +166,12 @@ class SampleImportManager(private val midi: MIDIRepository) {
      * Skips AudioDecoder (no URI, no SAF grant needed). Used by [SampleImportViewModelTest]
      * to exercise the state-machine contract without requiring a real device or SAF picker.
      *
-     * The bytes are assumed to be already-read and in the caller's memory — they are passed
-     * directly to [MIDIRepository.putSampleFile] (with the pass-through fast path check).
+     * If [wavBytes] is a valid WAV container, the data chunk is sliced out and channels/sampleRate
+     * are extracted from the fmt chunk. Otherwise the bytes are treated as raw PCM with
+     * device-format defaults (46875 Hz, 1 channel) so test doubles remain simple.
      *
      * @param rawName  Filename to sanitize + upload under (e.g. "kick.wav").
-     * @param wavBytes Pre-read WAV or PCM bytes; if not already in device format, they are
-     *                 treated as-is (the caller is responsible for format correctness in tests).
+     * @param wavBytes Pre-read WAV bytes; format is sniffed via [WavEncoder.isAlreadyDeviceFormat].
      */
     fun importSampleBytes(rawName: String, wavBytes: ByteArray): Flow<SampleImportProgress> = flow {
         if (midi.deviceState.value.outputPortId == null) {
@@ -155,13 +187,24 @@ class SampleImportManager(private val midi: MIDIRepository) {
 
         emit(SampleImportProgress.Progress(0, 1))
 
-        if (!preflightStorage(wavBytes.size)) {
+        // Extract raw PCM + format parameters from the byte array.
+        // If it looks like a WAV, slice out the data chunk. Otherwise treat as raw PCM.
+        val converted: ConvertedSample = if (WavEncoder.isAlreadyDeviceFormat(wavBytes)) {
+            sliceWavData(wavBytes) ?: ConvertedSample(wavBytes, 1, DEVICE_SAMPLE_RATE)
+        } else {
+            // Non-WAV or invalid: pass raw bytes as-is with device defaults (test doubles use this).
+            ConvertedSample(wavBytes, 1, DEVICE_SAMPLE_RATE)
+        }
+
+        if (!preflightStorage(converted.pcm.size)) {
             emit(SampleImportProgress.Error("Not enough space on EP-133 for $safeName"))
             return@flow
         }
 
         val ok = try {
-            uploadMutex.withLock { midi.putSampleFile(safeName, wavBytes) }
+            uploadMutex.withLock {
+                midi.putSampleFile(safeName, converted.pcm, converted.channels, converted.sampleRate)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -181,28 +224,35 @@ class SampleImportManager(private val midi: MIDIRepository) {
     }
 
     /**
-     * Convert a content:// audio URI to a device-ready 46875/s16 WAV byte array.
+     * Convert a content:// audio URI to raw s16 LE PCM bytes ready for device upload.
      *
      * Must be called inside the picker-callback grant for [uri] (Landmine 7). Runs the
      * full convert pipeline:
-     *  - Fast path: if the file is already WAV/s16/46875/(1|2)ch → return bytes unchanged.
-     *  - Slow path: [AudioDecoder.decode] → [Resampler.toRate] → [WavEncoder.encodeWav].
+     *  - Fast path: if the file is already WAV/s16/46875/(1|2)ch → slice out the data chunk
+     *    (strip the RIFF header) and return the raw PCM bytes + fmt parameters.
+     *  - Slow path: [AudioDecoder.decode] → [Resampler.toRate] → convert ShortArray to
+     *    little-endian bytes; channels and sampleRate are read from the decoded result.
+     *
+     * The returned [ConvertedSample.pcm] contains NO RIFF/WAV header — only interleaved
+     * s16 LE PCM samples. [ConvertedSample.sampleRate] is always [DEVICE_SAMPLE_RATE] (46875).
      *
      * Runs under [Dispatchers.IO] for the initial byte read; [AudioDecoder] switches to
      * its own IO context for the decode loop.
      */
-    suspend fun convert(context: Context, uri: Uri): ByteArray =
+    suspend fun convert(context: Context, uri: Uri): ConvertedSample =
         withContext(Dispatchers.IO) {
             // Read raw bytes inside the grant (Landmine 7 — content:// URI lifetime).
             val rawBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: throw java.io.IOException("Cannot read URI: $uri")
 
             if (WavEncoder.isAlreadyDeviceFormat(rawBytes)) {
-                // Pass-through fast path: already 46875/s16 — no conversion needed.
-                return@withContext rawBytes
+                // Pass-through fast path: already 46875/s16 — slice header, keep raw PCM.
+                val sliced = sliceWavData(rawBytes)
+                    ?: throw java.io.IOException("Failed to slice WAV data chunk from device-format file")
+                return@withContext sliced
             }
 
-            // Slow path: decode → validate → resample → encode.
+            // Slow path: decode → validate → resample → encode as raw PCM bytes.
             withContext(Dispatchers.Default) {
                 val (pcm, srcRate, channels) = AudioDecoder.decode(context, uri)
 
@@ -222,9 +272,89 @@ class SampleImportManager(private val midi: MIDIRepository) {
                 }
 
                 val resampled = Resampler.toRate(pcm, srcRate, DEVICE_SAMPLE_RATE, channels)
-                WavEncoder.encodeWav(resampled, DEVICE_SAMPLE_RATE, channels)
+                ConvertedSample(
+                    pcm = shortArrayToLeBytes(resampled),
+                    channels = channels,
+                    sampleRate = DEVICE_SAMPLE_RATE,
+                )
             }
         }
+
+    /**
+     * Convert a [ShortArray] of s16 samples to interleaved little-endian PCM bytes.
+     *
+     * Each Short is written as 2 bytes, low byte first (little-endian, as required by the
+     * EP-133). The output has no header — pure raw PCM.
+     *
+     * Pure and unit-testable without Android deps.
+     */
+    internal fun shortArrayToLeBytes(samples: ShortArray): ByteArray {
+        val buf = ByteBuffer.allocate(samples.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+        for (s in samples) buf.putShort(s)
+        return buf.array()
+    }
+
+    /**
+     * Locate the RIFF WAV `data` sub-chunk in [wavBytes] and return a [ConvertedSample]
+     * containing only the raw PCM bytes (header stripped), plus channels and sampleRate
+     * read from the `fmt ` chunk.
+     *
+     * This handles non-standard WAV files where the `data` sub-chunk is not at the canonical
+     * offset 36 (e.g. files with LIST/INFO metadata inserted before the data chunk). If the
+     * file passes [WavEncoder.isAlreadyDeviceFormat] the `fmt ` chunk is guaranteed to exist
+     * at offset 12; we scan forward from there for the `data` four-CC.
+     *
+     * Returns `null` if the `data` chunk cannot be located (malformed header).
+     *
+     * Pure and unit-testable without Android deps.
+     */
+    internal fun sliceWavData(wavBytes: ByteArray): ConvertedSample? {
+        // Minimum: RIFF(4) + size(4) + WAVE(4) + fmt (4) + fmtSize(4) + 16 bytes of fmt body = 36
+        if (wavBytes.size < 36) return null
+        return try {
+            val buf = ByteBuffer.wrap(wavBytes).order(ByteOrder.LITTLE_ENDIAN)
+
+            // Skip RIFF(4) + chunkSize(4) + WAVE(4) = 12 bytes → now at fmt  sub-chunk
+            buf.position(12)
+
+            // Read fmt  four-CC
+            val fmtTag = ByteArray(4).also { buf.get(it) }
+            if (!fmtTag.contentEquals("fmt ".toByteArray(Charsets.US_ASCII))) return null
+
+            val fmtSize = buf.int          // typically 16 for PCM
+            val fmtStart = buf.position()  // start of fmt body
+            // audioFormat (skip — already validated by isAlreadyDeviceFormat)
+            buf.short
+            val channels = buf.short.toInt() and 0xFFFF
+            val sampleRate = buf.int
+
+            // Skip past the rest of the fmt  sub-chunk to the next sub-chunk
+            buf.position(fmtStart + fmtSize)
+
+            // Scan forward for the `data` four-CC (handles extra sub-chunks like LIST/INFO)
+            var dataOffset = -1
+            var dataSize = 0
+            while (buf.remaining() >= 8) {
+                val tag = ByteArray(4).also { buf.get(it) }
+                val chunkSize = buf.int
+                if (tag.contentEquals("data".toByteArray(Charsets.US_ASCII))) {
+                    dataOffset = buf.position()
+                    dataSize = chunkSize
+                    break
+                }
+                // Skip unknown sub-chunk (align to 2 bytes per RIFF spec)
+                val skip = chunkSize + (chunkSize and 1)
+                buf.position(buf.position() + skip)
+            }
+
+            if (dataOffset < 0 || dataSize <= 0) return null
+            val end = minOf(dataOffset + dataSize, wavBytes.size)
+            val pcm = wavBytes.copyOfRange(dataOffset, end)
+            ConvertedSample(pcm = pcm, channels = channels, sampleRate = sampleRate)
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     /**
      * Sanitize [rawName] to a device-safe basename + ".wav" for /sounds.

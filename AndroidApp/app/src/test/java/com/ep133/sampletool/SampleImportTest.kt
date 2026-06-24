@@ -25,93 +25,108 @@ import kotlin.math.ceil
  *
  * No path-string bytes are asserted — the old buildFilePutFrame path-string protocol is gone.
  */
+// ── File-level test doubles (shared by SampleImportTest and RawPcmFormatTest) ──
+
+/** Spy port: records all sendMidi calls for frame-level assertion. */
+private class SampleImportSpyMIDIPort(private val connected: Boolean = false) : MIDIPort {
+    override var onMidiReceived: ((String, ByteArray) -> Unit)? = null
+    override var onDevicesChanged: (() -> Unit)? = null
+    val sent = mutableListOf<ByteArray>()
+
+    override fun getUSBDevices() = if (connected) {
+        MIDIPort.Devices(
+            inputs = listOf(MIDIPort.Device("in", "EP-133")),
+            outputs = listOf(MIDIPort.Device("out", "EP-133")),
+        )
+    } else {
+        MIDIPort.Devices(emptyList(), emptyList())
+    }
+
+    override fun sendMidi(portId: String, data: ByteArray) { sent.add(data.copyOf()) }
+    override fun requestUSBPermissions() {}
+    override fun refreshDevices() {}
+    override fun startListening(portId: String) {}
+    override fun closeAllListeners() {}
+    override fun prewarmSendPort(portId: String) {}
+    override fun close() {}
+}
+
+/**
+ * Fake repo that:
+ *  - exposes _deviceState with a connected outputPortId
+ *  - overrides resolveNodeId("/sounds") to return a known nodeId (42) deterministically
+ *    without any FILE_LIST round-trips
+ *  - overrides putSampleFile (via open) to skip the STATUS_OK await so the test is
+ *    purely synchronous (no deferred completion needed)
+ *  - records the last metadata JSON / channels / sampleRate passed for assertion
+ */
+private class SampleImportFakeMIDIRepo(
+    val spy: SampleImportSpyMIDIPort,
+    connected: Boolean,
+    private val soundsNodeId: Int = 42,
+) : MIDIRepository(spy) {
+    init {
+        if (connected) {
+            _deviceState.value = DeviceState(
+                connected = true,
+                outputPortId = "out",
+            )
+        }
+    }
+
+    override suspend fun resolveNodeId(path: String): Int? =
+        if (path == "/sounds") soundsNodeId else null
+
+    var lastMetadataJson: String? = null
+    var lastChannels: Int = -1
+    var lastSampleRate: Int = -1
+
+    override suspend fun putSampleFile(
+        name: String,
+        pcmBytes: ByteArray,
+        channels: Int,
+        sampleRate: Int,
+    ): Boolean {
+        lastChannels = channels
+        lastSampleRate = sampleRate
+        val portId = deviceState.value.outputPortId
+            ?: throw IllegalStateException("no output port")
+        val parent = resolveNodeId("/sounds") ?: return false
+
+        val metaJson = """{"channels":$channels,"samplerate":$sampleRate}"""
+        lastMetadataJson = metaJson
+
+        val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
+            deviceId = 0,
+            parentNodeId = parent,
+            fileSize = pcmBytes.size,
+            filename = name,
+            requestId = 30,
+            metadataJson = metaJson,
+        )
+        spy.sendMidi(portId, initFrame)
+
+        var page = 0
+        var offset = 0
+        while (offset < pcmBytes.size) {
+            val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, pcmBytes.size)
+            val chunk = pcmBytes.copyOfRange(offset, end)
+            spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, chunk, requestId = 31))
+            offset = end
+            page = (page + 1) and 0xFFFF
+        }
+
+        spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, ByteArray(0), requestId = 31))
+
+        return true
+    }
+}
+
+// ── File-level helper: unpack the inner payload of a SysEx frame ──
+private fun unpackPayload(frame: ByteArray): ByteArray =
+    SysExProtocol.unpack7bit(frame.copyOfRange(9, frame.size - 1))
+
 class SampleImportTest {
-
-    // ── Spy port: records all sendMidi calls for frame-level assertion ──
-    private class SampleImportSpyMIDIPort(private val connected: Boolean = false) : MIDIPort {
-        override var onMidiReceived: ((String, ByteArray) -> Unit)? = null
-        override var onDevicesChanged: (() -> Unit)? = null
-        val sent = mutableListOf<ByteArray>()
-
-        override fun getUSBDevices() = if (connected) {
-            MIDIPort.Devices(
-                inputs = listOf(MIDIPort.Device("in", "EP-133")),
-                outputs = listOf(MIDIPort.Device("out", "EP-133")),
-            )
-        } else {
-            MIDIPort.Devices(emptyList(), emptyList())
-        }
-
-        override fun sendMidi(portId: String, data: ByteArray) { sent.add(data.copyOf()) }
-        override fun requestUSBPermissions() {}
-        override fun refreshDevices() {}
-        override fun startListening(portId: String) {}
-        override fun closeAllListeners() {}
-        override fun prewarmSendPort(portId: String) {}
-        override fun close() {}
-    }
-
-    /**
-     * Fake repo that:
-     *  - exposes _deviceState with a connected outputPortId
-     *  - overrides resolveNodeId("/sounds") to return a known nodeId (42) deterministically
-     *    without any FILE_LIST round-trips
-     *  - overrides putSampleFile (via open) to skip the STATUS_OK await so the test is
-     *    purely synchronous (no deferred completion needed)
-     */
-    private class SampleImportFakeMIDIRepo(
-        val spy: SampleImportSpyMIDIPort,
-        connected: Boolean,
-        private val soundsNodeId: Int = 42,
-    ) : MIDIRepository(spy) {
-        init {
-            if (connected) {
-                _deviceState.value = DeviceState(
-                    connected = true,
-                    outputPortId = "out",
-                )
-            }
-        }
-
-        // Override resolveNodeId so putSampleFile gets a deterministic parentNodeId
-        // without issuing real FILE_LIST SysEx frames.
-        override suspend fun resolveNodeId(path: String): Int? =
-            if (path == "/sounds") soundsNodeId else null
-
-        // Override putSampleFile to also bypass the STATUS_OK await (no device response
-        // in a spy-based test) — we only need to inspect what frames were sent.
-        override suspend fun putSampleFile(name: String, wavBytes: ByteArray): Boolean {
-            val portId = deviceState.value.outputPortId
-                ?: throw IllegalStateException("no output port")
-            val parent = resolveNodeId("/sounds") ?: return false
-
-            // Send INIT
-            val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
-                deviceId = 0,
-                parentNodeId = parent,
-                fileSize = wavBytes.size,
-                filename = name,
-                requestId = 30,
-            )
-            spy.sendMidi(portId, initFrame)
-
-            // Send paged DATA
-            var page = 0
-            var offset = 0
-            while (offset < wavBytes.size) {
-                val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, wavBytes.size)
-                val chunk = wavBytes.copyOfRange(offset, end)
-                spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, chunk, requestId = 31))
-                offset = end
-                page = (page + 1) and 0xFFFF
-            }
-
-            // Zero-length DATA terminator
-            spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, ByteArray(0), requestId = 31))
-
-            return true  // skip real ack in test
-        }
-    }
 
     // ── Helper: unpack the inner payload of a SysEx frame (frame[9..size-2] is packed) ──
     private fun unpackPayload(frame: ByteArray): ByteArray =
@@ -402,3 +417,177 @@ class PutInitAckGateTest {
         assertEquals("DATA frame body[1] = DATA type (1)", SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_DATA, dataPayload[1].toInt() and 0xFF)
     }
 }
+
+// ── New format-correctness tests ──────────────────────────────────────────────
+//
+// Tests for:
+//   1. ShortArray → little-endian bytes (SampleImportManager.shortArrayToLeBytes)
+//   2. WAV data-chunk slicer (SampleImportManager.sliceWavData) — header stripped
+//   3. putSampleFile INIT frame carries {"channels":..,"samplerate":..} metadata
+
+class RawPcmFormatTest {
+
+    // shortArrayToLeBytes and sliceWavData are pure — only need a repo to construct the manager.
+    private val manager = com.ep133.sampletool.domain.midi.SampleImportManager(
+        SampleImportFakeMIDIRepo(SampleImportSpyMIDIPort(connected = false), connected = false),
+    )
+
+    // ── 1. ShortArray → little-endian bytes ────────────────────────────────────
+
+    @Test
+    fun shortArrayToLeBytes_emptyArray_returnsEmpty() {
+        val result = manager.shortArrayToLeBytes(shortArrayOf())
+        assertEquals("Empty ShortArray must produce empty ByteArray", 0, result.size)
+    }
+
+    @Test
+    fun shortArrayToLeBytes_singleZero_returnsTwoZeroBytes() {
+        val result = manager.shortArrayToLeBytes(shortArrayOf(0))
+        assertArrayEquals("Short 0 must encode as [0x00, 0x00]",
+            byteArrayOf(0x00, 0x00), result)
+    }
+
+    @Test
+    fun shortArrayToLeBytes_knownValues_correctLittleEndian() {
+        // 0x0102 LE → [0x02, 0x01]; 0x8000 LE → [0x00, 0x80]; -1 (0xFFFF) → [0xFF, 0xFF]
+        val samples = shortArrayOf(0x0102.toShort(), 0x8000.toShort(), (-1).toShort())
+        val result = manager.shortArrayToLeBytes(samples)
+        assertEquals("3 shorts → 6 bytes", 6, result.size)
+        // 0x0102: low byte = 0x02, high byte = 0x01
+        assertEquals("samples[0] low byte", 0x02, result[0].toInt() and 0xFF)
+        assertEquals("samples[0] high byte", 0x01, result[1].toInt() and 0xFF)
+        // 0x8000: low byte = 0x00, high byte = 0x80
+        assertEquals("samples[1] low byte", 0x00, result[2].toInt() and 0xFF)
+        assertEquals("samples[1] high byte", 0x80.toByte(), result[3])
+        // -1 (0xFFFF): both bytes = 0xFF
+        assertEquals("samples[2] low byte", 0xFF.toByte(), result[4])
+        assertEquals("samples[2] high byte", 0xFF.toByte(), result[5])
+    }
+
+    @Test
+    fun shortArrayToLeBytes_roundTrip_matchesNioByteBuffer() {
+        // Verify the output matches a canonical java.nio.ByteBuffer LE encoding.
+        val samples = ShortArray(100) { (it * 317 - 15000).toShort() }
+        val result = manager.shortArrayToLeBytes(samples)
+        val reference = java.nio.ByteBuffer.allocate(samples.size * 2)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            .also { buf -> samples.forEach { buf.putShort(it) } }
+            .array()
+        assertArrayEquals("shortArrayToLeBytes must match ByteBuffer LE encoding", reference, result)
+    }
+
+    // ── 2. WAV data-chunk slicer ──────────────────────────────────────────────
+
+    /**
+     * Build a canonical 44-byte WAV (WavEncoder format) from [pcmShorts] at 46875 Hz.
+     * Using WavEncoder directly ensures the helper and slicer agree on the header layout.
+     */
+    private fun buildWav(pcmShorts: ShortArray, channels: Int = 1, sampleRate: Int = 46875): ByteArray =
+        com.ep133.sampletool.domain.audio.WavEncoder.encodeWav(pcmShorts, sampleRate, channels)
+
+    @Test
+    fun sliceWavData_canonicalWav_stripsHeader() {
+        val pcm = shortArrayOf(1, 2, 3, -1, 32767)
+        val wav = buildWav(pcm, channels = 1, sampleRate = 46875)
+        val result = manager.sliceWavData(wav)
+        assertNotNull("sliceWavData must return non-null for a valid WAV", result)
+        // PCM bytes = pcm.size * 2 (2 bytes per short, LE)
+        assertEquals("PCM byte count must be pcm.size * 2", pcm.size * 2, result!!.pcm.size)
+        assertEquals("channels must be read from fmt  chunk", 1, result.channels)
+        assertEquals("sampleRate must be read from fmt  chunk", 46875, result.sampleRate)
+        // Verify the raw bytes match the expected LE encoding
+        val expected = manager.shortArrayToLeBytes(pcm)
+        assertArrayEquals("Sliced PCM must match raw LE encoding of original shorts", expected, result.pcm)
+    }
+
+    @Test
+    fun sliceWavData_stereoWav_correctChannels() {
+        val pcm = ShortArray(20) { it.toShort() }  // interleaved stereo
+        val wav = buildWav(pcm, channels = 2, sampleRate = 46875)
+        val result = manager.sliceWavData(wav)
+        assertNotNull("sliceWavData must handle stereo WAV", result)
+        assertEquals("channels must be 2 for stereo", 2, result!!.channels)
+        assertEquals("PCM bytes = pcm.size * 2", pcm.size * 2, result.pcm.size)
+    }
+
+    @Test
+    fun sliceWavData_tooShort_returnsNull() {
+        val result = manager.sliceWavData(ByteArray(10))
+        assertNull("sliceWavData must return null for files shorter than 36 bytes", result)
+    }
+
+    @Test
+    fun sliceWavData_emptyArray_returnsNull() {
+        val result = manager.sliceWavData(ByteArray(0))
+        assertNull("sliceWavData must return null for empty input", result)
+    }
+
+    @Test
+    fun sliceWavData_notWav_returnsNull() {
+        // Random bytes with no RIFF/WAVE magic
+        val garbage = ByteArray(100) { (it and 0xFF).toByte() }
+        val result = manager.sliceWavData(garbage)
+        assertNull("sliceWavData must return null when fmt  chunk not found", result)
+    }
+
+    // ── 3. putSampleFile INIT frame carries metadata JSON ─────────────────────
+
+    @Test
+    fun putSampleFile_initFrameCarriesMetadataJson_monoMono() = runTest {
+        val spy = SampleImportSpyMIDIPort(connected = true)
+        val repo = SampleImportFakeMIDIRepo(spy, connected = true)
+
+        val pcm = ByteArray(200) { 0 }  // raw PCM bytes (no RIFF header)
+        repo.putSampleFile("kick.wav", pcm, channels = 1, sampleRate = 46875)
+
+        assertNotNull("lastMetadataJson must be set", repo.lastMetadataJson)
+        // Exact key names from data/index.js prepareTeenageMeta: "channels", "samplerate"
+        assertTrue(
+            "metadata must contain \"channels\":1",
+            repo.lastMetadataJson!!.contains("\"channels\":1"),
+        )
+        assertTrue(
+            "metadata must contain \"samplerate\":46875",
+            repo.lastMetadataJson!!.contains("\"samplerate\":46875"),
+        )
+    }
+
+    @Test
+    fun putSampleFile_initFrameCarriesMetadataJson_stereo() = runTest {
+        val spy = SampleImportSpyMIDIPort(connected = true)
+        val repo = SampleImportFakeMIDIRepo(spy, connected = true)
+
+        val pcm = ByteArray(400) { 0 }
+        repo.putSampleFile("loop.wav", pcm, channels = 2, sampleRate = 46875)
+
+        assertNotNull("lastMetadataJson must be set for stereo", repo.lastMetadataJson)
+        assertTrue(
+            "metadata must contain \"channels\":2",
+            repo.lastMetadataJson!!.contains("\"channels\":2"),
+        )
+    }
+
+    @Test
+    fun putSampleFile_initFrameMetadataAppearsInSentFrame() = runTest {
+        val spy = SampleImportSpyMIDIPort(connected = true)
+        val repo = SampleImportFakeMIDIRepo(spy, connected = true)
+
+        val pcm = ByteArray(100) { 0 }
+        repo.putSampleFile("snare.wav", pcm, channels = 1, sampleRate = 46875)
+
+        // Verify the metadata JSON actually appears in the packed INIT frame bytes.
+        // The INIT frame is frames[0]. Unpack its payload and scan for the JSON bytes.
+        assertTrue("At least one frame must be sent", spy.sent.isNotEmpty())
+        val initPayload = SysExProtocol.unpack7bit(spy.sent[0].copyOfRange(9, spy.sent[0].size - 1))
+        val payloadText = String(initPayload, Charsets.US_ASCII)
+        assertTrue(
+            "INIT payload must contain 'channels' key from metadata JSON; payload=$payloadText",
+            payloadText.contains("channels"),
+        )
+        assertTrue(
+            "INIT payload must contain 'samplerate' key from metadata JSON; payload=$payloadText",
+            payloadText.contains("samplerate"),
+        )
+    }
+}
+
