@@ -151,11 +151,55 @@ Greet fallback retained on catch (handles any format that still doesn't parse).
 | Active-group project→group mapping | Known-open — `getActiveGroupIndex` resolves projects node, but `getNodeInfo` returns "not found" for the active-project nodeId; project→name walk is blocked |
 | `getNodeInfo` "not found" response | Known-open — FILE_INFO (op 11) response body parsing unverified; may need offset adjustment |
 
+## Offline fix 4 (2026-06-24) — Raw PCM upload + metadata JSON in PUT INIT
+
+**Commit:** `55b0816`
+
+### Root cause
+
+The EP-133 stores sounds as raw s16 LE PCM (files named `.pcm`). The reference tool (`data/index.js uploadSound`) uploads `et.slice(data_start, data_end)` — just the WAV's `data` chunk, header stripped — with format carried in per-file METADATA JSON (`{"channels":N,"samplerate":R}` from `prepareTeenageMeta`). Our code uploaded WavEncoder's full RIFF/WAV (44-byte RIFF header + PCM) with null metadata, so uploaded samples had a header glitch at the start and played incorrectly. The PUT protocol itself was correct (hardware-verified: `081.pcm` was created on device).
+
+### Changes
+
+**`SampleImportManager.kt`:**
+- Added `ConvertedSample(pcm: ByteArray, channels: Int, sampleRate: Int)` data class.
+- `convert()` return type changed from `ByteArray` (WAV) to `ConvertedSample` (raw PCM + format).
+  - Fast path: calls new `sliceWavData()` to locate and extract the RIFF `data` chunk body (header stripped); reads channels + sampleRate from the `fmt ` chunk. Handles non-standard WAVs where `data` is not at offset 36 (scans forward past unknown sub-chunks).
+  - Slow path: calls `Resampler.toRate()` then `shortArrayToLeBytes()` (new) instead of `WavEncoder.encodeWav()`. Output is raw s16 LE bytes, no RIFF header.
+- Added `shortArrayToLeBytes(ShortArray): ByteArray` — pure, no Android deps; each Short → 2 bytes LE via `ByteBuffer.LITTLE_ENDIAN`. Unit-testable.
+- Added `sliceWavData(ByteArray): ConvertedSample?` — pure, no Android deps; returns null on malformed input. Unit-testable.
+- `importSample`: updated to use `ConvertedSample`, passes `converted.pcm`, `converted.channels`, `converted.sampleRate` to `putSampleFile`.
+- `importSampleBytes`: updated to extract PCM from pre-read WAV bytes via `isAlreadyDeviceFormat` + `sliceWavData`; passes raw PCM + format to `putSampleFile`.
+
+**`MIDIRepository.kt`:**
+- `putSampleFile` signature: `(name, pcmBytes, channels=1, sampleRate=46875)` — raw PCM in, metadata JSON out.
+- Builds `{"channels":$channels,"samplerate":$sampleRate}` (exact key names from `data/index.js prepareTeenageMeta`) and passes it as `metadataJson` to `buildFileCreatePutInitFrame`.
+- Log line updated to show `ch=` and `sr=` for observability.
+
+**Tests:**
+- `SampleImportTest.kt`: `SampleImportSpyMIDIPort` and `SampleImportFakeMIDIRepo` moved to file-level scope (shared with new `RawPcmFormatTest`). Fake's `putSampleFile` override updated to new 4-param signature and records `lastMetadataJson`, `lastChannels`, `lastSampleRate`.
+- `SampleImportViewModelTest.kt`: fake's `putSampleFile` override updated to new signature.
+- `SampleImportConcurrencyTest.kt`: fake's `putSampleFile` override updated to new signature.
+- New test class `RawPcmFormatTest` added to `SampleImportTest.kt`:
+  - `shortArrayToLeBytes_*` (4 tests): empty input, single zero, known values with LE byte order check, round-trip vs `ByteBuffer` reference.
+  - `sliceWavData_*` (5 tests): canonical WAV header stripped correctly, stereo channels preserved, too-short returns null, empty returns null, non-WAV returns null.
+  - `putSampleFile_initFrameCarriesMetadataJson_*` (3 tests): mono metadata JSON content, stereo metadata JSON content, metadata JSON keys appear in packed INIT wire frame.
+
+### Status after fix 4
+
+Upload is now raw-PCM + metadata JSON in INIT. **Hardware playback pending** — next step is to deploy the APK and test a sample upload on a physical EP-133 to confirm samples play without header glitch.
+
+| Area | Status |
+|---|---|
+| Upload payload format | Fixed (raw PCM, header stripped) — hardware-PENDING |
+| Upload metadata JSON | Fixed (`{"channels":N,"samplerate":R}`) — hardware-PENDING |
+| PUT wire framing | Unchanged (hardware-verified: command=5, LSB-first packing, await-INIT, terminator) |
+| Active-group sync | Unchanged (still disabled) |
+
 ## Deferred (hardware UAT)
 
+- **Sample upload playback** — upload format fixed offline; needs hardware test to confirm samples play cleanly (no header glitch).
 - **METADATA GET JSON fix** — offline fix applied; needs hardware round-trip to confirm `getMetadataJson` now returns `{"active":3000}` correctly.
-- **PUT INIT ack gate** — offline fix applied; needs hardware upload test to confirm "unexpected page" is gone.
-- **Active-group project→group mapping** — `getNodeInfo` returns null for the active-project nodeId. The FILE_INFO response body layout may differ from what `parseFileInfo` expects. Needs hardware capture of the FILE_INFO response.
-- **`parseFileInitResponse` chunkSize offset** — reads body[1..4] as u32 BE. With real HW capture `00 0C 00 00 02 00` this yields a large number — tolerated (advisory). Confirmed harmless in HW session.
-- **Legacy FILE_LIST path-string stats** — `queryDeviceStats` still uses path-string FILE_LIST. Body shape unverified on HW. Log added for capture.
-- **Hardware UAT (priority)** — deploy APK, test upload, confirm METADATA GET returns parsed JSON, confirm active-group sync chain completes.
+- **Active-group project→group mapping** — `getNodeInfo` returns null for the active-project nodeId. Needs hardware capture of the FILE_INFO response.
+- **`parseFileInitResponse` chunkSize offset** — reads body[1..4] as u32 BE. Tolerated (advisory).
+- **Hardware UAT (priority)** — deploy APK, test upload playback, confirm METADATA GET parsed JSON, confirm active-group sync chain.
