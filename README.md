@@ -124,6 +124,14 @@ This is a **web-app-first monorepo**. A single compiled React application (`data
 
 → [docs/architecture.md](docs/architecture.md) for the full data flow and platform routing table.
 
+### EP-133 SysEx protocol
+
+Reverse-engineered notes on the EP-133 / EP-1320 USB-MIDI **file-transfer SysEx protocol** —
+frame format, the file-session handshake, directory listing, sample upload, and the gotchas —
+verified on real hardware. For anyone building for the K.O. II.
+
+→ [docs/ep133-sysex-protocol.md](docs/ep133-sysex-protocol.md)
+
 ---
 
 ## Troubleshooting
