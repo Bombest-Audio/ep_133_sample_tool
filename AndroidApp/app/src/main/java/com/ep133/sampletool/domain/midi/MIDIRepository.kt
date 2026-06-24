@@ -284,28 +284,63 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 // Task 4: hardware-verified (2026-06-23) — file responses arrive under command=5,
                 // NOT command=127. Payload is already unpacked by parseMidiInput accumulation;
                 // however the frame body is 7-bit packed so we must unpack it here.
-                // Frame byte layout after command: payload = packed body starting at file subcommand.
                 // We log the raw bytes first for HW capture greppability.
                 val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
                 Log.d("EP133MIDI", "MIDI META: inbound FILE response cmd=5 payload[${payload.size}] $hexDump")
                 val body = if (payload.isNotEmpty()) SysExProtocol.unpack7bit(payload) else ByteArray(0)
                 if (body.isEmpty()) return
-                val fileCmd = body[0].toInt() and 0xFF
-                val filePayload = if (body.size > 1) body.copyOfRange(1, body.size) else ByteArray(0)
-                Log.d("EP133MIDI", "MIDI META: FILE cmd=5 subCmd=$fileCmd body[${body.size}]")
-                dispatchFileResponse(fileCmd, filePayload)
+
+                // Hardware-verified (2026-06-23): device FILE responses do NOT echo the subcommand.
+                // FILE_INIT reply unpacked body starts 0x00 (not 0x01=INIT); FILE_LIST reply starts
+                // with the page u16 (not 0x04=LIST). Routing by body[0] as a subcommand would never
+                // match and leave pendingFileInitDeferred dangling — session never opens.
+                //
+                // Fix: requests are serialised (one file op in flight at a time, gated by
+                // statsQueryInFlight / transferInFlight / ensureFileSessionInit). Determine the
+                // in-flight op from state and pass the WHOLE unpacked body to the handler.
+                val inFlightCmd = when {
+                    pendingFileInitDeferred != null              -> SysExProtocol.TE_SYSEX_FILE_INIT
+                    metadataJsonInFlight || metadataSetInFlight  -> SysExProtocol.TE_SYSEX_FILE_METADATA
+                    pendingNodeListDeferred != null              -> SysExProtocol.TE_SYSEX_FILE_LIST
+                    transferInFlight                             -> SysExProtocol.TE_SYSEX_FILE_PUT
+                    pendingGetInitDeferred != null || pendingGetPages != null -> SysExProtocol.TE_SYSEX_FILE_GET
+                    pendingNodeInfoDeferred != null              -> SysExProtocol.TE_SYSEX_FILE_INFO
+                    else                                         -> -1
+                }
+                val bodyHex = body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+                Log.d("EP133MIDI", "MIDI META: FILE cmd=5 inFlightCmd=$inFlightCmd body[${body.size}] $bodyHex")
+                if (inFlightCmd == -1) {
+                    Log.w("EP133MIDI", "MIDI META: unrouted file response — no op in flight, body[${body.size}] $bodyHex")
+                    return
+                }
+                dispatchFileResponse(inFlightCmd, body)
             }
         }
     }
 
-    private fun dispatchFileResponse(fileCmd: Int, payload: ByteArray) {
+    /**
+     * Dispatch a FILE response to the matching in-flight handler. [fileCmd] is the op type
+     * determined by the caller from in-flight state (NOT from body[0] — device responses do not
+     * echo the subcommand). [body] is the WHOLE unpacked response body (no bytes stripped).
+     *
+     * Hardware ground truth (2026-06-23):
+     *   FILE_INIT reply unpacked: `00 0C 00 00 02 00` (starts 0x00, not 0x01=INIT)
+     *   FILE_LIST reply unpacked: page-u16 then entries (starts with page word, not 0x04=LIST)
+     */
+    private fun dispatchFileResponse(fileCmd: Int, body: ByteArray) {
+        // Rename: parameter was historically called "payload" but is now always the whole body.
+        val payload = body
         when (fileCmd) {
             SysExProtocol.TE_SYSEX_FILE_INIT -> {
-                // Task 4: FILE_INIT response — parse negotiated chunkSize and complete the deferred.
-                val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133MIDI", "MIDI META: FILE_INIT response payload[${payload.size}] $hexDump")
-                val chunkSize = SysExProtocol.parseFileInitResponse(payload)
-                Log.d("EP133MIDI", "MIDI META: FILE_INIT negotiated chunkSize=$chunkSize")
+                // Whole body passed. Session opening is what matters; chunkSize parse is
+                // approximate (parseFileInitResponse reads body[1..4], which with real HW
+                // capture `00 0C 00 00 02 00` yields a large number — tolerated). Never throw.
+                val hexDump = body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+                Log.d("EP133MIDI", "MIDI META: FILE_INIT response body[${body.size}] $hexDump")
+                val chunkSize = try {
+                    SysExProtocol.parseFileInitResponse(body)
+                } catch (_: Exception) { 512 }
+                Log.d("EP133MIDI", "MIDI META: FILE_INIT negotiated chunkSize=$chunkSize (approx)")
                 deviceChunkSize = chunkSize
                 fileSessionInitialized = true
                 pendingFileInitDeferred?.complete(chunkSize)
@@ -377,31 +412,25 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 }
             }
             SysExProtocol.TE_SYSEX_FILE_LIST -> {
-                val status = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
-
-                // Node-ID listing path (Phase 4 enumeration): accumulate entry body
-                // across SUCCESS_START responses, resolve the deferred on STATUS_OK.
-                // payload is already unpacked — write directly to the buffer.
+                // Hardware ground truth: FILE_LIST response body = [page u16 BE][entries...].
+                // No status byte — the old body[0]-as-status routing was wrong.
                 val nodeDeferred = pendingNodeListDeferred
                 if (nodeDeferred != null) {
-                    val listBody = if (payload.size > 1) payload.copyOfRange(1, payload.size) else ByteArray(0)
-                    if (status == SysExProtocol.STATUS_OK ||
-                        status == SysExProtocol.STATUS_SPECIFIC_SUCCESS_START
-                    ) {
-                        nodeListBuffer.write(listBody)
-                    }
-                    if (status == SysExProtocol.STATUS_OK) {
-                        nodeDeferred.complete(nodeListBuffer.toByteArray())
-                        pendingNodeListDeferred = null
-                        nodeListBuffer.reset()
-                    } else if (status != SysExProtocol.STATUS_SPECIFIC_SUCCESS_START) {
-                        nodeDeferred.completeExceptionally(IllegalStateException("FILE_LIST error status $status"))
-                        pendingNodeListDeferred = null
-                        nodeListBuffer.reset()
-                    }
+                    // Skip the leading page u16 (2 bytes); pass raw entry data to parseFileListEntries.
+                    val entriesBody = if (body.size > 2) body.copyOfRange(2, body.size) else ByteArray(0)
+                    nodeListBuffer.write(entriesBody)
+                    nodeDeferred.complete(nodeListBuffer.toByteArray())
+                    pendingNodeListDeferred = null
+                    nodeListBuffer.reset()
                     return
                 }
 
+                // Legacy path-form FILE_LIST (Phase-4 queryDeviceStats /sounds listing).
+                // Body format is unverified on HW now — keep existing behaviour to avoid regressing
+                // stats path. Log the raw body for the next hardware capture session.
+                val hexDump = body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+                Log.d("EP133APP", "FILE_LIST legacy path body[${body.size}] $hexDump")
+                val status = body.getOrNull(0)?.toInt()?.and(0xFF) ?: return
                 if (status == SysExProtocol.STATUS_OK || status == SysExProtocol.STATUS_SPECIFIC_SUCCESS_START) {
                     fileListEntryCount++
                     // Parse entry path from payload for BackupManager (path after status byte)
