@@ -146,27 +146,25 @@ class MetadataProtocolTest {
 
     @Test
     fun buildMetadataGetFrame_wireLayout_noKey() {
+        // Hardware-verified (2026-06-23): command = TE_SYSEX_FILE (5); body starts at subcommand.
         val nodeId = 0x00AB
         val page   = 0x0002
         val frame = SysExProtocol.buildMetadataGetFrame(
             deviceId = 0, nodeId = nodeId, page = page, key = null, requestId = 80,
         )
+        assertEquals("frame[8] = TE_SYSEX_FILE (5)", SysExProtocol.TE_SYSEX_FILE, frame[8].toInt() and 0x7F)
         val p = unpackPayload(frame)
 
-        // [0] = TE_SYSEX_FILE (5)
-        assertEquals("p[0] = TE_SYSEX_FILE", 5, p[0].toInt() and 0xFF)
-        // [1] = TE_SYSEX_FILE_METADATA (7)
-        assertEquals("p[1] = METADATA", 7, p[1].toInt() and 0xFF)
-        // [2] = METADATA_GET (2)
-        assertEquals("p[2] = GET", 2, p[2].toInt() and 0xFF)
-        // [3..4] nodeId u16 BE
-        val parsedNode = ((p[3].toInt() and 0xFF) shl 8) or (p[4].toInt() and 0xFF)
+        // Body starts at subcommand (no leading TE_SYSEX_FILE byte):
+        // [0] = METADATA (7), [1] = GET (2), [2..3] nodeId u16 BE, [4..5] page u16 BE
+        assertEquals("p[0] = METADATA (7)", 7, p[0].toInt() and 0xFF)
+        assertEquals("p[1] = GET (2)", 2, p[1].toInt() and 0xFF)
+        val parsedNode = ((p[2].toInt() and 0xFF) shl 8) or (p[3].toInt() and 0xFF)
         assertEquals("nodeId u16 BE", nodeId, parsedNode)
-        // [5..6] page u16 BE
-        val parsedPage = ((p[5].toInt() and 0xFF) shl 8) or (p[6].toInt() and 0xFF)
+        val parsedPage = ((p[4].toInt() and 0xFF) shl 8) or (p[5].toInt() and 0xFF)
         assertEquals("page u16 BE", page, parsedPage)
-        // No key → payload ends at p[6]
-        assertEquals("no-key payload size = 7", 7, p.size)
+        // No key → body ends at p[5]
+        assertEquals("no-key body size = 6", 6, p.size)
     }
 
     @Test
@@ -176,50 +174,52 @@ class MetadataProtocolTest {
             deviceId = 0, nodeId = 1, page = 0, key = key, requestId = 80,
         )
         val p = unpackPayload(frame)
-        // key starts at p[7], followed by NUL
+        // Body: [METADATA(7), GET(2), nodeId u16, page u16] = 6 bytes; key starts at p[6].
         val keyBytes = key.toByteArray(Charsets.US_ASCII)
-        val keyInPayload = p.copyOfRange(7, 7 + keyBytes.size)
+        val keyInPayload = p.copyOfRange(6, 6 + keyBytes.size)
         assertArrayEquals("key ASCII bytes", keyBytes, keyInPayload)
-        assertEquals("NUL after key", 0, p[7 + keyBytes.size].toInt() and 0xFF)
-        assertEquals("payload size with key", 7 + keyBytes.size + 1, p.size)
+        assertEquals("NUL after key", 0, p[6 + keyBytes.size].toInt() and 0xFF)
+        assertEquals("body size with key", 6 + keyBytes.size + 1, p.size)
     }
 
     // ── buildMetadataSetFrame wire layout ────────────────────────────────────
 
     @Test
     fun buildMetadataSetFrame_wireLayout() {
+        // Body: [METADATA(7), SET(1), nodeId u16, json ASCII, NUL]
         val nodeId = 0x0055
         val json   = """{"active":99}"""
         val frame = SysExProtocol.buildMetadataSetFrame(
             deviceId = 0, nodeId = nodeId, json = json, requestId = 81,
         )
+        assertEquals("frame[8] = TE_SYSEX_FILE (5)", SysExProtocol.TE_SYSEX_FILE, frame[8].toInt() and 0x7F)
         val p = unpackPayload(frame)
 
-        assertEquals("p[0] = TE_SYSEX_FILE", 5, p[0].toInt() and 0xFF)
-        assertEquals("p[1] = METADATA", 7, p[1].toInt() and 0xFF)
-        assertEquals("p[2] = SET", 1, p[2].toInt() and 0xFF)
-        val parsedNode = ((p[3].toInt() and 0xFF) shl 8) or (p[4].toInt() and 0xFF)
+        assertEquals("p[0] = METADATA (7)", 7, p[0].toInt() and 0xFF)
+        assertEquals("p[1] = SET (1)", 1, p[1].toInt() and 0xFF)
+        val parsedNode = ((p[2].toInt() and 0xFF) shl 8) or (p[3].toInt() and 0xFF)
         assertEquals("nodeId u16 BE", nodeId, parsedNode)
         val jsonBytes = json.toByteArray(Charsets.US_ASCII)
-        val jsonInPayload = p.copyOfRange(5, 5 + jsonBytes.size)
+        val jsonInPayload = p.copyOfRange(4, 4 + jsonBytes.size)
         assertArrayEquals("json ASCII bytes", jsonBytes, jsonInPayload)
-        assertEquals("NUL after json", 0, p[5 + jsonBytes.size].toInt() and 0xFF)
-        assertEquals("payload size", 5 + jsonBytes.size + 1, p.size)
+        assertEquals("NUL after json", 0, p[4 + jsonBytes.size].toInt() and 0xFF)
+        assertEquals("body size", 4 + jsonBytes.size + 1, p.size)
     }
 
     // ── buildFileInfoFrame wire layout ───────────────────────────────────────
 
     @Test
     fun buildFileInfoFrame_wireLayout() {
+        // Body: [FILE_INFO(11), nodeId u16]
         val nodeId = 0x1ABC
         val frame = SysExProtocol.buildFileInfoFrame(deviceId = 0, nodeId = nodeId, requestId = 82)
+        assertEquals("frame[8] = TE_SYSEX_FILE (5)", SysExProtocol.TE_SYSEX_FILE, frame[8].toInt() and 0x7F)
         val p = unpackPayload(frame)
 
-        assertEquals("p[0] = TE_SYSEX_FILE", 5, p[0].toInt() and 0xFF)
-        assertEquals("p[1] = FILE_INFO (11)", 11, p[1].toInt() and 0xFF)
-        val parsedNode = ((p[2].toInt() and 0xFF) shl 8) or (p[3].toInt() and 0xFF)
+        assertEquals("p[0] = FILE_INFO (11)", 11, p[0].toInt() and 0xFF)
+        val parsedNode = ((p[1].toInt() and 0xFF) shl 8) or (p[2].toInt() and 0xFF)
         assertEquals("nodeId u16 BE", nodeId, parsedNode)
-        assertEquals("payload size = 4", 4, p.size)
+        assertEquals("body size = 3 (FILE_INFO + nodeId u16)", 3, p.size)
     }
 
     // ── Constant values ──────────────────────────────────────────────────────

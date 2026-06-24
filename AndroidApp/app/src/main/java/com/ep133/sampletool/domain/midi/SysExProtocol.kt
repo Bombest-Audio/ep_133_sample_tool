@@ -28,15 +28,23 @@ object SysExProtocol {
     // ── Top-level commands ──
     const val CMD_GREET = 1
     const val CMD_PRODUCT_SPECIFIC = 127
-
-    // ── File system subcommands (under PRODUCT_SPECIFIC, subsystem TE_SYSEX_FILE = 5) ──
+    // Hardware-verified (2026-06-23): file ops use command=5 directly, NOT CMD_PRODUCT_SPECIFIC(127).
+    // Frame: F0 00 20 76 <dev> 40 <flags> <reqId7> <5> <7bit-packed body> F7
+    // Body starts at the subcommand — no leading TE_SYSEX_FILE byte repeated in payload.
     const val TE_SYSEX_FILE = 5
+
+    // ── File system subcommands (payload body byte 0 when command=TE_SYSEX_FILE) ──
+    // Hardware-verified sequence: FILE_INIT(1) → FILE_LIST(4, node=0) → root dir returned.
+    const val TE_SYSEX_FILE_INIT = 1       // SESSION INIT — must send before any listing
     const val TE_SYSEX_FILE_PUT = 2
     const val TE_SYSEX_FILE_GET = 3
     const val TE_SYSEX_FILE_LIST = 4
     const val TE_SYSEX_FILE_DELETE = 6
     const val TE_SYSEX_FILE_METADATA = 7
     const val TE_SYSEX_FILE_INFO = 11
+
+    // ── FILE_INIT flags ──
+    const val TE_SYSEX_FILE_INIT_SUBSCRIBE = 1  // subscribe to device-push events
 
     // ── FILE_PUT INIT capability + file-type flags ──
     // capabilities is ORed into flags: READ=4, WRITE=8, file-type FILE=1, DIR=2.
@@ -183,13 +191,21 @@ object SysExProtocol {
     // ── File system frame builders ───────────────────────────────────────────
 
     /**
-     * Build a file-system frame wrapping a file subcommand.
+     * Build a TE SysEx frame for a file subsystem operation (command = TE_SYSEX_FILE = 5).
      *
-     * Payload structure: TE_SYSEX_FILE, fileCmd, pathBytes..., extraPayload...
+     * Hardware-verified (2026-06-23): the correct envelope is command=5 with the body
+     * starting at the file subcommand — NOT command=127 with [5, subcmd, ...] payload.
      *
-     * Path and extra payload are included in the payload passed to buildFrame,
-     * which then applies 7-bit packing to the whole payload. The path is ASCII text
-     * and the extra payload (for FILE_PUT) contains raw file data.
+     * @param body  Raw (pre-pack) payload starting with the file subcommand byte.
+     */
+    fun buildFileFrame(deviceId: Int, requestId: Int, body: ByteArray): ByteArray =
+        buildFrame(deviceId, TE_SYSEX_FILE, requestId, body)
+
+    /**
+     * Build a file-system frame wrapping a path-string file subcommand.
+     *
+     * Body structure: fileCmd, pathBytes..., extraPayload...
+     * (No leading TE_SYSEX_FILE byte — it is now the top-level command, not a payload prefix.)
      */
     private fun buildFileSystemFrame(
         deviceId: Int,
@@ -198,9 +214,8 @@ object SysExProtocol {
         pathBytes: ByteArray,
         extraPayload: ByteArray = ByteArray(0),
     ): ByteArray {
-        val payload = byteArrayOf(TE_SYSEX_FILE.toByte(), fileCmd.toByte()) +
-            pathBytes + extraPayload
-        return buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, payload)
+        val body = byteArrayOf(fileCmd.toByte()) + pathBytes + extraPayload
+        return buildFileFrame(deviceId, requestId, body)
     }
 
     /** Build a FILE_LIST request frame for the given path. */
@@ -257,19 +272,16 @@ object SysExProtocol {
      * Build a FILE_LIST request frame that lists a node by its numeric ID (the device's
      * actual addressing model per the reference impl: `SysExFileListRequest(page, nodeId)`).
      *
-     * Payload: [TE_SYSEX_FILE, TE_SYSEX_FILE_LIST, page uint16 BE, nodeId uint16 BE].
-     *
-     * HARDWARE-VERIFY (Open Q1): whether `/projects` lists by resolved nodeId (this) or the
-     * Phase 2 path string (buildFileListFrame). One-line switch: callers pick the builder.
+     * Hardware-verified (2026-06-23): command = TE_SYSEX_FILE (5); body = [LIST(4), page u16, nodeId u16].
+     * No leading TE_SYSEX_FILE byte in the body — that byte is now the top-level command.
      */
     fun buildFileListByNodeFrame(deviceId: Int, nodeId: Int, page: Int = 0, requestId: Int): ByteArray {
-        val payload = byteArrayOf(
-            TE_SYSEX_FILE.toByte(),
+        val body = byteArrayOf(
             TE_SYSEX_FILE_LIST.toByte(),
             (page shr 8).toByte(), (page and 0xFF).toByte(),       // uint16 BE
             (nodeId shr 8).toByte(), (nodeId and 0xFF).toByte(),   // uint16 BE
         )
-        return buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, payload)
+        return buildFileFrame(deviceId, requestId, body)
     }
 
     // ── FILE_LIST response parsing (directory entries) ──────────────────────────
@@ -331,14 +343,13 @@ object SysExProtocol {
 
     // ── Paged GET/PUT (the real INIT/DATA protocol — multi-kilobyte archives) ──
     //
-    // These mirror buildFileSystemFrame's [TE_SYSEX_FILE, subcommand, ...] header
-    // but use the device's two-phase paging model rather than the broken single
-    // chunkIndex. nodeId is uint16 BE, offset uint32 BE, page uint16 BE.
+    // Hardware-verified (2026-06-23): command = TE_SYSEX_FILE (5); body starts at
+    // the subcommand byte — no leading TE_SYSEX_FILE byte in the payload body.
+    // nodeId uint16 BE, offset uint32 BE, page uint16 BE.
     // Reference: data/index.js SysExGetFileInitRequest / SysExGetFileDataRequest.
 
-    private fun buildFileGetInitPayload(nodeId: Int, offset: Int): ByteArray =
+    private fun buildFileGetInitBody(nodeId: Int, offset: Int): ByteArray =
         byteArrayOf(
-            TE_SYSEX_FILE.toByte(),
             TE_SYSEX_FILE_GET.toByte(),
             TE_SYSEX_FILE_GET_TYPE_INIT.toByte(),
             (nodeId shr 8).toByte(), (nodeId and 0xFF).toByte(),                 // uint16 BE
@@ -346,17 +357,15 @@ object SysExProtocol {
             (offset shr 8).toByte(), (offset and 0xFF).toByte(),                 // uint32 BE
         )
 
-    private fun buildFileGetDataPayload(page: Int): ByteArray =
+    private fun buildFileGetDataBody(page: Int): ByteArray =
         byteArrayOf(
-            TE_SYSEX_FILE.toByte(),
             TE_SYSEX_FILE_GET.toByte(),
             TE_SYSEX_FILE_GET_TYPE_DATA.toByte(),
             (page shr 8).toByte(), (page and 0xFF).toByte(),                     // uint16 BE
         )
 
-    private fun buildFilePutInitPayload(nodeId: Int, fileSize: Int): ByteArray =
+    private fun buildFilePutInitBody(nodeId: Int, fileSize: Int): ByteArray =
         byteArrayOf(
-            TE_SYSEX_FILE.toByte(),
             TE_SYSEX_FILE_PUT.toByte(),
             TE_SYSEX_FILE_PUT_TYPE_INIT.toByte(),
             (nodeId shr 8).toByte(), (nodeId and 0xFF).toByte(),                 // uint16 BE
@@ -366,15 +375,15 @@ object SysExProtocol {
 
     /** Build a paged FILE_GET INIT request. Response carries fileSize + fileName. */
     fun buildFileGetInitFrame(deviceId: Int, nodeId: Int, offset: Int = 0, requestId: Int): ByteArray =
-        buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, buildFileGetInitPayload(nodeId, offset))
+        buildFileFrame(deviceId, requestId, buildFileGetInitBody(nodeId, offset))
 
     /** Build a paged FILE_GET DATA request for the given page. */
     fun buildFileGetDataFrame(deviceId: Int, page: Int, requestId: Int): ByteArray =
-        buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, buildFileGetDataPayload(page))
+        buildFileFrame(deviceId, requestId, buildFileGetDataBody(page))
 
     /** Build a paged FILE_PUT INIT request announcing the total upload size. */
     fun buildFilePutInitFrame(deviceId: Int, nodeId: Int, fileSize: Int, requestId: Int): ByteArray =
-        buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, buildFilePutInitPayload(nodeId, fileSize))
+        buildFileFrame(deviceId, requestId, buildFilePutInitBody(nodeId, fileSize))
 
     /**
      * Build a FILE_PUT INIT for CREATING a new file under [parentNodeId] (e.g. the /sounds dir).
@@ -384,10 +393,9 @@ object SysExProtocol {
      * byte size, and the filename (truncated to 54 chars, NUL-terminated). Metadata is optional
      * and omitted when null.
      *
-     * Wire payload (before 7-bit packing, with leading TE_SYSEX_FILE subsystem byte prepended
-     * by buildFrame — matching existing builders):
-     *   [5, 2, 0, flags, fileId u16 BE, parentId u16 BE, fileSize u32 BE, filename ASCII + 0x00,
-     *    (metadata ASCII + 0x00 only when non-null)]
+     * Wire body (before 7-bit packing; command = TE_SYSEX_FILE = 5 is the envelope command):
+     *   [PUT(2), INIT(0), flags, fileId u16 BE, parentId u16 BE, fileSize u32 BE,
+     *    filename ASCII + 0x00, (metadata ASCII + 0x00 only when non-null)]
      *
      * Default flags = TE_SYSEX_FILE_CAPABILITY_READ or TE_SYSEX_FILE_TYPE_FILE = 5, matching
      * uploadSound in the reference tool. Default fileId = 0 (new file — device assigns the id).
@@ -404,7 +412,6 @@ object SysExProtocol {
     ): ByteArray {
         val nameBytes = filename.take(54).toByteArray(Charsets.US_ASCII)
         val out = java.io.ByteArrayOutputStream(16 + nameBytes.size)
-        out.write(TE_SYSEX_FILE)
         out.write(TE_SYSEX_FILE_PUT)
         out.write(TE_SYSEX_FILE_PUT_TYPE_INIT)
         out.write(flags)
@@ -416,21 +423,21 @@ object SysExProtocol {
         if (metadataJson != null) {
             out.write(metadataJson.toByteArray(Charsets.US_ASCII)); out.write(0)
         }
-        return buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, out.toByteArray())
+        return buildFileFrame(deviceId, requestId, out.toByteArray())
     }
 
     /**
      * Build a paged FILE_PUT DATA request: a page header followed by the archive chunk.
-     * The chunk bytes are raw 8-bit; buildFrame 7-bit-packs the whole payload.
+     * The chunk bytes are raw 8-bit; buildFrame 7-bit-packs the whole body.
+     * Command = TE_SYSEX_FILE (5); body starts at PUT(2) subcommand (no leading 5).
      */
     fun buildFilePutDataFrame(deviceId: Int, page: Int, chunk: ByteArray, requestId: Int): ByteArray {
-        val payload = byteArrayOf(
-            TE_SYSEX_FILE.toByte(),
+        val body = byteArrayOf(
             TE_SYSEX_FILE_PUT.toByte(),
             TE_SYSEX_FILE_PUT_TYPE_DATA.toByte(),
             (page shr 8).toByte(), (page and 0xFF).toByte(),
         ) + chunk
-        return buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, payload)
+        return buildFileFrame(deviceId, requestId, body)
     }
 
     // ── Paged GET response parsers ─────────────────────────────────────────────
@@ -535,12 +542,10 @@ object SysExProtocol {
     // path-string form (buildFileMetadataFrame). The path-form is kept intact for
     // Phase-4 /sounds storage stats and /projects active-node reads.
     //
-    // Wire layout (after TE_SYSEX_FILE subsystem byte; these bytes become the
-    // payload passed to buildFrame, which prepends the 5 and 7-bit-packs everything):
-    //
-    //   GET: [7, 2, nodeId u16 BE, page u16 BE, (key ASCII + 0x00)?]
-    //   SET: [7, 1, nodeId u16 BE, json ASCII, 0x00]
-    //   INFO:[11, nodeId u16 BE]
+    // Wire body (command = TE_SYSEX_FILE = 5; no leading 5 in the body):
+    //   GET: [METADATA(7), GET(2), nodeId u16 BE, page u16 BE, (key ASCII + 0x00)?]
+    //   SET: [METADATA(7), SET(1), nodeId u16 BE, json ASCII, 0x00]
+    //   INFO:[FILE_INFO(11), nodeId u16 BE]
     //
     // Reference: data/index.js SysExFileGetMetadataRequest / SysExFileSetMetadataRequest
     //            / SysExFileInfoRequest — verified 2026-06-21.
@@ -548,7 +553,7 @@ object SysExProtocol {
     /**
      * Build a nodeId-form METADATA GET frame (METADATA_GET = 2).
      *
-     * Payload inside buildFrame: [TE_SYSEX_FILE, METADATA, GET, nodeId u16, page u16, (key+NUL)?]
+     * Body (command = TE_SYSEX_FILE): [METADATA(7), GET(2), nodeId u16, page u16, (key+NUL)?]
      *
      * @param nodeId    Numeric node ID of the directory or file to query.
      * @param page      Page index (0-based); devices return `[page u16][JSON fragment]` pages.
@@ -562,8 +567,7 @@ object SysExProtocol {
         key: String? = null,
         requestId: Int,
     ): ByteArray {
-        val out = java.io.ByteArrayOutputStream(8 + (key?.length?.plus(1) ?: 0))
-        out.write(TE_SYSEX_FILE)
+        val out = java.io.ByteArrayOutputStream(7 + (key?.length?.plus(1) ?: 0))
         out.write(TE_SYSEX_FILE_METADATA)
         out.write(TE_SYSEX_FILE_METADATA_GET)
         out.write(nodeId shr 8); out.write(nodeId and 0xFF)    // u16 BE
@@ -572,13 +576,13 @@ object SysExProtocol {
             out.write(key.toByteArray(Charsets.US_ASCII))
             out.write(0)
         }
-        return buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, out.toByteArray())
+        return buildFileFrame(deviceId, requestId, out.toByteArray())
     }
 
     /**
      * Build a nodeId-form METADATA SET frame (METADATA_SET = 1).
      *
-     * Payload: [TE_SYSEX_FILE, METADATA, SET, nodeId u16, json ASCII, 0x00]
+     * Body (command = TE_SYSEX_FILE): [METADATA(7), SET(1), nodeId u16, json ASCII, 0x00]
      *
      * For active-group selection the JSON is `{"active":<groupNodeId>}` — always
      * single-frame (far below any device chunk size).
@@ -593,20 +597,19 @@ object SysExProtocol {
         requestId: Int,
     ): ByteArray {
         val jsonBytes = json.toByteArray(Charsets.US_ASCII)
-        val out = java.io.ByteArrayOutputStream(5 + jsonBytes.size + 1)
-        out.write(TE_SYSEX_FILE)
+        val out = java.io.ByteArrayOutputStream(4 + jsonBytes.size + 1)
         out.write(TE_SYSEX_FILE_METADATA)
         out.write(TE_SYSEX_FILE_METADATA_SET)
         out.write(nodeId shr 8); out.write(nodeId and 0xFF)    // u16 BE
         out.write(jsonBytes)
         out.write(0)
-        return buildFrame(deviceId, CMD_PRODUCT_SPECIFIC, requestId, out.toByteArray())
+        return buildFileFrame(deviceId, requestId, out.toByteArray())
     }
 
     /**
      * Build a FILE_INFO (getNode) frame (op 11).
      *
-     * Payload: [TE_SYSEX_FILE, FILE_INFO, nodeId u16 BE]
+     * Body (command = TE_SYSEX_FILE): [FILE_INFO(11), nodeId u16 BE]
      *
      * Response layout: nodeId u16, parentId u16, flags u8, size u32, name@9 NUL-terminated ASCII.
      * Parse with [parseFileInfo].
@@ -614,17 +617,61 @@ object SysExProtocol {
      * Reference: data/index.js SysExFileInfoRequest, byte ~833656.
      */
     fun buildFileInfoFrame(deviceId: Int, nodeId: Int, requestId: Int): ByteArray =
-        buildFrame(
+        buildFileFrame(
             deviceId,
-            CMD_PRODUCT_SPECIFIC,
             requestId,
             byteArrayOf(
-                TE_SYSEX_FILE.toByte(),
                 TE_SYSEX_FILE_INFO.toByte(),
                 (nodeId shr 8).toByte(),
                 (nodeId and 0xFF).toByte(),
             ),
         )
+
+    // ── FILE_INIT handshake builders/parsers ─────────────────────────────────
+
+    /**
+     * Build a FILE_INIT request frame (TE_SYSEX_FILE_INIT = 1).
+     *
+     * Hardware-verified: must be sent once per connection before any file listing.
+     * Device returns "can't list unless initialized" without this handshake.
+     *
+     * Body (command = TE_SYSEX_FILE): [INIT(1), flags, maxResponseLength u32 BE]
+     *
+     * @param maxResponseLength Maximum response size the client accepts (try 512).
+     * @param flags             Init flags; default = TE_SYSEX_FILE_INIT_SUBSCRIBE (1).
+     */
+    fun buildFileInitFrame(
+        deviceId: Int,
+        requestId: Int,
+        maxResponseLength: Int = 512,
+        flags: Int = TE_SYSEX_FILE_INIT_SUBSCRIBE,
+    ): ByteArray {
+        val body = byteArrayOf(
+            TE_SYSEX_FILE_INIT.toByte(),
+            flags.toByte(),
+            (maxResponseLength shr 24).toByte(),
+            (maxResponseLength shr 16).toByte(),
+            (maxResponseLength shr 8).toByte(),
+            (maxResponseLength and 0xFF).toByte(),
+        )
+        return buildFileFrame(deviceId, requestId, body)
+    }
+
+    /**
+     * Parse an already-unpacked FILE_INIT response body into a negotiated chunk size.
+     *
+     * HARDWARE-VERIFY (INIT-A1): response body offset and exact field layout need
+     * a physical EP-133 confirmation. Current assumption: body[1..4] = chunkSize u32 BE
+     * (reference: SysExFileInitRequest response in data/index.js, a[1..4]).
+     * Returns 512 as a safe default if the body is too short to parse.
+     */
+    fun parseFileInitResponse(body: ByteArray): Int {
+        if (body.size < 5) return 512
+        return ((body[1].toInt() and 0xFF) shl 24) or
+            ((body[2].toInt() and 0xFF) shl 16) or
+            ((body[3].toInt() and 0xFF) shl 8) or
+            (body[4].toInt() and 0xFF)
+    }
 
     // ── FILE_INFO response ────────────────────────────────────────────────────
 

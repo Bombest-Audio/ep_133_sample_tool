@@ -117,10 +117,10 @@ class SampleImportTest {
         SysExProtocol.unpack7bit(frame.copyOfRange(9, frame.size - 1))
 
     // ──────────────────────────────────────────────────────────────────────────
-    // INIT frame layout: [5, 2, 0, flags=5, 0,0(fileId), parentHi,parentLo,
-    //                     size u32 BE, "kick.wav" ASCII, 0x00]
-    // DATA frames: [5, 2, 1, pageHi, pageLo, chunk...]
-    // Terminator: DATA frame with zero-length chunk
+    // Hardware-verified (2026-06-23): command = TE_SYSEX_FILE (5); body starts at subcommand.
+    // INIT frame body: [PUT(2), INIT(0), flags=5, fileId u16, parentId u16, size u32, name+NUL]
+    // DATA frames body: [PUT(2), DATA(1), pageHi, pageLo, chunk...]
+    // Terminator: DATA frame with zero-length chunk (body size = 4)
     // ──────────────────────────────────────────────────────────────────────────
 
     @Test
@@ -142,40 +142,39 @@ class SampleImportTest {
             expectedTotal, frames.size,
         )
 
-        // Frame 0 must be a TYPE_INIT carrying the filename
+        // Frame 0 must be a TYPE_INIT carrying the filename; command = TE_SYSEX_FILE (5).
+        assertEquals("INIT frame[8] = TE_SYSEX_FILE (5)",
+            SysExProtocol.TE_SYSEX_FILE, frames[0][8].toInt() and 0x7F)
         val initPayload = unpackPayload(frames[0])
-        assertEquals("INIT payload[0] = TE_SYSEX_FILE (5)",
-            SysExProtocol.TE_SYSEX_FILE, initPayload[0].toInt() and 0xFF)
-        assertEquals("INIT payload[1] = TE_SYSEX_FILE_PUT (2)",
-            SysExProtocol.TE_SYSEX_FILE_PUT, initPayload[1].toInt() and 0xFF)
-        assertEquals("INIT payload[2] = TYPE_INIT (0)",
-            SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_INIT, initPayload[2].toInt() and 0xFF)
+        // Body starts at subcommand: [PUT(2), INIT(0), flags, fileId u16, parentId u16, size u32, name...]
+        assertEquals("INIT body[0] = TE_SYSEX_FILE_PUT (2)",
+            SysExProtocol.TE_SYSEX_FILE_PUT, initPayload[0].toInt() and 0xFF)
+        assertEquals("INIT body[1] = TYPE_INIT (0)",
+            SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_INIT, initPayload[1].toInt() and 0xFF)
 
-        // filename "kick.wav" must appear at offset 12:
-        //   [0]=5, [1]=2, [2]=0, [3]=flags, [4-5]=fileId u16, [6-7]=parentId u16, [8-11]=size u32
+        // filename "kick.wav" must appear at offset 11:
+        //   [0]=PUT, [1]=INIT, [2]=flags, [3-4]=fileId u16, [5-6]=parentId u16, [7-10]=size u32
         val nameBytes = "kick.wav".toByteArray(Charsets.US_ASCII)
-        val nameInInit = initPayload.copyOfRange(12, 12 + nameBytes.size)
+        val nameInInit = initPayload.copyOfRange(11, 11 + nameBytes.size)
         assertArrayEquals("INIT must carry the sanitized filename", nameBytes, nameInInit)
         assertEquals("Byte after filename must be NUL terminator",
-            0, initPayload[12 + nameBytes.size].toInt() and 0xFF)
+            0, initPayload[11 + nameBytes.size].toInt() and 0xFF)
 
         // All DATA frames (indices 1..expectedDataFrames) must be TYPE_DATA
         for (i in 1..expectedDataFrames) {
             val p = unpackPayload(frames[i])
-            assertEquals("DATA frame $i payload[0] = TE_SYSEX_FILE (5)",
-                SysExProtocol.TE_SYSEX_FILE, p[0].toInt() and 0xFF)
-            assertEquals("DATA frame $i payload[1] = TE_SYSEX_FILE_PUT (2)",
-                SysExProtocol.TE_SYSEX_FILE_PUT, p[1].toInt() and 0xFF)
-            assertEquals("DATA frame $i payload[2] = TYPE_DATA (1)",
-                SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_DATA, p[2].toInt() and 0xFF)
+            assertEquals("DATA frame $i body[0] = TE_SYSEX_FILE_PUT (2)",
+                SysExProtocol.TE_SYSEX_FILE_PUT, p[0].toInt() and 0xFF)
+            assertEquals("DATA frame $i body[1] = TYPE_DATA (1)",
+                SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_DATA, p[1].toInt() and 0xFF)
         }
 
         // Last frame must be a zero-length DATA terminator
         val termPayload = unpackPayload(frames.last())
-        assertEquals("Terminator payload[2] = TYPE_DATA (1)",
-            SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_DATA, termPayload[2].toInt() and 0xFF)
-        // After [5,2,1,pageHi,pageLo] (5 bytes), there must be no data bytes
-        assertEquals("Terminator must carry no chunk data (zero-length)", 5, termPayload.size)
+        assertEquals("Terminator body[1] = TYPE_DATA (1)",
+            SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_DATA, termPayload[1].toInt() and 0xFF)
+        // After [PUT(2), DATA(1), pageHi, pageLo] (4 bytes), there must be no data bytes
+        assertEquals("Terminator must carry no chunk data (zero-length)", 4, termPayload.size)
     }
 
     @Test
@@ -192,12 +191,12 @@ class SampleImportTest {
         // DATA frames are frames[1] up to (but not including) the last terminator frame
         val dataFrames = frames.subList(1, frames.size - 1)
 
-        // DATA frame payload layout: [5, 2, 1, pageHi, pageLo, chunk...]
-        // Chunk data starts at byte 5 of the unpacked payload.
+        // DATA frame body layout: [PUT(2), DATA(1), pageHi, pageLo, chunk...]
+        // Chunk data starts at byte 4 of the unpacked body (no leading TE_SYSEX_FILE byte).
         val reassembled = dataFrames
             .flatMap { frame ->
                 val p = unpackPayload(frame)
-                p.drop(5).toList()  // skip [TE_SYSEX_FILE, FILE_PUT, TYPE_DATA, pageHi, pageLo]
+                p.drop(4).toList()  // skip [PUT, DATA, pageHi, pageLo]
             }
             .toByteArray()
 
@@ -217,15 +216,16 @@ class SampleImportTest {
         repo.putSampleFile("kick.wav", wavBytes)
 
         val initPayload = unpackPayload(spy.sent[0])
-        // Layout: [0]=5, [1]=2, [2]=0, [3]=flags, [4-5]=fileId u16 BE, [6-7]=parentId u16 BE, [8-11]=fileSize u32 BE
-        val fileId = ((initPayload[4].toInt() and 0xFF) shl 8) or (initPayload[5].toInt() and 0xFF)
+        // Body layout: [PUT(2), INIT(0), flags, fileId u16 BE, parentId u16 BE, fileSize u32 BE, ...]
+        // [0]=PUT, [1]=INIT, [2]=flags, [3-4]=fileId, [5-6]=parentId, [7-10]=fileSize
+        val fileId = ((initPayload[3].toInt() and 0xFF) shl 8) or (initPayload[4].toInt() and 0xFF)
         assertEquals("fileId must be 0 for a new file", 0, fileId)
-        val parentId = ((initPayload[6].toInt() and 0xFF) shl 8) or (initPayload[7].toInt() and 0xFF)
+        val parentId = ((initPayload[5].toInt() and 0xFF) shl 8) or (initPayload[6].toInt() and 0xFF)
         assertEquals("parentId must be the /sounds nodeId", soundsNodeId, parentId)
-        val size = ((initPayload[8].toInt() and 0xFF) shl 24) or
-            ((initPayload[9].toInt() and 0xFF) shl 16) or
-            ((initPayload[10].toInt() and 0xFF) shl 8) or
-            (initPayload[11].toInt() and 0xFF)
+        val size = ((initPayload[7].toInt() and 0xFF) shl 24) or
+            ((initPayload[8].toInt() and 0xFF) shl 16) or
+            ((initPayload[9].toInt() and 0xFF) shl 8) or
+            (initPayload[10].toInt() and 0xFF)
         assertEquals("fileSize in INIT must equal wavBytes.size", wavBytes.size, size)
     }
 

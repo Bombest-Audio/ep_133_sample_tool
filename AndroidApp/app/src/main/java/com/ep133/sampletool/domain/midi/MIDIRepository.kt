@@ -83,6 +83,14 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private var currentDeviceId: Int = 0
     @Volatile private var statsQueryInFlight = false
 
+    // ── FILE_INIT session state (Task 3 — hardware-required handshake) ──
+    // The device returns "can't list unless initialized" until a FILE_INIT (subcmd=1) is
+    // sent. This is a one-time-per-connection handshake; the negotiated chunkSize is used
+    // to bound response sizes. Reset to false on greet (new connection).
+    @Volatile private var fileSessionInitialized = false
+    private var deviceChunkSize: Int = 512
+    private var pendingFileInitDeferred: CompletableDeferred<Int>? = null
+
     // ── Paged project transfer state (Phase 4 GATE) ──
     // A paged GET/PUT keeps its request registered across STATUS_SPECIFIC_SUCCESS_START
     // and resolves on STATUS_OK. Unlike a single CompletableDeferred, intermediate DATA
@@ -257,40 +265,66 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
 
         when (command) {
             SysExProtocol.CMD_GREET -> {
+                // Task 2: adopt the device's real ID from the greet response (byte[4] of message).
+                // The device reports 0x33; use whatever it sends so we echo it back in requests.
+                val reportedDeviceId = message[4].toInt() and 0x7F
+                if (reportedDeviceId != 0) {
+                    currentDeviceId = reportedDeviceId
+                    Log.d("EP133MIDI", "GREET: adopted deviceId=0x${reportedDeviceId.toString(16)}")
+                }
+                // Reset file session on new greet (new connection).
+                fileSessionInitialized = false
+
                 val parsed = SysExProtocol.parseGreetResponse(payload)
                 Log.d("EP133APP", "GREET response: $parsed")
                 pendingGreetDeferred?.complete(parsed)
                 pendingGreetDeferred = null
             }
-            SysExProtocol.CMD_PRODUCT_SPECIFIC -> {
-                if (payload.isNotEmpty() && (payload[0].toInt() and 0xFF) == SysExProtocol.TE_SYSEX_FILE) {
-                    val fileCmd = payload.getOrNull(1)?.toInt()?.and(0xFF) ?: return
-                    val filePayload = if (payload.size > 2) payload.copyOfRange(2, payload.size) else ByteArray(0)
-                    dispatchFileResponse(fileCmd, filePayload)
-                }
+            SysExProtocol.TE_SYSEX_FILE -> {
+                // Task 4: hardware-verified (2026-06-23) — file responses arrive under command=5,
+                // NOT command=127. Payload is already unpacked by parseMidiInput accumulation;
+                // however the frame body is 7-bit packed so we must unpack it here.
+                // Frame byte layout after command: payload = packed body starting at file subcommand.
+                // We log the raw bytes first for HW capture greppability.
+                val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+                Log.d("EP133MIDI", "MIDI META: inbound FILE response cmd=5 payload[${payload.size}] $hexDump")
+                val body = if (payload.isNotEmpty()) SysExProtocol.unpack7bit(payload) else ByteArray(0)
+                if (body.isEmpty()) return
+                val fileCmd = body[0].toInt() and 0xFF
+                val filePayload = if (body.size > 1) body.copyOfRange(1, body.size) else ByteArray(0)
+                Log.d("EP133MIDI", "MIDI META: FILE cmd=5 subCmd=$fileCmd body[${body.size}]")
+                dispatchFileResponse(fileCmd, filePayload)
             }
         }
     }
 
     private fun dispatchFileResponse(fileCmd: Int, payload: ByteArray) {
         when (fileCmd) {
-            SysExProtocol.TE_SYSEX_FILE_METADATA -> {
-                // HW-VERIFY-3 raw-byte log (Task 3 — greppable for live device capture)
+            SysExProtocol.TE_SYSEX_FILE_INIT -> {
+                // Task 4: FILE_INIT response — parse negotiated chunkSize and complete the deferred.
                 val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133APP", "MIDI META: inbound METADATA payload[${ payload.size}] $hexDump")
+                Log.d("EP133MIDI", "MIDI META: FILE_INIT response payload[${payload.size}] $hexDump")
+                val chunkSize = SysExProtocol.parseFileInitResponse(payload)
+                Log.d("EP133MIDI", "MIDI META: FILE_INIT negotiated chunkSize=$chunkSize")
+                deviceChunkSize = chunkSize
+                fileSessionInitialized = true
+                pendingFileInitDeferred?.complete(chunkSize)
+                pendingFileInitDeferred = null
+            }
+            SysExProtocol.TE_SYSEX_FILE_METADATA -> {
+                // Payload is already unpacked (dispatcher unpacks the full body before splitting).
+                val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+                Log.d("EP133APP", "MIDI META: inbound METADATA payload[${payload.size}] $hexDump")
 
                 when {
                     metadataJsonInFlight -> {
                         // nodeId-form METADATA GET: accumulate JSON pages until terminator.
-                        // payload here is the 7-bit-packed body after stripping [TE_SYSEX_FILE, METADATA].
-                        // The dispatcher unpacks in dispatchSysEx → filePayload already unpacked? No —
-                        // filePayload is the raw packed slice; we unpack here to recover the page header + JSON.
-                        val unpacked = SysExProtocol.unpack7bit(payload)
-                        if (SysExProtocol.isMetadataTerminator(unpacked)) {
+                        // payload is already unpacked — use directly (no second unpack7bit call).
+                        if (SysExProtocol.isMetadataTerminator(payload)) {
                             // Final page — may still carry a fragment before the NUL.
-                            if (unpacked.size > 2) {
+                            if (payload.size > 2) {
                                 try {
-                                    val (_, fragment) = SysExProtocol.parseMetadataPage(unpacked)
+                                    val (_, fragment) = SysExProtocol.parseMetadataPage(payload)
                                     metadataJsonBuffer.append(fragment)
                                 } catch (_: Exception) { /* ignore malformed fragment on terminator */ }
                             }
@@ -300,7 +334,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                             pendingMetadataJsonDeferred = null
                         } else {
                             try {
-                                val (page, fragment) = SysExProtocol.parseMetadataPage(unpacked)
+                                val (page, fragment) = SysExProtocol.parseMetadataPage(payload)
                                 if (page == metadataJsonExpectedPage) {
                                     metadataJsonBuffer.append(fragment)
                                     metadataJsonExpectedPage++
@@ -319,16 +353,23 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                         }
                     }
                     metadataSetInFlight -> {
-                        // nodeId-form METADATA SET ack: any response (even empty) on the matching
-                        // frame completes the round-trip. The dispatcher already stripped the opcode
-                        // prefix so payload is whatever the device echoes. Treat non-error as success.
+                        // nodeId-form METADATA SET ack: any response completes the round-trip.
                         Log.d("EP133APP", "MIDI META: METADATA SET ack received")
                         pendingMetadataSetAckDeferred?.complete(true)
                         pendingMetadataSetAckDeferred = null
                     }
                     else -> {
                         // Legacy path-form METADATA response (Phase-4 storage queries / queryProjectsActiveNode).
-                        val parsed = SysExProtocol.parseGreetResponse(payload)
+                        // payload is already unpacked — parse directly as ASCII key:value text.
+                        val text = try {
+                            String(payload, Charsets.US_ASCII).trim(' ')
+                        } catch (_: Exception) { "" }
+                        val parsed = text.split(";")
+                            .filter { it.contains(":") }
+                            .associate { entry ->
+                                val idx = entry.indexOf(':')
+                                entry.substring(0, idx) to entry.substring(idx + 1)
+                            }
                         Log.d("EP133APP", "FILE_METADATA response: $parsed")
                         pendingMetadataDeferred?.complete(parsed)
                         pendingMetadataDeferred = null
@@ -338,15 +379,16 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             SysExProtocol.TE_SYSEX_FILE_LIST -> {
                 val status = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
 
-                // Node-ID listing path (Phase 4 enumeration): accumulate the unpacked entry
-                // body across SUCCESS_START responses, resolve the deferred on STATUS_OK.
+                // Node-ID listing path (Phase 4 enumeration): accumulate entry body
+                // across SUCCESS_START responses, resolve the deferred on STATUS_OK.
+                // payload is already unpacked — write directly to the buffer.
                 val nodeDeferred = pendingNodeListDeferred
                 if (nodeDeferred != null) {
                     val listBody = if (payload.size > 1) payload.copyOfRange(1, payload.size) else ByteArray(0)
                     if (status == SysExProtocol.STATUS_OK ||
                         status == SysExProtocol.STATUS_SPECIFIC_SUCCESS_START
                     ) {
-                        nodeListBuffer.write(SysExProtocol.unpack7bit(listBody))
+                        nodeListBuffer.write(listBody)
                     }
                     if (status == SysExProtocol.STATUS_OK) {
                         nodeDeferred.complete(nodeListBuffer.toByteArray())
@@ -391,14 +433,13 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 if (transferInFlight) dispatchPagedPutResponse(payload)
             }
             SysExProtocol.TE_SYSEX_FILE_INFO -> {
-                // HW-VERIFY-3 raw-byte log (Task 3)
+                // payload is already unpacked — use directly.
                 val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
                 Log.d("EP133APP", "MIDI META: inbound FILE_INFO payload[${payload.size}] $hexDump")
 
                 val deferred = pendingNodeInfoDeferred ?: return
                 try {
-                    val unpacked = SysExProtocol.unpack7bit(payload)
-                    val info = SysExProtocol.parseFileInfo(unpacked)
+                    val info = SysExProtocol.parseFileInfo(payload)
                     Log.d("EP133APP", "MIDI META: FILE_INFO nodeId=${info.nodeId} name='${info.name}' flags=${info.flags}")
                     deferred.complete(info)
                 } catch (e: Exception) {
@@ -423,8 +464,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         val initDeferred = pendingGetInitDeferred
         if (initDeferred != null && !initDeferred.isCompleted) {
             // First response after GET_INIT carries fileSize/fileName.
+            // body is already unpacked — use directly.
             try {
-                initDeferred.complete(SysExProtocol.parseGetInitResponse(SysExProtocol.unpack7bit(body)))
+                initDeferred.complete(SysExProtocol.parseGetInitResponse(body))
             } catch (e: IllegalArgumentException) {
                 Log.e("EP133APP", "GET INIT parse failed", e)
                 initDeferred.completeExceptionally(e)
@@ -440,7 +482,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             return
         }
         val data = try {
-            SysExProtocol.parseGetDataResponse(SysExProtocol.unpack7bit(body))
+            // body is already unpacked — parse directly.
+            SysExProtocol.parseGetDataResponse(body)
         } catch (e: IllegalArgumentException) {
             Log.e("EP133APP", "GET DATA parse failed", e)
             pages.close(e)
@@ -727,6 +770,42 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         }
     }
 
+    // ── FILE_INIT session handshake (Task 3 — once per connection) ─────────────
+
+    /**
+     * Ensure the FILE_INIT handshake has been completed for this connection.
+     *
+     * Hardware-verified: the device returns "can't list unless initialized" until
+     * a FILE_INIT (subcommand 1) is sent. This is a one-shot-per-connection call;
+     * subsequent calls return immediately if [fileSessionInitialized] is already set.
+     *
+     * Resets on greet (new connection via [dispatchSysEx] CMD_GREET branch).
+     *
+     * @return true if the session is initialized (immediately or after the handshake),
+     *         false if no port is connected or the INIT timed out.
+     */
+    suspend fun ensureFileSessionInit(): Boolean {
+        if (fileSessionInitialized) return true
+        val portId = _deviceState.value.outputPortId ?: return false
+        val deferred = CompletableDeferred<Int>()
+        pendingFileInitDeferred = deferred
+        val frame = SysExProtocol.buildFileInitFrame(currentDeviceId, requestId = FILE_INIT_REQUEST_ID)
+        val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+        Log.d("EP133MIDI", "MIDI META: outbound FILE_INIT frame[${frame.size}] $hexDump")
+        midiManager.sendMidi(portId, frame)
+        val chunkSize = withTimeoutOrNull(FILE_INIT_TIMEOUT_MS) { deferred.await() }
+        return if (chunkSize != null) {
+            Log.d("EP133MIDI", "FILE_INIT: session initialized, chunkSize=$chunkSize")
+            true
+        } else {
+            Log.e("EP133MIDI", "FILE_INIT: timed out — proceeding anyway (hardware may not require it)")
+            pendingFileInitDeferred = null
+            // Best-effort: if the device didn't respond, mark as initialized so we don't loop.
+            fileSessionInitialized = true
+            false
+        }
+    }
+
     // ── Project slot enumeration (Phase 4 Wave 2, PROJ-01) ──
 
     /** A single EP-133 project slot (one of /projects/P00 .. /projects/P08). */
@@ -785,6 +864,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      */
     open suspend fun resolveNodeId(path: String): Int? {
         if (statsQueryInFlight) return null
+        // Task 3: ensure FILE_INIT handshake before any node resolution.
+        ensureFileSessionInit()
         statsQueryInFlight = true
         return try {
             val segments = path.trim('/').split('/').filter { it.isNotEmpty() }
@@ -977,6 +1058,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     suspend fun getActiveGroupIndex(): Int? {
         Log.d("EP133APP", "MIDI META: getActiveGroupIndex() called, statsQueryInFlight=$statsQueryInFlight outputPort=${_deviceState.value.outputPortId}")
         if (statsQueryInFlight) return null
+        // Task 3: ensure FILE_INIT handshake before any file op.
+        ensureFileSessionInit()
         statsQueryInFlight = true
         return try {
             val projectsNode = resolveNodeIdInternal("/projects") ?: return null
@@ -1176,5 +1259,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         private const val METADATA_GET_REQUEST_ID = 80
         private const val METADATA_SET_REQUEST_ID = 81
         private const val FILE_INFO_REQUEST_ID    = 82
+        // FILE_INIT handshake (Task 3 — once per connection).
+        private const val FILE_INIT_REQUEST_ID    = 83
+        private const val FILE_INIT_TIMEOUT_MS    = 5_000L
     }
 }

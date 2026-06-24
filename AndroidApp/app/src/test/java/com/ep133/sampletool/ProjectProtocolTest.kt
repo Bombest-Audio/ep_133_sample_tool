@@ -22,44 +22,46 @@ class ProjectProtocolTest {
 
     @Test
     fun getInitFrame_carriesSubcommandTypeNodeIdAndOffset() {
+        // Hardware-verified (2026-06-23): command = TE_SYSEX_FILE (5); body starts at subcommand.
         val frame = SysExProtocol.buildFileGetInitFrame(
             deviceId = 0, nodeId = 0x1234, offset = 0x00ABCDEF, requestId = 1,
         )
-        assertEquals(SysExProtocol.CMD_PRODUCT_SPECIFIC, frame[8].toInt() and 0x7F)
+        assertEquals("command = TE_SYSEX_FILE (5)", SysExProtocol.TE_SYSEX_FILE, frame[8].toInt() and 0x7F)
         val p = unpackPayload(frame)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE, p[0].toInt() and 0xFF)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE_GET, p[1].toInt() and 0xFF)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE_GET_TYPE_INIT, p[2].toInt() and 0xFF)
+        // Body: [GET(3), INIT(0), nodeId u16, offset u32]
+        assertEquals(SysExProtocol.TE_SYSEX_FILE_GET, p[0].toInt() and 0xFF)
+        assertEquals(SysExProtocol.TE_SYSEX_FILE_GET_TYPE_INIT, p[1].toInt() and 0xFF)
         // nodeId uint16 BE
-        assertEquals(0x12, p[3].toInt() and 0xFF)
-        assertEquals(0x34, p[4].toInt() and 0xFF)
+        assertEquals(0x12, p[2].toInt() and 0xFF)
+        assertEquals(0x34, p[3].toInt() and 0xFF)
         // offset uint32 BE
-        assertEquals(0x00, p[5].toInt() and 0xFF)
-        assertEquals(0xAB, p[6].toInt() and 0xFF)
-        assertEquals(0xCD, p[7].toInt() and 0xFF)
-        assertEquals(0xEF, p[8].toInt() and 0xFF)
+        assertEquals(0x00, p[4].toInt() and 0xFF)
+        assertEquals(0xAB, p[5].toInt() and 0xFF)
+        assertEquals(0xCD, p[6].toInt() and 0xFF)
+        assertEquals(0xEF, p[7].toInt() and 0xFF)
     }
 
     @Test
     fun getInitFrame_defaultsOffsetToZero() {
         val frame = SysExProtocol.buildFileGetInitFrame(deviceId = 0, nodeId = 7, requestId = 1)
         val p = unpackPayload(frame)
+        // Body: [GET(3), INIT(0), nodeId u16, offset u32]; offset starts at p[4].
+        assertEquals(0, p[4].toInt() and 0xFF)
         assertEquals(0, p[5].toInt() and 0xFF)
         assertEquals(0, p[6].toInt() and 0xFF)
         assertEquals(0, p[7].toInt() and 0xFF)
-        assertEquals(0, p[8].toInt() and 0xFF)
     }
 
     @Test
     fun getDataFrame_carriesSubcommandTypeAndPage() {
         val frame = SysExProtocol.buildFileGetDataFrame(deviceId = 0, page = 0xBEEF, requestId = 2)
-        assertEquals(SysExProtocol.CMD_PRODUCT_SPECIFIC, frame[8].toInt() and 0x7F)
+        assertEquals("command = TE_SYSEX_FILE (5)", SysExProtocol.TE_SYSEX_FILE, frame[8].toInt() and 0x7F)
         val p = unpackPayload(frame)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE, p[0].toInt() and 0xFF)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE_GET, p[1].toInt() and 0xFF)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE_GET_TYPE_DATA, p[2].toInt() and 0xFF)
-        assertEquals(0xBE, p[3].toInt() and 0xFF)
-        assertEquals(0xEF, p[4].toInt() and 0xFF)
+        // Body: [GET(3), DATA(1), page u16]
+        assertEquals(SysExProtocol.TE_SYSEX_FILE_GET, p[0].toInt() and 0xFF)
+        assertEquals(SysExProtocol.TE_SYSEX_FILE_GET_TYPE_DATA, p[1].toInt() and 0xFF)
+        assertEquals(0xBE, p[2].toInt() and 0xFF)
+        assertEquals(0xEF, p[3].toInt() and 0xFF)
     }
 
     @Test
@@ -67,17 +69,17 @@ class ProjectProtocolTest {
         val frame = SysExProtocol.buildFilePutInitFrame(
             deviceId = 0, nodeId = 0x0A0B, fileSize = 0x12345678, requestId = 3,
         )
-        assertEquals(SysExProtocol.CMD_PRODUCT_SPECIFIC, frame[8].toInt() and 0x7F)
+        assertEquals("command = TE_SYSEX_FILE (5)", SysExProtocol.TE_SYSEX_FILE, frame[8].toInt() and 0x7F)
         val p = unpackPayload(frame)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE, p[0].toInt() and 0xFF)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE_PUT, p[1].toInt() and 0xFF)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_INIT, p[2].toInt() and 0xFF)
-        assertEquals(0x0A, p[3].toInt() and 0xFF)
-        assertEquals(0x0B, p[4].toInt() and 0xFF)
-        assertEquals(0x12, p[5].toInt() and 0xFF)
-        assertEquals(0x34, p[6].toInt() and 0xFF)
-        assertEquals(0x56, p[7].toInt() and 0xFF)
-        assertEquals(0x78, p[8].toInt() and 0xFF)
+        // Body: [PUT(2), INIT(0), nodeId u16, fileSize u32]
+        assertEquals(SysExProtocol.TE_SYSEX_FILE_PUT, p[0].toInt() and 0xFF)
+        assertEquals(SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_INIT, p[1].toInt() and 0xFF)
+        assertEquals(0x0A, p[2].toInt() and 0xFF)
+        assertEquals(0x0B, p[3].toInt() and 0xFF)
+        assertEquals(0x12, p[4].toInt() and 0xFF)
+        assertEquals(0x34, p[5].toInt() and 0xFF)
+        assertEquals(0x56, p[6].toInt() and 0xFF)
+        assertEquals(0x78, p[7].toInt() and 0xFF)
     }
 
     @Test
@@ -86,15 +88,15 @@ class ProjectProtocolTest {
         val frame = SysExProtocol.buildFilePutDataFrame(
             deviceId = 0, page = 0x0102, chunk = chunk, requestId = 4,
         )
-        assertEquals(SysExProtocol.CMD_PRODUCT_SPECIFIC, frame[8].toInt() and 0x7F)
+        assertEquals("command = TE_SYSEX_FILE (5)", SysExProtocol.TE_SYSEX_FILE, frame[8].toInt() and 0x7F)
         val p = unpackPayload(frame)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE, p[0].toInt() and 0xFF)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE_PUT, p[1].toInt() and 0xFF)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_DATA, p[2].toInt() and 0xFF)
-        assertEquals(0x01, p[3].toInt() and 0xFF)
-        assertEquals(0x02, p[4].toInt() and 0xFF)
+        // Body: [PUT(2), DATA(1), page u16, chunk...]
+        assertEquals(SysExProtocol.TE_SYSEX_FILE_PUT, p[0].toInt() and 0xFF)
+        assertEquals(SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_DATA, p[1].toInt() and 0xFF)
+        assertEquals(0x01, p[2].toInt() and 0xFF)
+        assertEquals(0x02, p[3].toInt() and 0xFF)
         // Archive chunk bytes survive 7-bit pack/unpack unchanged.
-        assertArrayEquals(chunk, p.copyOfRange(5, p.size))
+        assertArrayEquals(chunk, p.copyOfRange(4, p.size))
     }
 
     @Test
