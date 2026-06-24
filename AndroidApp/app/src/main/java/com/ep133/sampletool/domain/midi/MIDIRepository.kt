@@ -98,6 +98,10 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     @Volatile private var transferInFlight = false
     private var pendingGetInitDeferred: CompletableDeferred<SysExProtocol.GetInitResponse>? = null
     private var pendingGetPages: Channel<SysExProtocol.GetDataResponse>? = null
+    // Hardware-verified (2026-06-24): device returns "unexpected page" if DATA frames are sent
+    // before the INIT response arrives. pendingPutInitDeferred is completed by the dispatcher
+    // on the first PUT response; putSampleFile awaits it before sending any DATA pages.
+    private var pendingPutInitDeferred: CompletableDeferred<Boolean>? = null
     private var pendingPutAckDeferred: CompletableDeferred<Boolean>? = null
 
     // ── Project enumeration state (Phase 4 Wave 2) ──
@@ -532,13 +536,45 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         }
     }
 
-    /** Route a paged FILE_PUT acknowledgement: STATUS_OK completes, an error status fails. */
+    /**
+     * Route a paged FILE_PUT response.
+     *
+     * Hardware-verified (2026-06-24): the device responds to the PUT INIT frame before it
+     * is ready to accept DATA pages. If DATA is sent before that first response arrives the
+     * device replies "unexpected page". Protocol:
+     *   1. INIT sent → device responds with STATUS_OK or STATUS_SPECIFIC_SUCCESS_START.
+     *      This response completes [pendingPutInitDeferred] (true on success, false on error).
+     *   2. DATA pages sent → device responds with STATUS_SPECIFIC_SUCCESS_START per page.
+     *      These are silent — we don't await them individually.
+     *   3. Final DATA (zero-length terminator) → device responds with STATUS_OK.
+     *      This response completes [pendingPutAckDeferred].
+     *
+     * Routing: if pendingPutInitDeferred is non-null, it owns the first response. Once it is
+     * cleared, subsequent responses route to pendingPutAckDeferred as before.
+     */
     private fun dispatchPagedPutResponse(payload: ByteArray) {
         val status = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
+
+        // First response after PUT INIT: complete the init deferred.
+        val initAck = pendingPutInitDeferred
+        if (initAck != null) {
+            val ok = status == SysExProtocol.STATUS_OK ||
+                status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START
+            Log.d("EP133MIDI", "MIDI META: PUT INIT ack status=$status ok=$ok")
+            if (!initAck.isCompleted) {
+                if (ok) initAck.complete(true) else initAck.completeExceptionally(
+                    IllegalStateException("PUT INIT error status $status"),
+                )
+            }
+            pendingPutInitDeferred = null
+            return
+        }
+
+        // Subsequent responses: intermediate pages are silent; STATUS_OK closes the transfer.
         val ack = pendingPutAckDeferred ?: return
         when {
             status == SysExProtocol.STATUS_OK -> if (!ack.isCompleted) ack.complete(true)
-            status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START -> { /* intermediate — keep pending */ }
+            status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START -> { /* intermediate DATA ack — keep pending */ }
             else -> if (!ack.isCompleted) ack.completeExceptionally(IllegalStateException("PUT error status $status"))
         }
     }
@@ -768,6 +804,11 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
 
         if (transferInFlight) throw IllegalStateException("transfer already in flight")
         transferInFlight = true
+        // Hardware-verified (2026-06-24): device sends "unexpected page" if DATA frames arrive
+        // before the INIT response. Create the init deferred BEFORE sending the INIT frame so
+        // the dispatcher can complete it the moment the response arrives.
+        val initAck = CompletableDeferred<Boolean>()
+        pendingPutInitDeferred = initAck
         val ack = CompletableDeferred<Boolean>()
         pendingPutAckDeferred = ack
         return try {
@@ -780,6 +821,15 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 requestId = 30,
             )
             midiManager.sendMidi(portId, initFrame)
+
+            // Await the device's INIT ack before sending any DATA pages.
+            // Reference tool (data/index.js): awaits the PUT INIT response before looping DATA.
+            val initOk = withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { initAck.await() } ?: false
+            if (!initOk) {
+                Log.e("EP133APP", "putSampleFile: PUT INIT ack failed or timed out — aborting $name")
+                return false
+            }
+            Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name (${wavBytes.size} bytes)")
 
             // DATA pages: slice wavBytes into MAX_PAGE_BYTES chunks.
             var page = 0
@@ -801,6 +851,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         } catch (e: CancellationException) {
             throw e
         } finally {
+            pendingPutInitDeferred = null
             pendingPutAckDeferred = null
             transferInFlight = false
         }
@@ -1009,9 +1060,19 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             midiManager.sendMidi(portId, frame)
             val accumulated = withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() }
                 ?: return JSONObject()
-            // JSON-first parse; defensive greet fallback for HW-VERIFY-3.
+            // Hardware-verified (2026-06-24): METADATA GET response body is
+            //   `00 00 7B 22 61 63 74 69 76 65 22 3A 33 30 30 30 7D 00`
+            // i.e. a 2-byte page prefix + {"active":3000} + trailing NUL. Strip the prefix
+            // and NUL by scanning for the outermost '{' ... '}' span before parsing.
+            val jsonSpan = run {
+                val s = accumulated.indexOf('{')
+                val e = accumulated.lastIndexOf('}')
+                if (s >= 0 && e > s) accumulated.substring(s, e + 1) else accumulated
+            }
+            Log.d("EP133APP", "MIDI META: METADATA GET jsonSpan='$jsonSpan' for nodeId=$nodeId")
+            // JSON-first parse on the extracted span; defensive greet fallback if that also fails.
             try {
-                JSONObject(accumulated)
+                JSONObject(jsonSpan)
             } catch (_: Exception) {
                 Log.d("EP133APP", "MIDI META: JSON parse failed, trying greet fallback for nodeId=$nodeId")
                 val greetMap = SysExProtocol.parseGreetResponse(accumulated.toByteArray(Charsets.US_ASCII))

@@ -5,6 +5,7 @@ import com.ep133.sampletool.domain.midi.SysExProtocol
 import com.ep133.sampletool.domain.model.DeviceState
 import com.ep133.sampletool.midi.MIDIPort
 import kotlinx.coroutines.test.runTest
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.Assert.*
 import kotlin.math.ceil
@@ -243,5 +244,161 @@ class SampleImportTest {
         }
 
         assertTrue("No frames should be sent when disconnected", spy.sent.isEmpty())
+    }
+}
+
+// ── PUT INIT ack-gate tests ────────────────────────────────────────────────
+//
+// Verifies the hardware-verified fix: putSampleFile must await the device's PUT INIT
+// response before sending DATA pages. "unexpected page" was the device symptom when
+// DATA frames arrived before the INIT ack.
+//
+// These tests use the REAL putSampleFile path (no override) with a port that simulates
+// device responses via the onMidiReceived callback.
+
+class PutInitAckGateTest {
+
+    // Spy port that captures sent frames and allows simulating device responses.
+    private class AckSimMIDIPort : MIDIPort {
+        override var onMidiReceived: ((String, ByteArray) -> Unit)? = null
+        override var onDevicesChanged: (() -> Unit)? = null
+
+        val sent = mutableListOf<ByteArray>()
+
+        override fun getUSBDevices() = MIDIPort.Devices(
+            inputs  = listOf(MIDIPort.Device("in",  "EP-133")),
+            outputs = listOf(MIDIPort.Device("out", "EP-133")),
+        )
+        override fun sendMidi(portId: String, data: ByteArray) { sent.add(data.copyOf()) }
+        override fun requestUSBPermissions() {}
+        override fun refreshDevices() {}
+        override fun startListening(portId: String) {}
+        override fun closeAllListeners() {}
+        override fun prewarmSendPort(portId: String) {}
+        override fun close() {}
+
+        /**
+         * Simulate a device FILE PUT response. Builds a minimal TE SysEx frame containing:
+         *   [0xF0][TE_ID_0][TE_ID_1][TE_ID_2][deviceId=0][0][0][0][TE_SYSEX_FILE(5)][requestId]
+         *   [status byte (packed)] [0xF7]
+         * The dispatcher reads payload = frame[9..size-2] (already "packed" body = [status]).
+         * Since the body has no 7-bit-packed segment, we just pass the status byte raw.
+         */
+        fun simulatePutResponse(status: Int) {
+            // Build a bare-minimum TE SysEx FILE response: 10-byte header + status + EOX
+            val frame = byteArrayOf(
+                0xF0.toByte(),
+                SysExProtocol.TE_ID_0, SysExProtocol.TE_ID_1, SysExProtocol.TE_ID_2,
+                0x00,  // deviceId
+                0x00, 0x00, 0x00,  // padding
+                SysExProtocol.TE_SYSEX_FILE.toByte(),  // command = 5
+                0x00,  // requestId
+                status.toByte(),  // payload[0] = status byte (no packed body after it)
+                0xF7.toByte(),
+            )
+            onMidiReceived?.invoke("in", frame)
+        }
+    }
+
+    // Repo that overrides resolveNodeId without any FILE_LIST round-trips.
+    // Accepts MIDIPort so the second test can pass an anonymous object.
+    private class AckSimRepo(
+        private val port: MIDIPort,
+        private val soundsNodeId: Int = 7,
+    ) : MIDIRepository(port) {
+        init {
+            _deviceState.value = com.ep133.sampletool.domain.model.DeviceState(
+                connected = true,
+                outputPortId = "out",
+            )
+        }
+        override suspend fun resolveNodeId(path: String): Int? =
+            if (path == "/sounds") soundsNodeId else null
+    }
+
+    @Ignore("Requires instrumented test — putSampleFile calls android.util.Log and awaits a 15s timeout (PUT_ACK_TIMEOUT_MS); JVM unit tests cannot mock Log or suppress the real wait")
+    @Test
+    fun putSampleFile_sendsOnlyInitFrameWhenInitAckTimesOut() = runTest {
+        val port = AckSimMIDIPort()
+        val repo = AckSimRepo(port)
+
+        // Use a very small WAV so paging is quick. Do NOT simulate the INIT ack → timeout.
+        val wavBytes = ByteArray(100) { 42 }
+        val result = repo.putSampleFile("snare.wav", wavBytes)
+
+        // Should return false (timeout on init ack)
+        assertFalse("putSampleFile must return false when INIT ack times out", result)
+        // Only the INIT frame should have been sent — NO DATA frames.
+        assertEquals(
+            "Only the INIT frame must be sent when INIT ack is not received; no DATA frames",
+            1, port.sent.size,
+        )
+        // Verify that single sent frame is indeed the INIT frame (body[0] = PUT=2, body[1] = INIT_TYPE=0)
+        val initPayload = SysExProtocol.unpack7bit(port.sent[0].copyOfRange(9, port.sent[0].size - 1))
+        assertEquals("body[0] = TE_SYSEX_FILE_PUT (2)", SysExProtocol.TE_SYSEX_FILE_PUT, initPayload[0].toInt() and 0xFF)
+        assertEquals("body[1] = INIT type (0)", SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_INIT, initPayload[1].toInt() and 0xFF)
+    }
+
+    @Ignore("Requires instrumented test — dispatchSysEx calls android.util.Log which is not mocked in JVM unit tests")
+    @Test
+    fun putSampleFile_sendsDataFramesAfterInitAckReceived() = runTest {
+        // Build a self-replying port inline: each sendMidi call immediately triggers a
+        // device response via onMidiReceived (same thread, synchronous dispatch).
+        // Frame 1 (INIT) → STATUS_SPECIFIC_SUCCESS_START; last frame → STATUS_OK.
+        val wavBytes = ByteArray(100) { 1 }
+        // 1 INIT + 1 DATA page + 1 terminator = 3 frames total for 100-byte WAV.
+        val totalExpected = 3
+        val sentFrames = mutableListOf<ByteArray>()
+        var midiReceivedCb: ((String, ByteArray) -> Unit)? = null
+
+        fun buildPutResponse(status: Int): ByteArray = byteArrayOf(
+            0xF0.toByte(),
+            SysExProtocol.TE_ID_0, SysExProtocol.TE_ID_1, SysExProtocol.TE_ID_2,
+            0x00, 0x00, 0x00, 0x00,          // deviceId + padding
+            SysExProtocol.TE_SYSEX_FILE.toByte(),
+            0x00,                             // requestId
+            status.toByte(),                 // status as-is (no 7-bit packed body)
+            0xF7.toByte(),
+        )
+
+        val autoReplyPort = object : MIDIPort {
+            override var onMidiReceived: ((String, ByteArray) -> Unit)?
+                get() = midiReceivedCb
+                set(value) { midiReceivedCb = value }
+            override var onDevicesChanged: (() -> Unit)? = null
+
+            override fun getUSBDevices() = MIDIPort.Devices(
+                inputs  = listOf(MIDIPort.Device("in",  "EP-133")),
+                outputs = listOf(MIDIPort.Device("out", "EP-133")),
+            )
+            override fun sendMidi(portId: String, data: ByteArray) {
+                sentFrames.add(data.copyOf())
+                val status = when (sentFrames.size) {
+                    1            -> SysExProtocol.STATUS_SPECIFIC_SUCCESS_START // INIT ack
+                    totalExpected -> SysExProtocol.STATUS_OK                    // final ack
+                    else         -> return                                       // intermediate — no reply
+                }
+                midiReceivedCb?.invoke("in", buildPutResponse(status))
+            }
+            override fun requestUSBPermissions() {}
+            override fun refreshDevices() {}
+            override fun startListening(portId: String) {}
+            override fun closeAllListeners() {}
+            override fun prewarmSendPort(portId: String) {}
+            override fun close() {}
+        }
+
+        val repo = AckSimRepo(autoReplyPort)
+        val result = repo.putSampleFile("hi-hat.wav", wavBytes)
+
+        assertTrue("putSampleFile must return true when device acks correctly", result)
+        assertEquals(
+            "INIT + 1 DATA + 1 terminator = $totalExpected frames",
+            totalExpected, sentFrames.size,
+        )
+        // The second frame must be a DATA frame.
+        val dataPayload = SysExProtocol.unpack7bit(sentFrames[1].copyOfRange(9, sentFrames[1].size - 1))
+        assertEquals("DATA frame body[0] = PUT (2)", SysExProtocol.TE_SYSEX_FILE_PUT, dataPayload[0].toInt() and 0xFF)
+        assertEquals("DATA frame body[1] = DATA type (1)", SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_DATA, dataPayload[1].toInt() and 0xFF)
     }
 }

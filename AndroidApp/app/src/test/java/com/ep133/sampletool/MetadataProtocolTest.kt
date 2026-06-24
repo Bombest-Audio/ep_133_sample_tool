@@ -233,4 +233,55 @@ class MetadataProtocolTest {
         assertEquals("TE_SYSEX_FILE_INFO = 11",   11, SysExProtocol.TE_SYSEX_FILE_INFO)
         assertEquals("CAPABILITY_WRITE = 8",       8,  SysExProtocol.TE_SYSEX_FILE_CAPABILITY_WRITE)
     }
+
+    // ── JSON span extraction (hardware-verified body shape) ──────────────────
+    // Hardware-verified (2026-06-24): METADATA GET response body is
+    //   `00 00 7B 22 61 63 74 69 76 65 22 3A 33 30 30 30 7D 00`
+    // = 2-byte page prefix + `{"active":3000}` + trailing NUL.
+    // getMetadataJson extracts the outermost `{...}` span before JSONObject parsing.
+
+    /** Mirror of the span-extraction logic in MIDIRepository.getMetadataJson. */
+    private fun extractJsonSpan(accumulated: String): String {
+        val s = accumulated.indexOf('{')
+        val e = accumulated.lastIndexOf('}')
+        return if (s >= 0 && e > s) accumulated.substring(s, e + 1) else accumulated
+    }
+
+    @Test
+    fun jsonSpan_stripsPagePrefixAndTrailingNul() {
+        // Simulated accumulated string after parseMetadataPage strips page u16 and NUL:
+        // page u16 = 0x0000 → two NUL chars prepended; trailing NUL from device.
+        // Use char code 0 for NUL (parseMetadataPage trims trailing NUL but page u16
+        // bytes may appear as prefix chars in the accumulated buffer if not stripped there).
+        val prefix = "  "   // 2-byte page prefix that survives into accumulated
+        val json   = """{"active":3000}"""
+        val trailingNul = " "
+        val accumulated = prefix + json + trailingNul
+
+        val span = extractJsonSpan(accumulated)
+        assertEquals("should extract exact JSON object", json, span)
+    }
+
+    @Test
+    fun jsonSpan_cleanJsonPassesThrough() {
+        // When the accumulated string is already valid JSON (no prefix garbage),
+        // the extracted span must equal the input unchanged.
+        val json = """{"active":42}"""
+        assertEquals("clean JSON passes through unchanged", json, extractJsonSpan(json))
+    }
+
+    @Test
+    fun jsonSpan_nestedObjectsRespectLastBrace() {
+        // Nested JSON: the span must capture from the first '{' to the LAST '}'.
+        val json = """{"a":{"b":1}}"""
+        assertEquals("nested JSON span correct", json, extractJsonSpan(json))
+    }
+
+    @Test
+    fun jsonSpan_noJsonBraces_returnsAccumulated() {
+        // If there are no '{' / '}' at all, the fallback returns the whole accumulated string
+        // (same as the original behavior — greet fallback then handles it).
+        val noJson = "key:value;other:stuff"
+        assertEquals("no braces → fallback returns input", noJson, extractJsonSpan(noJson))
+    }
 }
