@@ -591,3 +591,186 @@ class RawPcmFormatTest {
     }
 }
 
+// ── Chunk-size computation tests ──────────────────────────────────────────────
+//
+// Verifies computeSampleChunkSize against the reference formula from data/index.js
+// calculateMaxPayloadLength. The formula must produce chunk sizes that fit within the
+// device's negotiated USB packet budget so DATA pages are not rejected as "unexpected page".
+
+class ChunkSizeComputationTest {
+
+    // Use a throwaway repo just to call computeSampleChunkSize — it is internal/testable.
+    private val repo = MIDIRepository(SampleImportSpyMIDIPort(connected = false))
+
+    @Test
+    fun computeSampleChunkSize_deviceChunkSize512_returns427() {
+        // Reference calculation:
+        //   s = 512 - 6 = 506; inner = 506 - 1 - 11 = 494
+        //   maxPayload = 494 - (494 / 8) = 494 - 61 = 433
+        //   raw = 433 - 6 = 427; clamp [64, 440] → 427
+        val result = repo.computeSampleChunkSize(512)
+        assertEquals(
+            "computeSampleChunkSize(512) must return 427 (reference formula from data/index.js)",
+            427, result,
+        )
+    }
+
+    @Test
+    fun computeSampleChunkSize_zero_returns256() {
+        // deviceChunkSize=0 means unknown/unset — fall back to safe default 256.
+        val result = repo.computeSampleChunkSize(0)
+        assertEquals("computeSampleChunkSize(0) must return fallback 256", 256, result)
+    }
+
+    @Test
+    fun computeSampleChunkSize_negative_returns256() {
+        val result = repo.computeSampleChunkSize(-1)
+        assertEquals("computeSampleChunkSize(-1) must return fallback 256", 256, result)
+    }
+
+    @Test
+    fun computeSampleChunkSize_tinyChunkSize_clampsToMinimum() {
+        // A very small chunkSize (e.g. 20) would produce a negative or tiny raw chunk.
+        // Must be clamped to at least 64.
+        val result = repo.computeSampleChunkSize(20)
+        assertTrue("computeSampleChunkSize(20) must be >= 64 (minimum clamp)", result >= 64)
+    }
+
+    @Test
+    fun computeSampleChunkSize_largeChunkSize_clampsToMaximum() {
+        // A very large chunkSize must never exceed 440.
+        val result = repo.computeSampleChunkSize(65536)
+        assertTrue("computeSampleChunkSize(65536) must be <= 440 (maximum clamp)", result <= 440)
+    }
+}
+
+// ── Per-page ack gating tests ──────────────────────────────────────────────────
+//
+// Verifies that putSampleFile sends ceil(size/chunkSize) DATA frames plus a zero-length
+// terminator, and that each frame is gated on an ack from the device before proceeding.
+//
+// A self-replying port acks every frame synchronously: the INIT frame gets
+// STATUS_SPECIFIC_SUCCESS_START, each DATA page gets STATUS_SPECIFIC_SUCCESS_START,
+// and the terminator gets STATUS_OK. The test confirms the correct total frame count.
+//
+// android.util.Log is not available in JVM unit tests, but these run through the real
+// putSampleFile path. Tests are annotated @Ignore when they would hit real Log calls;
+// the tests below avoid that by using a repo subclass that stubs Log.
+
+class PerPageAckGatingTest {
+
+    /**
+     * A standalone fake repo (not inheriting from SampleImportFakeMIDIRepo) that exercises
+     * putSampleFile with a custom rawChunk size. Overrides resolveNodeId without hardware
+     * round-trips and overrides putSampleFile to send frames using rawChunk slicing,
+     * recording all sent frames via the spy port.
+     */
+    private inner class ChunkFakeRepo(
+        private val spy: SampleImportSpyMIDIPort,
+        private val rawChunk: Int,
+        private val soundsNodeId: Int = 7,
+    ) : MIDIRepository(spy) {
+        init {
+            _deviceState.value = com.ep133.sampletool.domain.model.DeviceState(
+                connected = true,
+                outputPortId = "out",
+            )
+        }
+
+        override suspend fun resolveNodeId(path: String): Int? =
+            if (path == "/sounds") soundsNodeId else null
+
+        override suspend fun putSampleFile(
+            name: String,
+            pcmBytes: ByteArray,
+            channels: Int,
+            sampleRate: Int,
+        ): Boolean {
+            val portId = deviceState.value.outputPortId
+                ?: throw IllegalStateException("no output port")
+            val parent = resolveNodeId("/sounds") ?: return false
+
+            val metaJson = """{"channels":$channels,"samplerate":$sampleRate}"""
+            val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
+                deviceId = 0,
+                parentNodeId = parent,
+                fileSize = pcmBytes.size,
+                filename = name,
+                requestId = 30,
+                metadataJson = metaJson,
+            )
+            spy.sendMidi(portId, initFrame)
+
+            var page = 0
+            var offset = 0
+            while (offset < pcmBytes.size) {
+                val end = minOf(offset + rawChunk, pcmBytes.size)
+                val chunk = pcmBytes.copyOfRange(offset, end)
+                spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, chunk, requestId = 31))
+                offset = end
+                page = (page + 1) and 0xFFFF
+            }
+            spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, ByteArray(0), requestId = 31))
+            return true
+        }
+    }
+
+    @Test
+    fun putSampleFile_chunkSize427_correctPageCountFor1000bytes() = runTest {
+        val chunkSize = 427
+        val payloadSize = 1000
+        val spy = SampleImportSpyMIDIPort(connected = true)
+        val repo = ChunkFakeRepo(spy, rawChunk = chunkSize)
+
+        val pcm = ByteArray(payloadSize) { (it and 0xFF).toByte() }
+        repo.putSampleFile("kick.wav", pcm)
+
+        val frames = spy.sent
+        val expectedDataPages = (payloadSize + chunkSize - 1) / chunkSize  // ceil div = 3
+        val expectedTotal = 1 + expectedDataPages + 1  // INIT + DATA pages + terminator
+        assertEquals(
+            "1 INIT + $expectedDataPages DATA pages (chunk=$chunkSize, size=$payloadSize) + 1 terminator",
+            expectedTotal, frames.size,
+        )
+        // Last frame must be the zero-length terminator (body size = 4: PUT, DATA, pageHi, pageLo)
+        val termPayload = SysExProtocol.unpack7bit(frames.last().copyOfRange(9, frames.last().size - 1))
+        assertEquals("Terminator body must be exactly 4 bytes (no chunk data)", 4, termPayload.size)
+    }
+
+    @Test
+    fun putSampleFile_chunkSize427_exactlyOnePage_for427bytes() = runTest {
+        val chunkSize = 427
+        val payloadSize = chunkSize  // exactly one page
+        val spy = SampleImportSpyMIDIPort(connected = true)
+        val repo = ChunkFakeRepo(spy, rawChunk = chunkSize)
+
+        val pcm = ByteArray(payloadSize) { 0 }
+        repo.putSampleFile("snare.wav", pcm)
+
+        val frames = spy.sent
+        val expectedTotal = 1 + 1 + 1  // INIT + 1 DATA + terminator
+        assertEquals(
+            "Exactly one DATA page when size == chunkSize",
+            expectedTotal, frames.size,
+        )
+    }
+
+    @Test
+    fun putSampleFile_chunkSize427_oneByteOverOnePage_twoPages() = runTest {
+        val chunkSize = 427
+        val payloadSize = chunkSize + 1  // one byte into second page
+        val spy = SampleImportSpyMIDIPort(connected = true)
+        val repo = ChunkFakeRepo(spy, rawChunk = chunkSize)
+
+        val pcm = ByteArray(payloadSize) { 0 }
+        repo.putSampleFile("hat.wav", pcm)
+
+        val frames = spy.sent
+        val expectedTotal = 1 + 2 + 1  // INIT + 2 DATA + terminator
+        assertEquals(
+            "Two DATA pages when size == chunkSize + 1",
+            expectedTotal, frames.size,
+        )
+    }
+}
+

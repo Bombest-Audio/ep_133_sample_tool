@@ -544,13 +544,15 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * device replies "unexpected page". Protocol:
      *   1. INIT sent → device responds with STATUS_OK or STATUS_SPECIFIC_SUCCESS_START.
      *      This response completes [pendingPutInitDeferred] (true on success, false on error).
-     *   2. DATA pages sent → device responds with STATUS_SPECIFIC_SUCCESS_START per page.
-     *      These are silent — we don't await them individually.
+     *   2. DATA pages sent one at a time, each awaited individually via [pendingPutAckDeferred].
+     *      The device responds with STATUS_OK or STATUS_SPECIFIC_SUCCESS_START per page;
+     *      both are treated as success so the caller can send the next page.
      *   3. Final DATA (zero-length terminator) → device responds with STATUS_OK.
-     *      This response completes [pendingPutAckDeferred].
+     *      This is also routed through [pendingPutAckDeferred] (same machinery).
      *
      * Routing: if pendingPutInitDeferred is non-null, it owns the first response. Once it is
-     * cleared, subsequent responses route to pendingPutAckDeferred as before.
+     * cleared, each per-page deferred is freshly set by the caller before sending and consumed
+     * here (completed true on success, false/exceptionally on error).
      */
     private fun dispatchPagedPutResponse(payload: ByteArray) {
         val status = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
@@ -570,12 +572,15 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             return
         }
 
-        // Subsequent responses: intermediate pages are silent; STATUS_OK closes the transfer.
+        // Per-page responses: STATUS_OK and STATUS_SPECIFIC_SUCCESS_START are both success
+        // (the caller gates on the deferred and sends the next page only after it resolves).
         val ack = pendingPutAckDeferred ?: return
         when {
-            status == SysExProtocol.STATUS_OK -> if (!ack.isCompleted) ack.complete(true)
-            status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START -> { /* intermediate DATA ack — keep pending */ }
-            else -> if (!ack.isCompleted) ack.completeExceptionally(IllegalStateException("PUT error status $status"))
+            status == SysExProtocol.STATUS_OK ||
+            status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START ->
+                if (!ack.isCompleted) ack.complete(true)
+            else ->
+                if (!ack.isCompleted) ack.complete(false)
         }
     }
 
@@ -807,6 +812,14 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             return false
         }
 
+        // Compute the raw chunk size from the negotiated chunkSize. The device rejected 4096-byte
+        // chunks (STATUS=1 "unexpected page") because a 4096-byte DATA payload 7-bit-packs to
+        // ~4.7 KB — well over the device's per-message budget (512 bytes negotiated at INIT).
+        // Hardware-confirmed: ~420-byte raw chunks (within the 512-byte budget) get STATUS_OK.
+        val rawChunkSize = computeSampleChunkSize(deviceChunkSize)
+        val pageCount = if (pcmBytes.isEmpty()) 0 else (pcmBytes.size + rawChunkSize - 1) / rawChunkSize
+        Log.d("EP133APP", "putSampleFile: chunkSize=$rawChunkSize pages=$pageCount for $name (${pcmBytes.size} bytes, ch=$channels sr=$sampleRate, deviceChunkSize=$deviceChunkSize)")
+
         // Build metadata JSON matching data/index.js prepareTeenageMeta key names.
         val metadataJson = """{"channels":$channels,"samplerate":$sampleRate}"""
 
@@ -817,8 +830,6 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         // the dispatcher can complete it the moment the response arrives.
         val initAck = CompletableDeferred<Boolean>()
         pendingPutInitDeferred = initAck
-        val ack = CompletableDeferred<Boolean>()
-        pendingPutAckDeferred = ack
         return try {
             // INIT: announce parent dir, fileId=0 (new file), size, filename, and metadata.
             val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
@@ -838,25 +849,35 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 Log.e("EP133APP", "putSampleFile: PUT INIT ack failed or timed out — aborting $name")
                 return false
             }
-            Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name (${pcmBytes.size} bytes, ch=$channels sr=$sampleRate)")
+            Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name")
 
-            // DATA pages: slice pcmBytes into MAX_PAGE_BYTES chunks.
+            // DATA pages: slice pcmBytes into rawChunkSize chunks, awaiting each page's ack
+            // before sending the next. The device rejects out-of-order or rapid-fire pages
+            // (USB-MIDI has no flow control — the reference tool sends serially with await).
             var page = 0
             var offset = 0
             while (offset < pcmBytes.size) {
-                val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, pcmBytes.size)
+                val end = minOf(offset + rawChunkSize, pcmBytes.size)
                 val chunk = pcmBytes.copyOfRange(offset, end)
+                val pageAck = CompletableDeferred<Boolean>()
+                pendingPutAckDeferred = pageAck
                 val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = 31)
                 midiManager.sendMidi(portId, dataFrame)
+                val pageOk = withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { pageAck.await() } ?: false
+                if (!pageOk) {
+                    Log.e("EP133APP", "putSampleFile: DATA page $page ack failed or timed out — aborting $name")
+                    return false
+                }
                 offset = end
                 page = (page + 1) and 0xFFFF
             }
 
-            // Zero-length DATA terminator (required by reference tool).
+            // Zero-length DATA terminator (required by reference tool). Await its final ack.
+            val termAck = CompletableDeferred<Boolean>()
+            pendingPutAckDeferred = termAck
             val terminatorFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = 31)
             midiManager.sendMidi(portId, terminatorFrame)
-
-            withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { ack.await() } ?: false
+            withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { termAck.await() } ?: false
         } catch (e: CancellationException) {
             throw e
         } finally {
@@ -864,6 +885,30 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             pendingPutAckDeferred = null
             transferInFlight = false
         }
+    }
+
+    /**
+     * Compute the raw PCM bytes per DATA page for /sounds uploads, bounded by the device's
+     * negotiated chunk size from the FILE_INIT handshake.
+     *
+     * Mirrors the reference tool's calculateMaxPayloadLength formula (data/index.js):
+     *   o = 8 + 2 + 1 = 11  (overhead bytes in the SysEx envelope)
+     *   s = chunkSize - 6   (usable bytes in one USB packet after SysEx header)
+     *   inner = s - 1 - o   (7-bit-pack input capacity minus framing)
+     *   maxPayload = inner - (inner / 8)   (7-bit packing expands by 1/8)
+     *   rawChunk = maxPayload - 6          (leave headroom for DATA header bytes)
+     *
+     * Clamped to [64, 440]. Falls back to 256 when chunkSize is 0 or unknown.
+     */
+    internal fun computeSampleChunkSize(chunkSize: Int): Int {
+        if (chunkSize <= 0) return 256
+        val o = 11
+        val s = chunkSize - 6
+        val inner = s - 1 - o
+        if (inner <= 0) return 64
+        val maxPayload = inner - (inner / 8)
+        val raw = maxPayload - 6
+        return raw.coerceIn(64, 440)
     }
 
     // ── FILE_INIT session handshake (Task 3 — once per connection) ─────────────
