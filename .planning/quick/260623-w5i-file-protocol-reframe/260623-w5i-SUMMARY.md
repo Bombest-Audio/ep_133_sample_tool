@@ -284,6 +284,276 @@ New test classes:
 | Force-close on transfer failure | Fixed — terminator sent on any post-INIT failure |
 | Hardware test (PUT with correct reqIds) | PENDING |
 
+## Offline fix 7 (2026-06-25) — reqId-match ALL file ops (Fix 1) + listener dedup log (Fix 2)
+
+**Commit:** `eee153b`
+
+### Root cause (hardware-confirmed)
+
+The EP-133 delivers every FILE response twice because a duplicate `MidiReceiver` is connected to the same `MidiOutputPort`. `MIDIManager.startListening` has a `startingOutputPorts` guard, but a rapid second `onDeviceAdded` callback can fire after the guard clears and connect a second receiver.
+
+The dispatcher routes FILE responses by in-flight op STATE. Before this fix, only PUT per-page responses had reqId filtering (`awaitedPutReqId`). All read ops (FILE_INIT, FILE_LIST, METADATA, FILE_INFO) had NO reqId guard — the first matching in-flight state won. Failure mode:
+
+1. `resolveNodeId("/sounds")` sends FILE_INIT (reqId=83) → response arrives, completes INIT deferred
+2. Duplicate FILE_INIT response (same reqId=83) arrives ~1 ms later
+3. Meanwhile, `listNodeBody` has registered the LIST deferred (awaitedFileReqId would have been 50)
+4. `inFlightCmd` resolves to `TE_SYSEX_FILE_LIST` (LIST is now in flight)
+5. LIST deferred completed with the INIT body → `parseFileListEntries` finds no "sounds" → returns null
+6. `resolveNodeId` returns null → upload aborts: `"cannot resolve /sounds node"`
+
+Hardware logs confirmed: abort fires ~1 ms after FILE_INIT response, before any real LIST round-trip.
+
+### Fix 1 (primary) — unified awaitedFileReqId guard
+
+**`MIDIRepository.kt`:**
+
+- Added `@Volatile private var awaitedFileReqId: Int = -1`.
+- Set immediately before every file-op `sendMidi` call:
+  - `ensureFileSessionInit`: reqId=`FILE_INIT_REQUEST_ID` (83)
+  - `listNodeBody`: reqId=`requestId` param (passed by each caller)
+  - `getMetadataJson`: reqId=`METADATA_GET_REQUEST_ID` (80)
+  - `setMetadata`: reqId=`METADATA_SET_REQUEST_ID` (81)
+  - `getNodeInfo`: reqId=`FILE_INFO_REQUEST_ID` (82)
+  - `getProjectArchive` INIT: reqId=10; each GET DATA: reqId=11
+  - `putSampleFile` INIT: reqId=`nextReqId` (30); each DATA/terminator: reqId=`nextReqId` (31+)
+  - `forceCloseTransfer`: reqId=`reqId` param
+- Dispatcher gate added in `dispatchSysEx` TE_SYSEX_FILE branch (before `dispatchFileResponse`):
+  ```kotlin
+  if (awaitedFileReqId != -1 && responseReqId != awaitedFileReqId) {
+      Log.w("EP133MIDI", "MIDI META: ignoring stale/dup file response reqId=$responseReqId awaiting=$awaitedFileReqId — dropped")
+      return
+  }
+  awaitedFileReqId = -1  // consumed
+  dispatchFileResponse(inFlightCmd, body, responseReqId)
+  ```
+- reqId extraction: `((message[6] and 0x0F) shl 7) or (message[7] and 0x7F)` — same byte offsets as the existing `awaitedPutReqId` path (commit ba62b55).
+- `awaitedFileReqId = -1` also cleared in each op's `finally` block (guards against timeout leaving stale reqId: `if (awaitedFileReqId == <that-op's-reqId>) awaitedFileReqId = -1`).
+- Multi-page METADATA GET: `awaitedFileReqId` clears on the first matching page. Subsequent pages have `awaitedFileReqId==-1` → guard condition `!= -1` is false → pages pass through. Safe because at that point the prior op's duplicate can't arrive (timing window closed).
+- `awaitedPutReqId` retained for PUT-specific per-page ack matching inside `dispatchPagedPutResponse`.
+
+### Fix 2 (secondary) — listener dedup log in MIDIManager
+
+**`MIDIManager.startListening`:** Added `Log.d` in the post-async `openOutputPorts.containsKey(portId)` re-check branch: `"startListening: duplicate connect prevented for $portId (already in openOutputPorts)"`. The guard was already in place; the log makes dedup events visible in logcat.
+
+### Tests
+
+New `FileReqIdDedupTest.kt` (4 tests, all pass):
+
+| Test | Scenario | Assertion |
+|---|---|---|
+| `matchingFileResponse_completesDeferred` | reqId=83 matches awaitedFileReqId=83 | INIT deferred completes → `ensureFileSessionInit` returns true |
+| `staleFileResponse_doesNotCompleteDeferred` | reqId=50 arrives while awaiting reqId=83 | INIT deferred NOT completed; coroutine still waiting |
+| `duplicateMatchingResponse_afterFirstConsumed_isHandledGracefully` | Second arrival of reqId=83 after deferred cleared | No crash, no double-complete |
+| `duplicateInitResponse_doesNotPoisonListDeferred` | Exact HW failure: stale INIT (reqId=83) during LIST (awaitedFileReqId=50) dropped; real LIST (reqId=50) arrives → resolveNodeId succeeds | `nodeId` is non-null |
+
+### Verification
+
+- `./gradlew :app:testDebugUnitTest` — all tests pass (162 prior + 4 new = 166 total), 0 failures
+- `./gradlew :app:assembleDebug` — BUILD SUCCESSFUL
+
+### Status after fix 7
+
+| Area | Status |
+|---|---|
+| Duplicate FILE response poisoning | **Fixed** — reqId guard on all FILE ops |
+| resolveNodeId("/sounds") failure | **Fixed** — stale INIT duplicate dropped before LIST deferred |
+| PUT reqId uniqueness + mismatch guard | Unchanged (fix 6, hardware-verified) |
+| Hardware test (upload end-to-end) | PENDING |
+
+## Offline fix 8 (2026-06-25) — Route empty-body PUT DATA ack + use fileStatus for PUT completion
+
+**Commit:** `b80c30c`
+
+### Root cause (hardware-confirmed)
+
+PUT DATA page acks from the device are STATUS-ONLY responses: `status=0`, empty packed body. Log line: `FILE response status=0 body[0]`. Two bugs dropped them:
+
+1. `if (body.isEmpty()) return` at ~line 313 in the `TE_SYSEX_FILE` branch — fires BEFORE reqId-matching and routing, so the empty-body ack never reaches `dispatchPagedPutResponse`. The page-0 `pendingPutAckDeferred` never completes → 15-second timeout → upload aborts.
+
+2. `dispatchPagedPutResponse` read status from `payload.getOrNull(0)` — but `payload` passed to it was the post-status-byte body (empty for a DATA ack). Would have read 0 by luck in the current code, but semantically wrong and fragile.
+
+### Fix
+
+- Guard changed: `if (body.isEmpty()) return` → `if (payload.isEmpty()) return`. A status-only response has `payload.size == 1` (just the status byte); only bail when the entire payload (before unpacking) is empty.
+- `fileStatus` threaded through: `dispatchFileResponse(inFlightCmd, body, responseReqId)` → `dispatchFileResponse(inFlightCmd, body, responseReqId, fileStatus)`. `fileStatus` parameter added to both `dispatchFileResponse` and `dispatchPagedPutResponse`.
+- `dispatchPagedPutResponse` uses `fileStatus` when non-(-1), falls back to `payload[0]` only for legacy direct calls.
+- `MismatchTestRepo.simulatePutPageResponse` reflection updated to pass the new three-parameter signature.
+
+### Tests
+
+New file `PutDataAckTest.kt` (2 tests):
+
+| Test | Scenario | Assertion |
+|---|---|---|
+| `putSampleFile_emptyBodyStatusOkAck_completesPageAckTrue` | `AutoAckMIDIPort` responds to PUT DATA with status-only status=0 frame | `putSampleFile` returns `true` |
+| `putSampleFile_emptyBodyErrorStatusAck_completesPageAckFalse` | Same port responds with status=1 (error) | `putSampleFile` returns `false` |
+
+`AutoAckMIDIPort` fires `onMidiReceived` synchronously on each `sendMidi` call, delivering a 11-byte STATUS-ONLY frame (F0 00 20 76 00 40 reqHigh reqLow 05 status F7) that matches the hardware's actual PUT DATA ack shape.
+
+### Verification
+
+- `./gradlew :app:testDebugUnitTest` — 194 tests pass (was 192 — 2 new from PutDataAckTest), 0 failures
+- `./gradlew :app:assembleDebug` — BUILD SUCCESSFUL
+
+### Status after fix 8
+
+| Area | Status |
+|---|---|
+| Empty-body PUT DATA ack routing | **Fixed** — ack now flows through reqId guard and completes deferred |
+| PUT completion status source | **Fixed** — fileStatus used, not body[0] |
+| Hardware test (page-0 ack end-to-end) | PENDING — this is the last known upload blocker |
+
+## Offline fix 9 (2026-06-25) — Serialize all file ops behind fileOpMutex + re-enable poll
+
+**Commit:** `abb3624`
+
+### Problem
+
+`awaitedFileReqId`, `pendingFileInitDeferred`, `pendingPutInitDeferred`, `pendingPutAckDeferred`, `metadataJsonInFlight`, `transferInFlight`, and related fields are shared mutable state.  Only ONE file op may own them at a time.  The active-group poll (`getActiveGroupIndex`, every 1.5 s) had been TEMP-disabled because it collided with `putSampleFile` — both ops interleaved their state, producing corrupted transfers.
+
+### Fix
+
+**`MIDIRepository.kt`:**
+
+- Added `private val fileOpMutex = Mutex()` (kotlinx.coroutines.sync).
+- 9 public / protected entry points now acquire `fileOpMutex.withLock { … }` before touching shared state:
+  - `ensureFileSessionInit`, `resolveNodeId`, `queryDeviceStats`
+  - `getProjectArchive`, `putProjectArchive`
+  - `putSampleFile`, `listProjects`
+  - `getActiveGroupIndex`, `setActiveGroup`
+- NoLock cores created to prevent re-entrancy deadlock (Mutex is NOT reentrant):
+  - `ensureFileSessionInitNoLock()` — private, used by all locked bodies
+  - `resolveSoundsNodeId()` — protected open (default delegates to `resolveNodeIdInternal`); `putSampleFile` calls this instead of the locking `resolveNodeId`
+  - `queryProjectsActiveNodeNoLock()` — private, used by `listProjects`
+  - `resolveNodeIdInternal()` — already existed; doc updated
+- `listProjects` rewritten to use NoLock pattern: single `withLock` wrapping `ensureFileSessionInitNoLock → resolveNodeIdInternal → queryProjectsActiveNodeNoLock → listNodeBody`. Eliminates the old double-acquire pattern (resolve + queryActiveNode each set `statsQueryInFlight`).
+- All 9 `withLock` bodies statically verified — NONE transitively calls another `withLock`. Deadlock-free.
+
+**`PadsScreen.kt`:**
+
+- Removed TEMP-disable comment and uncommented `viewModel.refreshActiveGroupFromDevice()`. Poll re-enabled.
+
+**Tests:**
+
+- `FileOpMutexTest.kt` (3 new tests): concurrent `ensureFileSessionInit + ensureFileSessionInit`, concurrent `getActiveGroupIndex + getActiveGroupIndex`, concurrent `getActiveGroupIndex + ensureFileSessionInit`. All use `MutexAutoAckPort` (synchronous ack) via `runTest`. All complete without hang — proves serialization without deadlock.
+- `PutDataAckTest.PutAckTestRepo`: updated to override `resolveSoundsNodeId()` instead of `resolveNodeId()` (avoids mutex re-acquire in test doubles).
+- `SampleImportTest.AckSimRepo`: same update.
+
+### Deadlock audit (static)
+
+| withLock site | What it calls (no nested withLock) |
+|---|---|
+| `ensureFileSessionInit` | `ensureFileSessionInitNoLock` |
+| `resolveNodeId` | `ensureFileSessionInitNoLock`, `resolveNodeIdInternal` |
+| `queryDeviceStats` | `queryDeviceStatsInner` → sendMidi, withTimeoutOrNull |
+| `getProjectArchive` | sendMidi, withTimeoutOrNull, pages.receive() |
+| `putProjectArchive` | sendMidi, withTimeoutOrNull |
+| `putSampleFile` | `ensureFileSessionInitNoLock`, `resolveSoundsNodeId`, sendMidi, `forceCloseTransfer` |
+| `listProjects` | `ensureFileSessionInitNoLock`, `resolveNodeIdInternal`, `queryProjectsActiveNodeNoLock`, `listNodeBody` |
+| `getActiveGroupIndex` | `ensureFileSessionInitNoLock`, `resolveNodeIdInternal`, `getMetadataJson`, `getNodeInfo` |
+| `setActiveGroup` | `resolveNodeIdInternal`, `getMetadataJson`, `getNodeInfo`, `setMetadata` |
+
+No nested `withLock`. Static audit: PASSED.
+
+### Verification
+
+- `./gradlew :app:testDebugUnitTest` — **195 tests, 0 failures, 20 skipped**
+- `./gradlew :app:assembleDebug` — BUILD SUCCESSFUL
+
+### Status after fix 9
+
+| Area | Status |
+|---|---|
+| Poll vs import collision | **Fixed** — fileOpMutex serializes all file ops |
+| Active-group poll | **Re-enabled** — PadsScreen poll uncommented |
+| Deadlock risk | **None** — static audit confirms no nested withLock |
+
+## Offline fix 10 (2026-06-25) — Global monotonic reqIds + poll-in-flight guard + groups-dir cache
+
+**Commit:** `4073c18`
+
+### Root cause
+
+`getActiveGroupIndex` re-walks `/projects → active project → /projects/<name>/groups` every 1.5 s. Three problems combined to make this unreliable:
+
+1. **reqId aliasing.** Fixed reqIds (METADATA_GET=80, FILE_INFO=82, FILE_INIT=83) are reused across all FILE ops. A stale response to any earlier op can arrive while a newer op waits with the same reqId. `awaitedFileReqId` was updated before each send, but if a duplicate arrives between two ops it consumes the guard prematurely.
+
+2. **Poll backlog.** On each 1.5 s tick, `getActiveGroupIndex` acquires `fileOpMutex`. If a prior tick's coroutine is still running (waiting for device responses), the new tick queues on the mutex. On a slow device, ticks pile up and the queue drives back-to-back device queries with no idle time.
+
+3. **Per-poll re-walk.** Every tick issued METADATA GET + FILE_LIST × N (projects dir, project/groups dir). Even when the device structure doesn't change between ticks, all the round-trips happen.
+
+### Fixes
+
+**1. Globally-unique monotonic reqIds (`nextFileReqId()`)**
+
+`AtomicInteger fileReqIdCounter` starting at 100, cycling 100..2046. The counter skips 1 (greet reqId, set by hardware) and 30..99 (PUT transfer-local range). Every FILE op calls `nextFileReqId()` instead of a fixed constant — METADATA GET, SET, FILE_INFO, FILE_INIT, FILE_LIST (all paths), project archive INIT/DATA, device stats. A stale response from any prior op cannot match the reqId of a newer one.
+
+```kotlin
+private fun nextFileReqId(): Int {
+    while (true) {
+        val cur = fileReqIdCounter.get()
+        val next = if (cur >= FILE_REQ_ID_MAX) FILE_REQ_ID_MIN else cur + 1
+        if (fileReqIdCounter.compareAndSet(cur, next)) {
+            if (next == 1 || next in 30..99) continue
+            return next
+        }
+    }
+}
+```
+
+Companion constants: `FILE_REQ_ID_MIN=100`, `FILE_REQ_ID_MAX=2046`, `FILE_REQ_ID_INITIAL=100`. Old fixed constants `METADATA_GET_REQUEST_ID`, `METADATA_SET_REQUEST_ID`, `FILE_INFO_REQUEST_ID`, `FILE_INIT_REQUEST_ID` removed.
+
+**2. No overlapping polls (`AtomicBoolean activeGroupPollInFlight`)**
+
+Checked at entry of `getActiveGroupIndex` BEFORE acquiring `fileOpMutex`. If already `true`, return null immediately — no queuing on the mutex, no backlog. `finally` block clears the flag so the next tick after the current one completes gets a clean gate.
+
+```kotlin
+if (!activeGroupPollInFlight.compareAndSet(false, true)) {
+    Log.d("EP133APP", "MIDI META: getActiveGroupIndex — poll already in flight, skipping")
+    return null
+}
+```
+
+**3. Structure caches (two-level)**
+
+`groupsNodeCache: HashMap<Int, Int>` (activeProjNodeId → groupsNodeId) and `groupNodeNameCache: HashMap<Int, Map<Int, String>>` (groupsNodeId → name map). Populated on first successful walk. Per-poll fast path:
+- METADATA GET on /projects node → `active` field → activeProjNodeId (one round-trip)
+- Cache lookup for groupsNode (one round-trip on first tick; cache hit on subsequent ticks)
+- METADATA GET on groupsNode → `active` field → activeGroupNodeId (one round-trip)
+- Cache lookup for name (one FILE_LIST on first tick; cache hit on subsequent ticks)
+
+First-time groups-dir resolution logs all children verbosely (`Log.d HW-VERIFY-2`). Both caches cleared on GREET (new connection).
+
+**4. `FILE_LIST_TIMEOUT_MS` reverted 10_000L → 5_000L**
+
+The 10 s bump was added to paper over the aliasing issue. Root cause is now fixed, so it reverts.
+
+### Tests added
+
+**`ActiveGroupSyncTest.kt`** (3 new tests):
+
+| Test | What it verifies |
+|---|---|
+| `concurrentPoll_secondCallReturnsNullImmediately` | Second `getActiveGroupIndex()` launched while first is in-flight returns null without queuing on `fileOpMutex` |
+| `consecutiveFileOps_haveDistinctReqIds` | INIT reqId != second FILE op reqId |
+| `nextFileReqId_skipsReservedRange` | All reqIds from FILE ops are outside `[1..99]` |
+
+**`FileReqIdDedupTest.kt`** — existing test 4 (`duplicateInitResponse_doesNotPoisonListDeferred`) updated to use `RealWalkRepo` (no `resolveNodeId` override) and a manually-constructed LIST response frame. This forces the real `ensureFileSessionInit + resolveNodeIdInternal` pipeline to execute so actual MIDI frames are sent and the dynamic `port.lastSentReqId()` extraction is meaningful. Fix also corrected `buildFakeFileListResponse` to manually assemble the response frame (status byte raw at position 9, body 7-bit-packed afterward) instead of using `SysExProtocol.buildFrame` which packs the entire payload including the status byte and would corrupt the body content.
+
+### Verification
+
+- `./gradlew :app:testDebugUnitTest` — **198 tests, 0 failures, 20 skipped**
+- `./gradlew :app:assembleDebug` — BUILD SUCCESSFUL
+
+### Status after fix 10
+
+| Area | Status |
+|---|---|
+| reqId aliasing (read ops) | **Fixed** — monotonic counter, every op gets a unique reqId |
+| Poll backlog | **Fixed** — AtomicBoolean guard, overlapping polls return null immediately |
+| Per-poll device I/O | **Fixed** — structure caches eliminate repeated FILE_LIST round-trips |
+| FILE_LIST timeout | **Reverted** to 5 s (10 s was wrong approach) |
+
 ## Deferred (hardware UAT)
 
 - **Sample upload DATA paging** — chunk size + per-page ack fixed offline; hardware test needed to confirm `status=0` on all DATA pages (was `status=1 "unexpected page"`).
@@ -291,4 +561,4 @@ New test classes:
 - **METADATA GET JSON fix** — offline fix applied; needs hardware round-trip to confirm `getMetadataJson` now returns `{"active":3000}` correctly.
 - **Active-group project→group mapping** — `getNodeInfo` returns null for the active-project nodeId. Needs hardware capture of the FILE_INFO response.
 - **`parseFileInitResponse` chunkSize offset** — reads body[1..4] as u32 BE. Tolerated (advisory).
-- **Hardware UAT (priority)** — deploy APK, test upload, confirm DATA pages ack OK with unique reqIds, confirm samples play, confirm METADATA GET parsed JSON, confirm active-group sync chain.
+- **Hardware UAT (priority)** — deploy APK, test upload, confirm DATA pages ack OK with unique reqIds, confirm samples play, confirm METADATA GET parsed JSON, confirm active-group sync chain (poll now re-enabled).
