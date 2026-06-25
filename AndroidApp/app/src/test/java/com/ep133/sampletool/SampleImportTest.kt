@@ -315,8 +315,10 @@ class PutInitAckGateTest {
         }
     }
 
-    // Repo that overrides resolveNodeId without any FILE_LIST round-trips.
+    // Repo that stubs /sounds node resolution without FILE_LIST round-trips.
     // Accepts MIDIPort so the second test can pass an anonymous object.
+    // Overrides resolveSoundsNodeId (called from within putSampleFile's locked block)
+    // rather than resolveNodeId, which would re-acquire fileOpMutex and deadlock.
     private class AckSimRepo(
         private val port: MIDIPort,
         private val soundsNodeId: Int = 7,
@@ -327,8 +329,7 @@ class PutInitAckGateTest {
                 outputPortId = "out",
             )
         }
-        override suspend fun resolveNodeId(path: String): Int? =
-            if (path == "/sounds") soundsNodeId else null
+        override suspend fun resolveSoundsNodeId(): Int? = soundsNodeId
     }
 
     @Ignore("Requires instrumented test — putSampleFile calls android.util.Log and awaits a 15s timeout (PUT_ACK_TIMEOUT_MS); JVM unit tests cannot mock Log or suppress the real wait")

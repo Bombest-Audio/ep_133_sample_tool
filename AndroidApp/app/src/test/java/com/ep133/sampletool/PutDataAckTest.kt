@@ -102,8 +102,11 @@ private class AutoAckMIDIPort(
 }
 
 /**
- * Fake repo that overrides resolveNodeId("/sounds") to skip FILE_LIST round-trips.
+ * Fake repo that stubs /sounds node resolution to skip FILE_LIST round-trips.
  * Lets [putSampleFile] proceed to the INIT/DATA/ack cycle without hardware.
+ *
+ * Overrides [resolveSoundsNodeId] (called from within the fileOpMutex locked block in
+ * [putSampleFile]) rather than [resolveNodeId] to avoid acquiring the mutex a second time.
  */
 private class PutAckTestRepo(
     port: AutoAckMIDIPort,
@@ -112,8 +115,7 @@ private class PutAckTestRepo(
         _deviceState.value = DeviceState(connected = true, outputPortId = "out")
     }
 
-    override suspend fun resolveNodeId(path: String): Int? =
-        if (path == "/sounds") 42 else null
+    override suspend fun resolveSoundsNodeId(): Int? = 42
 }
 
 class PutDataAckTest {

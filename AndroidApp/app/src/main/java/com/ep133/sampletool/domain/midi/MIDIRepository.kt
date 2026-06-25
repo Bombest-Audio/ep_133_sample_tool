@@ -21,6 +21,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
@@ -38,6 +40,18 @@ import org.json.JSONObject
  * - [selectedScale] and [selectedRootNote] as shared state flows (D-17)
  */
 open class MIDIRepository(private val midiManager: MIDIPort) {
+
+    /**
+     * Serialises all device file operations so that only one file op can hold the shared mutable
+     * state at a time.  Acquiring threads on [fileOpMutex] will suspend (not block) until the
+     * current holder releases, preventing poll-vs-import state corruption.
+     *
+     * CRITICAL: kotlinx [Mutex] is NOT reentrant.  Every function that acquires [fileOpMutex]
+     * MUST call internal *NoLock helpers for any nested file ops — never call another
+     * [withLock] from within a [withLock] body.  See [ensureFileSessionInitNoLock] and
+     * [resolveNodeIdInternal] for the NoLock pattern.
+     */
+    private val fileOpMutex = Mutex()
 
     protected val _deviceState = MutableStateFlow(DeviceState())
     open val deviceState: StateFlow<DeviceState> = _deviceState.asStateFlow()
@@ -681,11 +695,15 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         // runs would race on the shared pending-deferred fields and could call complete() twice
         // on the same CompletableDeferred — an IllegalStateException on the MIDI dispatch path.
         if (statsQueryInFlight) return false
-        statsQueryInFlight = true
-        return try {
-            queryDeviceStatsInner(portId)
-        } finally {
-            statsQueryInFlight = false
+        return fileOpMutex.withLock {
+            // Re-check after acquiring the lock — another call may have started while we waited.
+            if (statsQueryInFlight) return@withLock false
+            statsQueryInFlight = true
+            try {
+                queryDeviceStatsInner(portId)
+            } finally {
+                statsQueryInFlight = false
+            }
         }
     }
 
@@ -747,46 +765,48 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     suspend fun getProjectArchive(nodeId: Int): ByteArray {
         val portId = _deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
-        if (transferInFlight) throw IllegalStateException("transfer already in flight")
-        transferInFlight = true
-        val initDeferred = CompletableDeferred<SysExProtocol.GetInitResponse>()
-        val pages = Channel<SysExProtocol.GetDataResponse>(Channel.UNLIMITED)
-        pendingGetInitDeferred = initDeferred
-        pendingGetPages = pages
-        return try {
-            val initFrame = SysExProtocol.buildFileGetInitFrame(currentDeviceId, nodeId, requestId = 10)
-            awaitedFileReqId = 10
-            midiManager.sendMidi(portId, initFrame)
-            val init = withTimeoutOrNull(GET_INIT_TIMEOUT_MS) { initDeferred.await() }
-                ?: throw IllegalStateException("GET INIT timed out")
-            Log.d("EP133APP", "Project GET init: ${init.fileName} ${init.fileSize} bytes")
+        return fileOpMutex.withLock {
+            if (transferInFlight) throw IllegalStateException("transfer already in flight")
+            transferInFlight = true
+            val initDeferred = CompletableDeferred<SysExProtocol.GetInitResponse>()
+            val pages = Channel<SysExProtocol.GetDataResponse>(Channel.UNLIMITED)
+            pendingGetInitDeferred = initDeferred
+            pendingGetPages = pages
+            try {
+                val initFrame = SysExProtocol.buildFileGetInitFrame(currentDeviceId, nodeId, requestId = 10)
+                awaitedFileReqId = 10
+                midiManager.sendMidi(portId, initFrame)
+                val init = withTimeoutOrNull(GET_INIT_TIMEOUT_MS) { initDeferred.await() }
+                    ?: throw IllegalStateException("GET INIT timed out")
+                Log.d("EP133APP", "Project GET init: ${init.fileName} ${init.fileSize} bytes")
 
-            val out = java.io.ByteArrayOutputStream(init.fileSize.coerceAtLeast(0))
-            val cap = init.fileSize + SysExProtocol.MAX_PAGE_BYTES
-            var page = 0
-            while (out.size() < init.fileSize) {
-                val dataFrame = SysExProtocol.buildFileGetDataFrame(currentDeviceId, page, requestId = 11)
-                awaitedFileReqId = 11
-                midiManager.sendMidi(portId, dataFrame)
-                val resp = withTimeoutOrNull(GET_PAGE_TIMEOUT_MS) { pages.receive() }
-                    ?: throw IllegalStateException("GET DATA page $page timed out")
-                check(resp.page == page) { "unexpected page ${resp.page}, expected $page" }
-                if (resp.data.isEmpty()) break
-                check(out.size() + resp.data.size <= cap) {
-                    "GET overflow: ${out.size() + resp.data.size} bytes exceeds cap $cap"
+                val out = java.io.ByteArrayOutputStream(init.fileSize.coerceAtLeast(0))
+                val cap = init.fileSize + SysExProtocol.MAX_PAGE_BYTES
+                var page = 0
+                while (out.size() < init.fileSize) {
+                    val dataFrame = SysExProtocol.buildFileGetDataFrame(currentDeviceId, page, requestId = 11)
+                    awaitedFileReqId = 11
+                    midiManager.sendMidi(portId, dataFrame)
+                    val resp = withTimeoutOrNull(GET_PAGE_TIMEOUT_MS) { pages.receive() }
+                        ?: throw IllegalStateException("GET DATA page $page timed out")
+                    check(resp.page == page) { "unexpected page ${resp.page}, expected $page" }
+                    if (resp.data.isEmpty()) break
+                    check(out.size() + resp.data.size <= cap) {
+                        "GET overflow: ${out.size() + resp.data.size} bytes exceeds cap $cap"
+                    }
+                    out.write(resp.data)
+                    page = resp.nextPage
                 }
-                out.write(resp.data)
-                page = resp.nextPage
+                out.toByteArray()
+            } catch (e: CancellationException) {
+                throw e
+            } finally {
+                pages.close()
+                pendingGetInitDeferred = null
+                pendingGetPages = null
+                awaitedFileReqId = -1
+                transferInFlight = false
             }
-            out.toByteArray()
-        } catch (e: CancellationException) {
-            throw e
-        } finally {
-            pages.close()
-            pendingGetInitDeferred = null
-            pendingGetPages = null
-            awaitedFileReqId = -1
-            transferInFlight = false
         }
     }
 
@@ -800,32 +820,34 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     suspend fun putProjectArchive(slotNodeId: Int, tarBytes: ByteArray): Boolean {
         val portId = _deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
-        if (transferInFlight) throw IllegalStateException("transfer already in flight")
-        transferInFlight = true
-        val ack = CompletableDeferred<Boolean>()
-        pendingPutAckDeferred = ack
-        return try {
-            val initFrame = SysExProtocol.buildFilePutInitFrame(
-                currentDeviceId, slotNodeId, tarBytes.size, requestId = 20,
-            )
-            midiManager.sendMidi(portId, initFrame)
+        return fileOpMutex.withLock {
+            if (transferInFlight) throw IllegalStateException("transfer already in flight")
+            transferInFlight = true
+            val ack = CompletableDeferred<Boolean>()
+            pendingPutAckDeferred = ack
+            try {
+                val initFrame = SysExProtocol.buildFilePutInitFrame(
+                    currentDeviceId, slotNodeId, tarBytes.size, requestId = 20,
+                )
+                midiManager.sendMidi(portId, initFrame)
 
-            var page = 0
-            var offset = 0
-            while (offset < tarBytes.size) {
-                val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, tarBytes.size)
-                val chunk = tarBytes.copyOfRange(offset, end)
-                val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = 21)
-                midiManager.sendMidi(portId, dataFrame)
-                offset = end
-                page = (page + 1) and 0xFFFF
+                var page = 0
+                var offset = 0
+                while (offset < tarBytes.size) {
+                    val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, tarBytes.size)
+                    val chunk = tarBytes.copyOfRange(offset, end)
+                    val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = 21)
+                    midiManager.sendMidi(portId, dataFrame)
+                    offset = end
+                    page = (page + 1) and 0xFFFF
+                }
+                withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { ack.await() } ?: false
+            } catch (e: CancellationException) {
+                throw e
+            } finally {
+                pendingPutAckDeferred = null
+                transferInFlight = false
             }
-            withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { ack.await() } ?: false
-        } catch (e: CancellationException) {
-            throw e
-        } finally {
-            pendingPutAckDeferred = null
-            transferInFlight = false
         }
     }
 
@@ -866,12 +888,17 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         val portId = _deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
 
-        // Resolve /sounds BEFORE setting transferInFlight so its FILE_LIST round-trips don't
-        // interleave with the PUT frames (resolveNodeId uses statsQueryInFlight, independent).
-        val parent = resolveNodeId("/sounds")
+        return fileOpMutex.withLock {
+        // Ensure the FILE_INIT handshake (once per connection) before resolving any node IDs.
+        // Uses the NoLock core — we already hold fileOpMutex.
+        ensureFileSessionInitNoLock()
+
+        // Resolve /sounds inside the lock so its FILE_LIST round-trips don't interleave with
+        // concurrent ops.  Delegates to resolveSoundsNodeId() so subclasses can override for tests.
+        val parent = resolveSoundsNodeId()
         if (parent == null) {
             Log.e("EP133APP", "putSampleFile: cannot resolve /sounds node — aborting upload of $name")
-            return false
+            return@withLock false
         }
 
         // Compute the raw chunk size from the negotiated chunkSize. The device rejected 4096-byte
@@ -975,6 +1002,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             awaitedFileReqId = -1
             transferInFlight = false
         }
+        } // end fileOpMutex.withLock
     }
 
     /**
@@ -1041,10 +1069,23 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *
      * Resets on greet (new connection via [dispatchSysEx] CMD_GREET branch).
      *
+     * This public entry-point acquires [fileOpMutex].  Code that already holds the mutex
+     * (e.g. [putSampleFile], [getActiveGroupIndex]) must call [ensureFileSessionInitNoLock]
+     * directly to avoid a re-entrancy deadlock.
+     *
      * @return true if the session is initialized (immediately or after the handshake),
      *         false if no port is connected or the INIT timed out.
      */
-    suspend fun ensureFileSessionInit(): Boolean {
+    suspend fun ensureFileSessionInit(): Boolean = fileOpMutex.withLock { ensureFileSessionInitNoLock() }
+
+    /**
+     * NoLock core for [ensureFileSessionInit].
+     *
+     * MUST only be called from within a [fileOpMutex] locked context — calling this without
+     * holding the mutex can corrupt the shared [pendingFileInitDeferred] / [awaitedFileReqId]
+     * state if another file op is concurrently in flight.
+     */
+    private suspend fun ensureFileSessionInitNoLock(): Boolean {
         if (fileSessionInitialized) return true
         val portId = _deviceState.value.outputPortId ?: return false
         val deferred = CompletableDeferred<Int>()
@@ -1130,23 +1171,10 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * Phase 2 path string. The path-string fallback is a one-line switch in [listNodeBody].
      */
     open suspend fun resolveNodeId(path: String): Int? {
-        if (statsQueryInFlight) return null
-        // Task 3: ensure FILE_INIT handshake before any node resolution.
-        ensureFileSessionInit()
-        statsQueryInFlight = true
-        return try {
-            val segments = path.trim('/').split('/').filter { it.isNotEmpty() }
-            var nodeId = 0   // root
-            var rid = 50
-            for (segment in segments) {
-                val body = listNodeBody(nodeId, requestId = rid++) ?: return null
-                val child = SysExProtocol.parseFileListEntries(body).firstOrNull { it.name == segment }
-                    ?: return null
-                nodeId = child.nodeId
-            }
-            nodeId
-        } finally {
-            statsQueryInFlight = false
+        return fileOpMutex.withLock {
+            // Task 3: ensure FILE_INIT handshake before any node resolution (NoLock — we hold mutex).
+            ensureFileSessionInitNoLock()
+            resolveNodeIdInternal(path)
         }
     }
 
@@ -1159,34 +1187,34 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      */
     open suspend fun listProjects(): List<ProjectSlot> {
         if (_deviceState.value.outputPortId == null) return emptyList()
-        val projectsNode = resolveNodeId("/projects") ?: return emptyList()
+        return fileOpMutex.withLock {
+            // Ensure file session then resolve — both NoLock because we hold fileOpMutex.
+            ensureFileSessionInitNoLock()
+            val projectsNode = resolveNodeIdInternal("/projects") ?: return@withLock emptyList()
 
-        // Active-slot pointer from /projects directory metadata.
-        val activeNode = queryProjectsActiveNode()
+            // Active-slot pointer from /projects directory metadata (NoLock).
+            val activeNode = queryProjectsActiveNodeNoLock()
 
-        if (statsQueryInFlight) return emptyList()
-        statsQueryInFlight = true
-        val body = try {
-            listNodeBody(projectsNode, requestId = 60)
-        } finally {
-            statsQueryInFlight = false
-        } ?: return emptyList()
+            val body = listNodeBody(projectsNode, requestId = 60) ?: return@withLock emptyList()
 
-        return SysExProtocol.parseFileListEntries(body).map { entry ->
-            ProjectSlot(
-                nodeId = entry.nodeId,
-                name = entry.name,
-                sizeBytes = entry.sizeBytes,
-                isActive = activeNode != null && entry.nodeId == activeNode,
-            )
+            SysExProtocol.parseFileListEntries(body).map { entry ->
+                ProjectSlot(
+                    nodeId = entry.nodeId,
+                    name = entry.name,
+                    sizeBytes = entry.sizeBytes,
+                    isActive = activeNode != null && entry.nodeId == activeNode,
+                )
+            }
         }
     }
 
-    /** Read the /projects directory metadata "active" pointer (the currently-loaded slot). */
-    private suspend fun queryProjectsActiveNode(): Int? {
+    /**
+     * Read the /projects directory metadata "active" pointer (the currently-loaded slot).
+     *
+     * NoLock: must only be called from within a [fileOpMutex] locked context.
+     */
+    private suspend fun queryProjectsActiveNodeNoLock(): Int? {
         val portId = _deviceState.value.outputPortId ?: return null
-        if (statsQueryInFlight) return null
-        statsQueryInFlight = true
         return try {
             val deferred = CompletableDeferred<Map<String, String>>()
             pendingMetadataDeferred = deferred
@@ -1198,7 +1226,6 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             throw e
         } finally {
             pendingMetadataDeferred = null
-            statsQueryInFlight = false
         }
     }
 
@@ -1208,9 +1235,10 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     //   getActiveGroupIndex: /projects→active→projName→/projects/<p>/groups→active→getNode→name
     //   setActiveGroup:      resolve group nodeId, SET groups-dir {active:<nodeId>}
     //
-    // All three functions below guard with statsQueryInFlight so they don't collide with
-    // Phase-4 storage/list queries that use the same pendingNodeListDeferred path.
-    // The metadata GET/SET use their own metadataJsonInFlight / metadataSetInFlight flags.
+    // Both functions are serialised via fileOpMutex so they cannot interleave with
+    // putSampleFile or the active-group poll.  All internal helpers (resolveNodeIdInternal,
+    // getMetadataJson, getNodeInfo, setMetadata) are called without acquiring the mutex again.
+    // The metadata GET/SET also use their own metadataJsonInFlight / metadataSetInFlight flags.
 
     /**
      * Fetch metadata for [nodeId] using the nodeId-form GET (METADATA_GET = 2).
@@ -1340,33 +1368,32 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * @return Group index 0–3, or null if the device is disconnected / no active project.
      */
     suspend fun getActiveGroupIndex(): Int? {
-        Log.d("EP133APP", "MIDI META: getActiveGroupIndex() called, statsQueryInFlight=$statsQueryInFlight outputPort=${_deviceState.value.outputPortId}")
-        if (statsQueryInFlight) return null
-        // Task 3: ensure FILE_INIT handshake before any file op.
-        ensureFileSessionInit()
-        statsQueryInFlight = true
-        return try {
-            val projectsNode = resolveNodeIdInternal("/projects") ?: return null
-            val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
-                .takeIf { it >= 0 } ?: return null
-            val projName = getNodeInfo(activeProjNodeId)?.name ?: return null
-            // HW-VERIFY-2: log the project name so we can confirm node-name format.
-            Log.d("EP133APP", "MIDI META: active project name='$projName' nodeId=$activeProjNodeId")
-            val groupsNode = resolveNodeIdInternal("/projects/$projName/groups") ?: return null
-            val activeGroupNodeId = getMetadataJson(groupsNode).optInt("active", -1)
-                .takeIf { it >= 0 } ?: return null
-            val groupInfo = getNodeInfo(activeGroupNodeId) ?: return null
-            // HW-VERIFY-2: log the group name — should be "A".."D".
-            Log.d("EP133APP", "MIDI META: active group name='${groupInfo.name}' nodeId=${groupInfo.nodeId}")
-            val idx = PadChannel.entries.indexOfFirst { it.name == groupInfo.name }
-            idx.takeIf { it >= 0 }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e("EP133APP", "MIDI META: getActiveGroupIndex failed", e)
-            null
-        } finally {
-            statsQueryInFlight = false
+        Log.d("EP133APP", "MIDI META: getActiveGroupIndex() called, outputPort=${_deviceState.value.outputPortId}")
+        if (_deviceState.value.outputPortId == null) return null
+        return fileOpMutex.withLock {
+            // Task 3: ensure FILE_INIT handshake before any file op (NoLock — we hold the mutex).
+            ensureFileSessionInitNoLock()
+            try {
+                val projectsNode = resolveNodeIdInternal("/projects") ?: return@withLock null
+                val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
+                    .takeIf { it >= 0 } ?: return@withLock null
+                val projName = getNodeInfo(activeProjNodeId)?.name ?: return@withLock null
+                // HW-VERIFY-2: log the project name so we can confirm node-name format.
+                Log.d("EP133APP", "MIDI META: active project name='$projName' nodeId=$activeProjNodeId")
+                val groupsNode = resolveNodeIdInternal("/projects/$projName/groups") ?: return@withLock null
+                val activeGroupNodeId = getMetadataJson(groupsNode).optInt("active", -1)
+                    .takeIf { it >= 0 } ?: return@withLock null
+                val groupInfo = getNodeInfo(activeGroupNodeId) ?: return@withLock null
+                // HW-VERIFY-2: log the group name — should be "A".."D".
+                Log.d("EP133APP", "MIDI META: active group name='${groupInfo.name}' nodeId=${groupInfo.nodeId}")
+                val idx = PadChannel.entries.indexOfFirst { it.name == groupInfo.name }
+                idx.takeIf { it >= 0 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("EP133APP", "MIDI META: getActiveGroupIndex failed", e)
+                null
+            }
         }
     }
 
@@ -1380,30 +1407,41 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      */
     suspend fun setActiveGroup(index: Int): Boolean {
         val channel = PadChannel.entries.getOrNull(index) ?: return false
-        if (statsQueryInFlight) return false
-        statsQueryInFlight = true
-        return try {
-            val projectsNode = resolveNodeIdInternal("/projects") ?: return false
-            val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
-                .takeIf { it >= 0 } ?: return false
-            val projName = getNodeInfo(activeProjNodeId)?.name ?: return false
-            val groupNode = resolveNodeIdInternal("/projects/$projName/groups/${channel.name}") ?: return false
-            val groupsNode = resolveNodeIdInternal("/projects/$projName/groups") ?: return false
-            setMetadata(groupsNode, """{"active":$groupNode}""")
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e("EP133APP", "MIDI META: setActiveGroup($index) failed", e)
-            false
-        } finally {
-            statsQueryInFlight = false
+        if (_deviceState.value.outputPortId == null) return false
+        return fileOpMutex.withLock {
+            try {
+                val projectsNode = resolveNodeIdInternal("/projects") ?: return@withLock false
+                val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
+                    .takeIf { it >= 0 } ?: return@withLock false
+                val projName = getNodeInfo(activeProjNodeId)?.name ?: return@withLock false
+                val groupNode = resolveNodeIdInternal("/projects/$projName/groups/${channel.name}") ?: return@withLock false
+                val groupsNode = resolveNodeIdInternal("/projects/$projName/groups") ?: return@withLock false
+                setMetadata(groupsNode, """{"active":$groupNode}""")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("EP133APP", "MIDI META: setActiveGroup($index) failed", e)
+                false
+            }
         }
     }
 
     /**
-     * Internal path resolution that assumes [statsQueryInFlight] is already held by the caller.
-     * Unlike the public [resolveNodeId], this does NOT take the lock — use only from within
-     * functions that already own the flag (getActiveGroupIndex, setActiveGroup).
+     * Resolve the /sounds directory node ID inside a [fileOpMutex] locked context.
+     *
+     * Exists as a protected open method so test subclasses can stub the resolution without
+     * overriding the entire locking machinery in [putSampleFile].  Production path delegates
+     * to [resolveNodeIdInternal] (NoLock).
+     *
+     * MUST only be called from within a [fileOpMutex] locked context.
+     */
+    protected open suspend fun resolveSoundsNodeId(): Int? = resolveNodeIdInternal("/sounds")
+
+    /**
+     * NoLock core for [resolveNodeId].  Walks path segments from root (nodeId 0) using
+     * [listNodeBody] (also NoLock) without acquiring [fileOpMutex].
+     *
+     * MUST only be called from within a [fileOpMutex] locked context.
      */
     private suspend fun resolveNodeIdInternal(path: String): Int? {
         val segments = path.trim('/').split('/').filter { it.isNotEmpty() }

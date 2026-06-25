@@ -181,11 +181,9 @@ fun PadsScreen(viewModel: PadsViewModel) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             while (true) {
                 delay(1500)
-                // TEMP (260623-w5i): active-group poll disabled while testing sample import in
-                // isolation — the poll's concurrent FILE ops interleave with putSampleFile and
-                // corrupt the shared file session (device returns "unexpected page"). Re-enable
-                // once a shared file-op mutex serialises poll vs. import.
-                // viewModel.refreshActiveGroupFromDevice()
+                // File-op mutex (fileOpMutex in MIDIRepository) serialises this poll against
+                // putSampleFile and all other file ops — safe to re-enable.
+                viewModel.refreshActiveGroupFromDevice()
             }
         }
     }
