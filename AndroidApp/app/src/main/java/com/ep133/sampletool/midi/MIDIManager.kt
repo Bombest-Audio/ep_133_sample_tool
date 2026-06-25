@@ -269,8 +269,12 @@ class MIDIManager(
                     Log.e(TAG, "startListening: device $deviceId open failed")
                     return@openOrGetDevice
                 }
-                // Re-check after the async hop in case another path already connected.
-                if (openOutputPorts.containsKey(portId)) return@openOrGetDevice
+                // Re-check after the async hop in case another path already connected while
+                // openOrGetDevice was in flight. This is the durable idempotency guard.
+                if (openOutputPorts.containsKey(portId)) {
+                    Log.d(TAG, "startListening: duplicate connect prevented for $portId (already in openOutputPorts)")
+                    return@openOrGetDevice
+                }
 
                 val outputPort = device.openOutputPort(portNumber)
                 if (outputPort != null) {

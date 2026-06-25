@@ -103,10 +103,16 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     // on the first PUT response; putSampleFile awaits it before sending any DATA pages.
     private var pendingPutInitDeferred: CompletableDeferred<Boolean>? = null
     private var pendingPutAckDeferred: CompletableDeferred<Boolean>? = null
-    // Hardware-proven (2026-06-24): the device echoes the request reqId in each PUT response.
-    // Track the reqId we are currently awaiting so the dispatcher can reject stale/unexpected
-    // responses (e.g. a stale FILE_INFO status=4 from a prior op) rather than completing the
-    // wrong deferred and desyncing the upload.
+    // Hardware-proven (2026-06-24): the device echoes the request reqId in each response.
+    // awaitedFileReqId is set immediately before EVERY file-op send (INIT, LIST, METADATA,
+    // INFO, PUT INIT, PUT DATA, GET INIT, GET DATA) and cleared once the matching response
+    // is consumed. The dispatcher ignores any FILE response whose reqId doesn't match —
+    // this is the primary defence against duplicate responses poisoning the wrong deferred
+    // (hardware-confirmed root cause 2026-06-24: duplicate FILE_INIT response completing
+    // the LIST deferred → resolveNodeId returns null → upload aborts).
+    @Volatile private var awaitedFileReqId: Int = -1
+    // awaitedPutReqId is kept for PUT-specific per-page ack matching inside
+    // dispatchPagedPutResponse (the PUT path checks both fields).
     @Volatile private var awaitedPutReqId: Int = -1
 
     // ── Project enumeration state (Phase 4 Wave 2) ──
@@ -323,14 +329,34 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                     pendingNodeInfoDeferred != null              -> SysExProtocol.TE_SYSEX_FILE_INFO
                     else                                         -> -1
                 }
-                // Extract the response reqId from the raw frame (frame[6] holds high bits, frame[7] holds low 7 bits).
+                // Extract the response reqId from the raw frame.
+                // Frame layout (no F0 — already stripped by parseMidiInput accumulation):
+                //   message[0]=F0, [1..3]=TE ID, [4]=deviceId, [5]=0x40, [6]=flags|reqIdHigh, [7]=reqIdLow
+                // reqId high bits = message[6] & 0x0F; low 7 bits = message[7] & 0x7F.
+                // This is the SAME extraction used by the existing awaitedPutReqId path (commit ba62b55).
                 val responseReqId = ((message[6].toInt() and 0x0F) shl 7) or (message[7].toInt() and 0x7F)
                 val bodyHex = body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133MIDI", "MIDI META: FILE cmd=5 inFlightCmd=$inFlightCmd responseReqId=$responseReqId body[${body.size}] $bodyHex")
+                Log.d("EP133MIDI", "MIDI META: FILE cmd=5 inFlightCmd=$inFlightCmd responseReqId=$responseReqId awaitedFileReqId=$awaitedFileReqId body[${body.size}] $bodyHex")
                 if (inFlightCmd == -1) {
                     Log.w("EP133MIDI", "MIDI META: unrouted file response — no op in flight, body[${body.size}] $bodyHex")
                     return
                 }
+                // Unified reqId guard: ignore any file response whose reqId doesn't match what we
+                // are currently awaiting. This prevents a duplicate response (hardware sends each
+                // response twice due to duplicate MidiReceiver connections) from completing the
+                // NEXT op's deferred — the root cause of resolveNodeId("/sounds") returning null.
+                // awaitedFileReqId is set before every send and cleared after the awaited response.
+                if (awaitedFileReqId != -1 && responseReqId != awaitedFileReqId) {
+                    Log.w(
+                        "EP133MIDI",
+                        "MIDI META: ignoring stale/dup file response reqId=$responseReqId awaiting=$awaitedFileReqId — dropped",
+                    )
+                    return
+                }
+                // Clear awaitedFileReqId now that we matched and are about to consume the response.
+                // dispatchFileResponse completes the in-flight deferred; subsequent sends will set
+                // awaitedFileReqId again before the next send.
+                awaitedFileReqId = -1
                 dispatchFileResponse(inFlightCmd, body, responseReqId)
             }
         }
@@ -719,6 +745,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         pendingGetPages = pages
         return try {
             val initFrame = SysExProtocol.buildFileGetInitFrame(currentDeviceId, nodeId, requestId = 10)
+            awaitedFileReqId = 10
             midiManager.sendMidi(portId, initFrame)
             val init = withTimeoutOrNull(GET_INIT_TIMEOUT_MS) { initDeferred.await() }
                 ?: throw IllegalStateException("GET INIT timed out")
@@ -729,6 +756,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             var page = 0
             while (out.size() < init.fileSize) {
                 val dataFrame = SysExProtocol.buildFileGetDataFrame(currentDeviceId, page, requestId = 11)
+                awaitedFileReqId = 11
                 midiManager.sendMidi(portId, dataFrame)
                 val resp = withTimeoutOrNull(GET_PAGE_TIMEOUT_MS) { pages.receive() }
                     ?: throw IllegalStateException("GET DATA page $page timed out")
@@ -747,6 +775,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             pages.close()
             pendingGetInitDeferred = null
             pendingGetPages = null
+            awaitedFileReqId = -1
             transferInFlight = false
         }
     }
@@ -872,6 +901,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 metadataJson = metadataJson,
             )
             Log.d("EP133MIDI", "MIDI META: outbound PUT INIT reqId=$nextReqId name=$name size=${pcmBytes.size}")
+            awaitedFileReqId = nextReqId
             midiManager.sendMidi(portId, initFrame)
             nextReqId = (nextReqId + 1) and 0x3FFF
 
@@ -896,6 +926,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 val pageAck = CompletableDeferred<Boolean>()
                 pendingPutAckDeferred = pageAck
                 awaitedPutReqId = nextReqId
+                awaitedFileReqId = nextReqId
                 val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = nextReqId)
                 Log.d("EP133MIDI", "MIDI META: outbound PUT DATA page=$page reqId=$nextReqId chunkSize=${chunk.size}")
                 midiManager.sendMidi(portId, dataFrame)
@@ -915,6 +946,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             val termAck = CompletableDeferred<Boolean>()
             pendingPutAckDeferred = termAck
             awaitedPutReqId = nextReqId
+            awaitedFileReqId = nextReqId
             val terminatorFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = nextReqId)
             Log.d("EP133MIDI", "MIDI META: outbound PUT terminator page=$page reqId=$nextReqId")
             midiManager.sendMidi(portId, terminatorFrame)
@@ -930,6 +962,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             pendingPutInitDeferred = null
             pendingPutAckDeferred = null
             awaitedPutReqId = -1
+            awaitedFileReqId = -1
             transferInFlight = false
         }
     }
@@ -949,6 +982,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             val termAck = CompletableDeferred<Boolean>()
             pendingPutAckDeferred = termAck
             awaitedPutReqId = reqId
+            awaitedFileReqId = reqId
             val frame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, terminatorPage, ByteArray(0), requestId = reqId)
             Log.w("EP133MIDI", "MIDI META: force-closed incomplete transfer page=$terminatorPage reqId=$reqId")
             midiManager.sendMidi(portId, frame)
@@ -958,6 +992,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         } finally {
             pendingPutAckDeferred = null
             awaitedPutReqId = -1
+            awaitedFileReqId = -1
         }
     }
 
@@ -1006,15 +1041,18 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         pendingFileInitDeferred = deferred
         val frame = SysExProtocol.buildFileInitFrame(currentDeviceId, requestId = FILE_INIT_REQUEST_ID)
         val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-        Log.d("EP133MIDI", "MIDI META: outbound FILE_INIT frame[${frame.size}] $hexDump")
+        Log.d("EP133MIDI", "MIDI META: outbound FILE_INIT frame[${frame.size}] reqId=$FILE_INIT_REQUEST_ID $hexDump")
+        awaitedFileReqId = FILE_INIT_REQUEST_ID
         midiManager.sendMidi(portId, frame)
         val chunkSize = withTimeoutOrNull(FILE_INIT_TIMEOUT_MS) { deferred.await() }
         return if (chunkSize != null) {
             Log.d("EP133MIDI", "FILE_INIT: session initialized, chunkSize=$chunkSize")
+            // awaitedFileReqId already cleared by dispatcher on match.
             true
         } else {
             Log.e("EP133MIDI", "FILE_INIT: timed out — proceeding anyway (hardware may not require it)")
             pendingFileInitDeferred = null
+            awaitedFileReqId = -1
             // Best-effort: if the device didn't respond, mark as initialized so we don't loop.
             fileSessionInitialized = true
             false
@@ -1053,6 +1091,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         nodeListBuffer.reset()
         return try {
             val frame = SysExProtocol.buildFileListByNodeFrame(currentDeviceId, nodeId, requestId = requestId)
+            awaitedFileReqId = requestId
             midiManager.sendMidi(portId, frame)
             withTimeoutOrNull(FILE_LIST_TIMEOUT_MS) { deferred.await() }
         } catch (e: CancellationException) {
@@ -1065,6 +1104,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 pendingNodeListDeferred = null
                 nodeListBuffer.reset()
             }
+            // Clear the guard regardless: on match the dispatcher already cleared it;
+            // on timeout it is still set to the stale reqId and must be unblocked.
+            if (awaitedFileReqId == requestId) awaitedFileReqId = -1
         }
     }
 
@@ -1184,7 +1226,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             val frame = SysExProtocol.buildMetadataGetFrame(currentDeviceId, nodeId, page = 0, requestId = METADATA_GET_REQUEST_ID)
             // Task 3: raw-byte log for HW-VERIFY-3
             val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-            Log.d("EP133APP", "MIDI META: outbound METADATA GET nodeId=$nodeId frame[${frame.size}] $hexDump")
+            Log.d("EP133APP", "MIDI META: outbound METADATA GET nodeId=$nodeId reqId=$METADATA_GET_REQUEST_ID frame[${frame.size}] $hexDump")
+            awaitedFileReqId = METADATA_GET_REQUEST_ID
             midiManager.sendMidi(portId, frame)
             val accumulated = withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() }
                 ?: return JSONObject()
@@ -1213,6 +1256,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         } finally {
             metadataJsonInFlight = false
             if (pendingMetadataJsonDeferred === deferred) pendingMetadataJsonDeferred = null
+            // Clear on timeout (dispatcher already cleared on match; on timeout it stays set).
+            if (awaitedFileReqId == METADATA_GET_REQUEST_ID) awaitedFileReqId = -1
         }
     }
 
@@ -1232,7 +1277,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             val frame = SysExProtocol.buildMetadataSetFrame(currentDeviceId, nodeId, json, requestId = METADATA_SET_REQUEST_ID)
             // Task 3: raw-byte log for HW-VERIFY-3
             val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-            Log.d("EP133APP", "MIDI META: outbound METADATA SET nodeId=$nodeId json=$json frame[${frame.size}] $hexDump")
+            Log.d("EP133APP", "MIDI META: outbound METADATA SET nodeId=$nodeId json=$json reqId=$METADATA_SET_REQUEST_ID frame[${frame.size}] $hexDump")
+            awaitedFileReqId = METADATA_SET_REQUEST_ID
             midiManager.sendMidi(portId, frame)
             withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() } ?: false
         } catch (e: CancellationException) {
@@ -1240,6 +1286,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         } finally {
             metadataSetInFlight = false
             if (pendingMetadataSetAckDeferred === deferred) pendingMetadataSetAckDeferred = null
+            if (awaitedFileReqId == METADATA_SET_REQUEST_ID) awaitedFileReqId = -1
         }
     }
 
@@ -1256,7 +1303,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             val frame = SysExProtocol.buildFileInfoFrame(currentDeviceId, nodeId, requestId = FILE_INFO_REQUEST_ID)
             // Task 3: raw-byte log for HW-VERIFY-3
             val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-            Log.d("EP133APP", "MIDI META: outbound FILE_INFO nodeId=$nodeId frame[${frame.size}] $hexDump")
+            Log.d("EP133APP", "MIDI META: outbound FILE_INFO nodeId=$nodeId reqId=$FILE_INFO_REQUEST_ID frame[${frame.size}] $hexDump")
+            awaitedFileReqId = FILE_INFO_REQUEST_ID
             midiManager.sendMidi(portId, frame)
             withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() }
         } catch (e: CancellationException) {
@@ -1266,6 +1314,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             null
         } finally {
             if (pendingNodeInfoDeferred === deferred) pendingNodeInfoDeferred = null
+            if (awaitedFileReqId == FILE_INFO_REQUEST_ID) awaitedFileReqId = -1
         }
     }
 
