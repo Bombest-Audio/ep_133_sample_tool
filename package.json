@@ -2,12 +2,16 @@
   "name": "ep133sampletool",
   "productName": "EP-133 Sample Tool",
   "version": "1.2.0",
-  "description": "EP-133 Sample Tool - 1.2.0",
+  "description": "Offline sample management for the Teenage Engineering EP-133 K.O. II and EP-1320 — desktop, mobile, and plugin.",
+  "license": "MIT",
   "main": "main.js",
-  "homepage": "https://github.com/thomasphillips3/ep_133_sample_tool",
+  "homepage": "https://github.com/Bombest-Audio/ep_133_sample_tool",
   "repository": {
     "type": "git",
-    "url": "https://github.com/thomasphillips3/ep_133_sample_tool.git"
+    "url": "https://github.com/Bombest-Audio/ep_133_sample_tool.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Bombest-Audio/ep_133_sample_tool/issues"
   },
   "scripts": {
     "start": "electron . --ozone-platform=wayland",
@@ -33,7 +37,7 @@
     "sample",
     "tool"
   ],
-  "author": "Thomas Phillips",
+  "author": "Thomas Phillips <thomas@bom.best> (Bombest, Inc.)",
   "devDependencies": {
     "electron": "^31.4.0",
     "electron-builder": "^24.13.3"

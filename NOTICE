@@ -1,0 +1,54 @@
+EP-133 Sample Tool — NOTICE
+===========================
+
+This one's for the EP-133 community, from Bombest Audio. Most of it is free and
+open under MIT — but part of what ships in this repo isn't ours to give away, and
+this file draws that line clearly so nobody gets surprised.
+
+
+What's MIT (ours to share)
+--------------------------
+
+The MIT license in LICENSE covers Bombest, Inc.'s original work:
+
+  - the native wrappers — AndroidApp/, iOSApp/, JucePlugin/, and the Electron shell
+    (main.js, preload.js, renderer.js)
+  - shared/MIDIBridgePolyfill.js and the cross-platform data JSON in shared/
+  - data/custom.js (the hand-written config)
+  - the reverse-engineered protocol research in docs/ (including
+    docs/ep133-sysex-protocol.md)
+  - the build and release tooling in scripts/, and the project docs
+
+Use it, fork it, build on it. That's the point.
+
+
+What's NOT ours (Teenage Engineering's property)
+------------------------------------------------
+
+The compiled web app and its assets under data/ are Teenage Engineering's, not
+Bombest's. They're included unmodified so the tool can talk to hardware you already
+own — nothing more. They are NOT licensed under MIT, and all rights stay with TE:
+
+  - data/index.js          (TE's compiled application)
+  - data/index.css
+  - data/*.wasm            (bundled audio libraries)
+  - data/*.pak, data/*.hmls (factory sound content)
+  - data/*.woff, data/*.otf (TE fonts)
+
+If you fork or redistribute this project, that's on you to honor. Don't relicense
+TE's files, don't claim them, and don't strip this notice.
+
+
+Built on earlier work
+----------------------
+
+This project builds on garrettjwilke/ep_133_sample_tool. Thanks to Garrett and
+everyone who poked at this device before us.
+
+
+Not affiliated with Teenage Engineering
+---------------------------------------
+
+Bombest Audio isn't affiliated with, endorsed by, or sponsored by Teenage
+Engineering. "Teenage Engineering", "EP-133", "EP-1320", and "K.O. II" are their
+trademarks, used here only to say what hardware this tool works with.
