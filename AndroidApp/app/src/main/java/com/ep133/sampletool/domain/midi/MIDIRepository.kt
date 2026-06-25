@@ -310,7 +310,11 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 val packedBody = if (payload.size > 1) payload.copyOfRange(1, payload.size) else ByteArray(0)
                 val body = if (packedBody.isNotEmpty()) SysExProtocol.unpack7bit(packedBody) else ByteArray(0)
                 Log.d("EP133MIDI", "MIDI META: FILE response status=$fileStatus body[${body.size}] ${body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }}")
-                if (body.isEmpty()) return
+                // NOTE: do NOT early-return when body is empty — a status-only empty-body response
+                // is a valid PUT DATA page ack (hardware-confirmed 2026-06-25). Bailing here drops
+                // the ack before reqId-matching, leaving the page-0 deferred pending until timeout.
+                // Guard only when there is no status byte at all (payload itself is empty).
+                if (payload.isEmpty()) return
 
                 // Hardware-verified (2026-06-23): device FILE responses do NOT echo the subcommand.
                 // FILE_INIT reply unpacked body starts 0x00 (not 0x01=INIT); FILE_LIST reply starts
@@ -357,7 +361,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 // dispatchFileResponse completes the in-flight deferred; subsequent sends will set
                 // awaitedFileReqId again before the next send.
                 awaitedFileReqId = -1
-                dispatchFileResponse(inFlightCmd, body, responseReqId)
+                dispatchFileResponse(inFlightCmd, body, responseReqId, fileStatus)
             }
         }
     }
@@ -372,7 +376,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *   FILE_INIT reply unpacked: `00 0C 00 00 02 00` (starts 0x00, not 0x01=INIT)
      *   FILE_LIST reply unpacked: page-u16 then entries (starts with page word, not 0x04=LIST)
      */
-    private fun dispatchFileResponse(fileCmd: Int, body: ByteArray, responseReqId: Int = -1) {
+    private fun dispatchFileResponse(fileCmd: Int, body: ByteArray, responseReqId: Int = -1, fileStatus: Int = -1) {
         // Rename: parameter was historically called "payload" but is now always the whole body.
         val payload = body
         when (fileCmd) {
@@ -504,7 +508,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 }
             }
             SysExProtocol.TE_SYSEX_FILE_PUT -> {
-                if (transferInFlight) dispatchPagedPutResponse(payload, responseReqId)
+                if (transferInFlight) dispatchPagedPutResponse(payload, responseReqId, fileStatus)
             }
             SysExProtocol.TE_SYSEX_FILE_INFO -> {
                 // payload is already unpacked — use directly.
@@ -591,11 +595,17 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * cleared, each per-page deferred is freshly set by the caller before sending and consumed
      * here (completed true on success, false/exceptionally on error).
      *
-     * @param payload      Body of the PUT response (first byte = status).
+     * @param payload      Body of the PUT response (bytes AFTER the status — may be empty for a
+     *                     STATUS-ONLY ack such as a PUT DATA page ack from hardware).
      * @param responseReqId reqId decoded from the raw frame by the caller (-1 if not decoded).
+     * @param fileStatus   Status byte already extracted by dispatchSysEx before unpacking the
+     *                     body. This is the authoritative status value — do NOT re-read from
+     *                     payload[0], which would be wrong when the body is empty.
      */
-    private fun dispatchPagedPutResponse(payload: ByteArray, responseReqId: Int = -1) {
-        val status = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
+    private fun dispatchPagedPutResponse(payload: ByteArray, responseReqId: Int = -1, fileStatus: Int = -1) {
+        // Use the pre-extracted fileStatus. If caller passed -1 (legacy / direct call),
+        // fall back to payload[0] for backwards-compatibility only.
+        val status = if (fileStatus != -1) fileStatus else payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
 
         // First response after PUT INIT: complete the init deferred.
         // The INIT reqId is tracked by putSampleFile; we accept any response here because

@@ -970,14 +970,21 @@ class MismatchedReqIdTest {
          *
          * @param responseReqId  reqId to pass (mimics what the raw frame would carry).
          * @param status         STATUS_OK or STATUS_SPECIFIC_SUCCESS_START.
-         * @param body           Minimal payload: [status] (dispatchPagedPutResponse reads body[0]).
+         *                       Passed as both body[0] AND the fileStatus param so that the
+         *                       implementation's fileStatus-first read works correctly.
          */
         fun simulatePutPageResponse(responseReqId: Int, status: Int) {
+            // dispatchPagedPutResponse now has a third param (fileStatus: Int = -1).
+            // Passing status both as the payload byte and as fileStatus; the implementation
+            // prefers fileStatus when != -1, so pass the real status here.
             val method = MIDIRepository::class.java.getDeclaredMethod(
-                "dispatchPagedPutResponse", ByteArray::class.java, Int::class.javaPrimitiveType,
+                "dispatchPagedPutResponse",
+                ByteArray::class.java,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
             )
             method.isAccessible = true
-            method.invoke(this, byteArrayOf(status.toByte()), responseReqId)
+            method.invoke(this, byteArrayOf(status.toByte()), responseReqId, status)
         }
     }
 
