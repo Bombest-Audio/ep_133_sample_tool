@@ -1,12 +1,16 @@
 # EP-133 Sample Tool
 
-[![Build · Electron](https://github.com/thomasphillips3/ep_133_sample_tool/actions/workflows/build-electron.yml/badge.svg)](https://github.com/thomasphillips3/ep_133_sample_tool/actions/workflows/build-electron.yml)
-[![Build · Android](https://github.com/thomasphillips3/ep_133_sample_tool/actions/workflows/build-android.yml/badge.svg)](https://github.com/thomasphillips3/ep_133_sample_tool/actions/workflows/build-android.yml)
+[![Build · Electron](https://github.com/Bombest-Audio/ep_133_sample_tool/actions/workflows/build-electron.yml/badge.svg)](https://github.com/Bombest-Audio/ep_133_sample_tool/actions/workflows/build-electron.yml)
+[![Build · Android](https://github.com/Bombest-Audio/ep_133_sample_tool/actions/workflows/build-android.yml/badge.svg)](https://github.com/Bombest-Audio/ep_133_sample_tool/actions/workflows/build-android.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-EF4E27.svg)](LICENSE)
 
 > Offline sample management for the Teenage Engineering EP-133 K.O. II.
 > Ships as a desktop app (Windows/macOS/Linux), Android app, iOS app, and AU/VST3 plugin.
 
 Compatible with any **EP-133** or **EP-1320**.
+
+**A gift to the EP-133 community, from [Bombest Audio](https://bom.best).** Free,
+offline, open source. Our code is MIT — fork it, build on it, make it yours.
 
 ---
 
@@ -144,4 +148,28 @@ verified on real hardware. For anyone building for the K.O. II.
 
 ## Contributing
 
-→ [CONTRIBUTING.md](CONTRIBUTING.md)
+Pull requests welcome — bug fixes, new platform features, protocol findings, all of it.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for branch/commit conventions and per-platform
+setup. We follow the [Contributor Covenant](CODE_OF_CONDUCT.md); be cool to each other.
+
+Found a security issue? Don't open a public issue — see [SECURITY.md](SECURITY.md).
+
+Release notes live in [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## Credits & licensing
+
+This builds on [garrettjwilke/ep_133_sample_tool](https://github.com/garrettjwilke/ep_133_sample_tool).
+Thanks to everyone who reverse-engineered this device before us.
+
+**Our code is [MIT](LICENSE)** — the native wrappers (Android/iOS/JUCE/Electron), the MIDI
+polyfill, the [SysEx protocol docs](docs/ep133-sysex-protocol.md), and the build tooling. Use it freely.
+
+**The `data/` bundle is not ours.** The compiled web app, WASM audio libraries, factory
+sound content, and fonts under `data/` are Teenage Engineering's property, included unmodified
+so the tool can talk to hardware you already own. They're **not** covered by our MIT license —
+see [NOTICE](NOTICE) for the full split before you fork or redistribute.
+
+Not affiliated with or endorsed by Teenage Engineering. "EP-133", "EP-1320", and "K.O. II"
+are TE trademarks, used only to say what hardware this works with.
