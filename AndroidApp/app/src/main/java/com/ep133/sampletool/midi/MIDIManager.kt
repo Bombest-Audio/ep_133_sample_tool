@@ -47,6 +47,11 @@ class MIDIManager(
     private val openDevices = java.util.concurrent.ConcurrentHashMap<Int, MidiDevice>()
     private val openInputPorts = java.util.concurrent.ConcurrentHashMap<String, MidiInputPort>()
     private val openOutputPorts = java.util.concurrent.ConcurrentHashMap<String, MidiOutputPort>()
+    // Ports whose openOutputPort() is in flight. startListening()'s openOutputPorts guard is
+    // insufficient because openOrGetDevice() is async: two rapid enumerations both pass the
+    // guard before the first callback sets openOutputPorts, connecting TWO receivers → every
+    // incoming SysEx delivered twice (corrupts response correlation). This set dedups synchronously.
+    private val startingOutputPorts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private val deviceCallback = object : MidiManager.DeviceCallback() {
         override fun onDeviceAdded(device: MidiDeviceInfo) {
@@ -253,25 +258,35 @@ class MIDIManager(
         val deviceId = parts[0].toIntOrNull() ?: return
         val portNumber = parts[2].toIntOrNull() ?: return
 
+        // Synchronous dedup: if an openOutputPort() for this port is already in flight, bail —
+        // otherwise a second enumeration connects a duplicate receiver (every message twice).
+        if (!startingOutputPorts.add(portId)) return
+
         Log.d(TAG, "startListening: opening device $deviceId for port $portId")
         openOrGetDevice(deviceId) { device ->
-            if (device == null) {
-                Log.e(TAG, "startListening: device $deviceId open failed")
-                return@openOrGetDevice
-            }
+            try {
+                if (device == null) {
+                    Log.e(TAG, "startListening: device $deviceId open failed")
+                    return@openOrGetDevice
+                }
+                // Re-check after the async hop in case another path already connected.
+                if (openOutputPorts.containsKey(portId)) return@openOrGetDevice
 
-            val outputPort = device.openOutputPort(portNumber)
-            if (outputPort != null) {
-                openOutputPorts[portId] = outputPort
-                outputPort.connect(object : MidiReceiver() {
-                    override fun onSend(data: ByteArray, offset: Int, count: Int, timestamp: Long) {
-                        val bytes = data.copyOfRange(offset, offset + count)
-                        mainHandler.post { onMidiReceived?.invoke(portId, bytes) }
-                    }
-                })
-                Log.i(TAG, "Listening on $portId — receiving MIDI input")
-            } else {
-                Log.e(TAG, "startListening: openOutputPort($portNumber) returned null")
+                val outputPort = device.openOutputPort(portNumber)
+                if (outputPort != null) {
+                    openOutputPorts[portId] = outputPort
+                    outputPort.connect(object : MidiReceiver() {
+                        override fun onSend(data: ByteArray, offset: Int, count: Int, timestamp: Long) {
+                            val bytes = data.copyOfRange(offset, offset + count)
+                            mainHandler.post { onMidiReceived?.invoke(portId, bytes) }
+                        }
+                    })
+                    Log.i(TAG, "Listening on $portId — receiving MIDI input")
+                } else {
+                    Log.e(TAG, "startListening: openOutputPort($portNumber) returned null")
+                }
+            } finally {
+                startingOutputPorts.remove(portId)
             }
         }
     }
