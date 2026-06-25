@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light" data-sku="ep133">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EP-133 K.O. II — MIDI SysEx Protocol Reference</title>
+<meta name="description" content="Hardware-verified reverse-engineering notes for the Teenage Engineering EP-133 K.O. II file & playback SysEx protocol.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-in">
+    <a class="brand" href="index.html">
+      <span class="badge">EP·133</span>
+      <span>Sample Tool <small>// by Bombest Audio</small></span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="protocol.html" aria-current="page">SysEx Protocol</a>
+      <a href="app.html">App Concept</a>
+      <a href="https://github.com/Bombest-Audio/ep_133_sample_tool" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <div class="toggles">
+      <button class="tog" data-toggle-sku><span class="sw"></span><span class="lab">EP-133</span></button>
+      <button class="tog" data-toggle-theme><span class="sw teal"></span><span class="lab">LIGHT</span></button>
+    </div>
+  </div>
+</nav>
+
+<main class="doc wrap">
+
+  <!-- ===== TOC ===== -->
+  <aside class="toc">
+    <h4>Contents</h4>
+    <ol>
+      <li><a href="#transport">Transport</a></li>
+      <li><a href="#frame">Frame format</a></li>
+      <li><a href="#packing">7-bit packing</a></li>
+      <li><a href="#handshake">Handshake</a></li>
+      <li><a href="#subcommands">File subcommands</a></li>
+      <li><a href="#tree">Node tree</a></li>
+      <li><a href="#put">FILE_PUT sequence</a></li>
+      <li><a href="#gotchas">Gotchas</a></li>
+      <li><a href="#schemas">Metadata schemas</a></li>
+      <li><a href="#limits">Format &amp; limits</a></li>
+      <li><a href="#reproduce">Reproduce it</a></li>
+      <li><a href="#credits">Credits</a></li>
+    </ol>
+  </aside>
+
+  <!-- ===== BODY ===== -->
+  <div class="doc-body">
+
+    <header class="doc-hero">
+      <span class="eyebrow live">Hardware-verified · firmware 2.0.5</span>
+      <h1 style="margin-top:16px">The EP-133 file &amp; playback SysEx protocol.</h1>
+      <p class="lede">Everything we learned dragging samples on and off the K.O. II. No spec sheet exists, so we wrote one. Captured live off real hardware, cross-checked against TE's own web tool. This one's for the community — from Bombest Audio.</p>
+      <div class="meta">
+        <span class="chip"><span class="dot ok"></span>MFR&nbsp; <b class="mono" style="color:var(--live)">00 20 76</b></span>
+        <span class="chip">DEVICE&nbsp; <b class="mono">0x33</b></span>
+        <span class="chip">SUBSYS&nbsp; <b class="mono" style="color:var(--accent)">0x40</b></span>
+        <span class="chip">CHUNK&nbsp; <b class="mono">512 B</b></span>
+      </div>
+    </header>
+
+    <!-- 1 TRANSPORT -->
+    <section class="doc-section" id="transport">
+      <h2><span class="s-no">01</span> Transport</h2>
+      <p>The K.O. II shows up as a plain class-compliant USB-MIDI device — no driver, no app. On macOS it enumerates in CoreMIDI under the name <code>EP-133</code>. If your DAW can see it, this tool can talk to it.</p>
+      <p>Two completely separate things ride that one MIDI port. Pads send <strong>ordinary MIDI notes</strong> — notes <code>36</code>–<code>83</code>, mapped across the four pad groups A / B / C / D. Everything else — the filesystem, sample upload, playback triggers — is <strong>SysEx only</strong>. You will not find a CC or a note that uploads a WAV. It all goes through the frames below.</p>
+      <dl class="kv">
+        <dt>CoreMIDI name</dt><dd>EP-133</dd>
+        <dt>Pad notes</dt><dd>36–83 (groups A / B / C / D)</dd>
+        <dt>Files &amp; playback</dt><dd>SysEx only</dd>
+      </dl>
+    </section>
+
+    <!-- 2 FRAME FORMAT -->
+    <section class="doc-section" id="frame">
+      <h2><span class="s-no">02</span> Frame format</h2>
+      <p>Every request is one SysEx message. Read it left to right — start byte, manufacturer ID, which device, which subsystem, a flags byte, an optional request id, the command, then a 7-bit-packed payload, then the end byte.</p>
+
+      <h3>Request frame</h3>
+      <div class="frame">
+        <div class="byte start"><div class="hex">F0</div><div class="lbl">Start</div></div>
+        <div class="byte mfr"><div class="hex">00</div><div class="lbl">MFR</div></div>
+        <div class="byte mfr"><div class="hex">20</div><div class="lbl">MFR</div></div>
+        <div class="byte mfr"><div class="hex">76</div><div class="lbl">TE</div></div>
+        <div class="byte var"><div class="hex">33</div><div class="lbl">Device&nbsp;ID</div></div>
+        <div class="byte"><div class="hex">40</div><div class="lbl">Subsys</div></div>
+        <div class="byte var"><div class="hex">flags</div><div class="lbl">Flags</div></div>
+        <div class="byte var"><div class="hex">reqId</div><div class="lbl">Req&nbsp;ID</div></div>
+        <div class="byte cmd"><div class="hex">cmd</div><div class="lbl">Command</div></div>
+        <div class="byte flex"><div class="hex">7-bit packed payload …</div><div class="lbl">Payload</div></div>
+        <div class="byte end"><div class="hex">F7</div><div class="lbl">End</div></div>
+      </div>
+
+      <h3>Response frame</h3>
+      <p>The reply is the same shape with two changes: it <strong>drops the leading <code>F0</code></strong> as your MIDI library hands it to you, and it inserts a one-byte <strong>STATUS</strong> code right after the command. Read and discard that STATUS byte before you touch the payload (see gotcha #0).</p>
+      <div class="frame">
+        <div class="byte mfr"><div class="hex">00</div><div class="lbl">MFR</div></div>
+        <div class="byte mfr"><div class="hex">20</div><div class="lbl">MFR</div></div>
+        <div class="byte mfr"><div class="hex">76</div><div class="lbl">TE</div></div>
+        <div class="byte var"><div class="hex">33</div><div class="lbl">Device&nbsp;ID</div></div>
+        <div class="byte"><div class="hex">40</div><div class="lbl">Subsys</div></div>
+        <div class="byte var"><div class="hex">flags</div><div class="lbl">Flags</div></div>
+        <div class="byte var"><div class="hex">reqId</div><div class="lbl">Req&nbsp;ID</div></div>
+        <div class="byte cmd"><div class="hex">cmd</div><div class="lbl">Command</div></div>
+        <div class="byte" style="border-color:var(--live)"><div class="hex" style="color:var(--live)">STATUS</div><div class="lbl">+ status</div></div>
+        <div class="byte flex"><div class="hex">7-bit packed payload …</div><div class="lbl">Payload</div></div>
+        <div class="byte end"><div class="hex">F7</div><div class="lbl">End</div></div>
+      </div>
+
+      <table class="tbl" style="margin-top:8px"><tbody>
+        <tr><td class="m"><b>00 20 76</b></td><td>Manufacturer ID — Teenage Engineering.</td></tr>
+        <tr><td class="m"><b>0x33</b></td><td>Device ID on the tested unit. Yours may differ; read it from Greet.</td></tr>
+        <tr><td class="m"><b>0x40</b></td><td>Subsystem byte. Always present.</td></tr>
+        <tr><td class="m"><b>flags</b></td><td><code>0x40</code> = is-request &nbsp;·&nbsp; <code>0x20</code> = request-id-present. A request that wants a reply id sets both → <code>0x60</code>.</td></tr>
+      </tbody></table>
+    </section>
+
+    <!-- 3 PACKING -->
+    <section class="doc-section" id="packing">
+      <h2><span class="s-no">03</span> 7-bit packing</h2>
+      <p>SysEx data bytes can only carry 7 bits — the high bit is reserved. To move real 8-bit bytes, the device packs them <strong>LSB-first</strong>: a single high-bits byte carries the 8th bit of the next up-to-7 data bytes, with bit <code>k</code> of the high-bits byte belonging to data byte <code>k</code>.</p>
+      <div class="frame">
+        <div class="byte cmd"><div class="hex">H</div><div class="lbl">high&nbsp;bits</div></div>
+        <div class="byte"><div class="hex">d0</div><div class="lbl">bit&nbsp;0</div></div>
+        <div class="byte"><div class="hex">d1</div><div class="lbl">bit&nbsp;1</div></div>
+        <div class="byte"><div class="hex">d2</div><div class="lbl">bit&nbsp;2</div></div>
+        <div class="byte"><div class="hex">d3</div><div class="lbl">bit&nbsp;3</div></div>
+        <div class="byte"><div class="hex">d4</div><div class="lbl">bit&nbsp;4</div></div>
+        <div class="byte"><div class="hex">d5</div><div class="lbl">bit&nbsp;5</div></div>
+        <div class="byte"><div class="hex">d6</div><div class="lbl">bit&nbsp;6</div></div>
+      </div>
+      <div class="code">
+        <div class="code-top"><span class="dot act"></span><span class="t">unpack · per byte</span></div>
+        <pre><code><span class="c-com">// LSB-first: high bit of data[k] lives in bit k of highbits</span>
+unpacked[k] = (data[k] &amp; <span class="c-num">0x7F</span>) | (((highbits &gt;&gt; k) &amp; <span class="c-num">1</span>) &lt;&lt; <span class="c-num">7</span>);</code></pre>
+      </div>
+      <p>Get the bit order wrong and every byte past 0x7F is silently mangled — your WAV header looks fine and the audio is garbage. It is LSB-first. Not MSB-first (gotcha #2).</p>
+    </section>
+
+    <!-- 4 HANDSHAKE -->
+    <section class="doc-section" id="handshake">
+      <h2><span class="s-no">04</span> Handshake</h2>
+      <p><strong>Greet</strong> (command <code>1</code>) is the hello. It returns an ASCII key/value string — product name, firmware, serial — so you can confirm you're talking to the right unit and read its real device id back.</p>
+      <div class="code">
+        <div class="code-top"><span class="dot ok"></span><span class="t">greet · command 1 · response payload</span></div>
+        <pre><code><span class="c-key">product</span>=EP-133 <span class="c-key">firmware</span>=<span class="c-num">2.0.5</span> <span class="c-key">serial</span>=<span class="c-str">KO2xxxxxxxx</span></code></pre>
+      </div>
+      <p>Before <em>any</em> file operation you must open a file session. <strong>File session init</strong> is command <code>5</code> with subcommand <code>FILE_INIT</code> (<code>1</code>). It negotiates a <strong>512-byte chunk size</strong> and hands back a session you'll reference for the rest of the transfer. Skip it and every file op fails.</p>
+      <dl class="kv">
+        <dt>Greet</dt><dd>command 1 → product / firmware / serial</dd>
+        <dt>Session init</dt><dd>command 5 · sub 1 (FILE_INIT) → 512-byte chunk</dd>
+        <dt>Required</dt><dd>before any file op</dd>
+      </dl>
+    </section>
+
+    <!-- 5 SUBCOMMANDS -->
+    <section class="doc-section" id="subcommands">
+      <h2><span class="s-no">05</span> File subcommands</h2>
+      <p>All file and playback work lives under <strong>command <code>5</code></strong>. The first payload byte picks the subcommand. (It is command 5 — not 127. See gotcha #1.)</p>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>Subcommand</th><th>Code</th><th>Does</th></tr></thead>
+          <tbody>
+            <tr><td class="m"><b>FILE_INIT</b></td><td class="code">1</td><td>Open a file session, negotiate chunk size.</td></tr>
+            <tr><td class="m"><b>FILE_PUT</b></td><td class="code">2</td><td>Upload a file — the WAV import path.</td></tr>
+            <tr><td class="m"><b>FILE_GET</b></td><td class="code">3</td><td>Download a file off the device.</td></tr>
+            <tr><td class="m"><b>FILE_LIST</b></td><td class="code">4</td><td>List children of a node.</td></tr>
+            <tr><td class="m"><b>FILE_PLAYBACK</b></td><td class="code">5</td><td>Trigger playback of a node.</td></tr>
+            <tr><td class="m"><b>FILE_DELETE</b></td><td class="code">6</td><td>Delete a node.</td></tr>
+            <tr><td class="m"><b>FILE_METADATA</b></td><td class="code">7</td><td>Read/write a node's metadata blob.</td></tr>
+            <tr><td class="m"><b>FILE_INFO</b></td><td class="code">11</td><td>Size, type, status of a node.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 6 NODE TREE -->
+    <section class="doc-section" id="tree">
+      <h2><span class="s-no">06</span> Node tree</h2>
+      <p>The filesystem is a tree of numbered nodes. Everything hangs off root <code>0</code>. Samples live under <strong>sounds</strong> (<code>1000</code>) as sequential <code>.pcm</code> slots; saved work lives under <strong>projects</strong> (<code>2000</code>), each project carrying a groups directory split into pad groups A / B / C / D.</p>
+      <div class="tree">
+<div class="ln"><span class="nid">0</span>     <span class="nname">root</span></div>
+<div class="ln">├─ <span class="nid">1000</span>  <span class="nname">sounds</span>            <span class="ndim">// sample slots</span></div>
+<div class="ln">│   ├─ <span class="nid">1001</span>  <span class="nname">001.pcm</span></div>
+<div class="ln">│   ├─ <span class="nid">1002</span>  <span class="nname">002.pcm</span></div>
+<div class="ln">│   └─ <span class="ndim">…    …       sequential node ids</span></div>
+<div class="ln">└─ <span class="nid">2000</span>  <span class="nname">projects</span></div>
+<div class="ln">    ├─ <span class="nid">3000</span>  <span class="nname">project 01</span></div>
+<div class="ln">    │   └─ <span class="nname">groups</span></div>
+<div class="ln">    │       ├─ <span class="grp">A</span>   ├─ <span class="grp">B</span>   ├─ <span class="grp">C</span>   └─ <span class="grp">D</span></div>
+<div class="ln">    ├─ <span class="nid">4000</span>  <span class="nname">project 02</span></div>
+<div class="ln">    ├─ <span class="ndim">…     …          (5000, 6000 …)</span></div>
+<div class="ln">    └─ <span class="nid">11000</span> <span class="nname">project 09</span></div>
+      </div>
+      <p class="muted" style="font-size:13.5px">Projects step by 1000: 01→3000, 02→4000, … 09→11000. Each project's groups dir always exposes A / B / C / D.</p>
+    </section>
+
+    <!-- 7 FILE_PUT -->
+    <section class="doc-section" id="put">
+      <h2><span class="s-no">07</span> FILE_PUT upload sequence</h2>
+      <p>This is the whole reason the tool exists. Getting a WAV onto the device is a strict handshake — every step waits for the one before it. Rush it and the device throws "unexpected page", or worse, wedges (gotcha #4).</p>
+      <div class="flow">
+        <div class="step">
+          <div class="sn">1</div>
+          <div class="sb"><h4>Open session</h4><p>FILE_INIT to negotiate the 512-byte chunk size and a fresh session.</p></div>
+          <div class="sx">cmd 5 · sub 1<br><span class="await">await OK</span></div>
+        </div>
+        <div class="step">
+          <div class="sn">2</div>
+          <div class="sb"><h4>Resolve /sounds</h4><p>Locate the sounds directory — node <code>1000</code> — as the upload target.</p></div>
+          <div class="sx">node 1000</div>
+        </div>
+        <div class="step">
+          <div class="sn">3</div>
+          <div class="sb"><h4>PUT INIT</h4><p>Announce the file. The device assigns a <strong>fileId</strong> — wait for it, you'll need it on every page.</p></div>
+          <div class="sx">cmd 5 · sub 2<br><span class="await">await fileId</span></div>
+        </div>
+        <div class="step">
+          <div class="sn">4</div>
+          <div class="sb"><h4>Paged DATA</h4><p>Stream the file in <strong>~427-byte chunks</strong>. Each page gets a <strong>unique request id</strong>, and you <strong>wait for that page's ack</strong> before sending the next.</p></div>
+          <div class="sx">~427 B / page<br><span class="await">await each ack</span></div>
+        </div>
+        <div class="step">
+          <div class="sn">5</div>
+          <div class="sb"><h4>Zero-length terminator</h4><p>Send an empty final page. This commits the file. Forget it and the device stays wedged until power-cycle.</p></div>
+          <div class="sx">len 0<br><span class="await">await OK</span></div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:13.5px">The 512-byte chunk is the wire size; after the high-bits packing overhead each page carries ~427 bytes of real file data.</p>
+    </section>
+
+    <!-- 8 GOTCHAS -->
+    <section class="doc-section" id="gotchas">
+      <h2><span class="s-no">08</span> Gotchas</h2>
+      <p>Every one of these cost us time. Read them before you write a byte.</p>
+      <div class="gotchas">
+        <div class="callout"><span class="gx">#0</span><p><b>Consume the STATUS byte first.</b> Responses insert a status code after the command. Unpack before you strip it and your whole payload shifts by one.</p></div>
+        <div class="callout"><span class="gx">#1</span><p><b>File ops are command 5, not 127.</b> 127 looks like a tempting "system" command. It isn't the file subsystem. Everything filesystem lives under 5.</p></div>
+        <div class="callout"><span class="gx">#2</span><p><b>Packing is LSB-first.</b> Bit <code>k</code> of the high-bits byte maps to data byte <code>k</code>. MSB-first decoding gives you plausible-looking garbage.</p></div>
+        <div class="callout teal"><span class="gx">#3</span><p><b>Await every ack.</b> Fire pages without waiting and you get "unexpected page". One page out, one ack in, then the next.</p></div>
+        <div class="callout teal"><span class="gx">#4</span><p><b>Always send the terminator.</b> An incomplete PUT wedges the device — it stops responding until you power-cycle it. Send the zero-length final page, even on abort.</p></div>
+        <div class="callout"><span class="gx">#5</span><p><b>Pack every multi-byte field.</b> Node ids, file ids, lengths — anything wider than 7 bits is itself 7-bit packed. No exceptions.</p></div>
+      </div>
+    </section>
+
+    <!-- 9 SCHEMAS -->
+    <section class="doc-section" id="schemas">
+      <h2><span class="s-no">09</span> Metadata schemas</h2>
+      <p>FILE_METADATA returns small JSON blobs. The projects directory tells you which project is loaded; a sound file carries its full parameter set.</p>
+      <div class="code">
+        <div class="code-top"><span class="dot ok"></span><span class="t">/projects · metadata</span></div>
+        <pre><code>{ <span class="c-key">"active"</span>: <span class="c-num">3000</span> }   <span class="c-com">// node id of the loaded project</span></code></pre>
+      </div>
+      <div class="code">
+        <div class="code-top"><span class="dot act"></span><span class="t">sounds/001.pcm · parameter blob</span></div>
+        <pre><code>{
+  <span class="c-key">"name"</span>:      <span class="c-str">"kick_909"</span>,
+  <span class="c-key">"node"</span>:      <span class="c-num">1001</span>,
+  <span class="c-key">"group"</span>:     <span class="c-str">"A"</span>,
+  <span class="c-key">"pad"</span>:       <span class="c-num">1</span>,
+  <span class="c-key">"sampleRate"</span>: <span class="c-num">46875</span>,
+  <span class="c-key">"channels"</span>:  <span class="c-num">1</span>,
+  <span class="c-key">"frames"</span>:    <span class="c-num">21984</span>,
+  <span class="c-key">"gain"</span>:      <span class="c-num">0</span>,
+  <span class="c-key">"pitch"</span>:     <span class="c-num">0</span>,
+  <span class="c-key">"start"</span>:     <span class="c-num">0</span>,
+  <span class="c-key">"end"</span>:       <span class="c-num">21984</span>,
+  <span class="c-key">"loop"</span>:      <span class="c-num">false</span>,
+  <span class="c-key">"color"</span>:     <span class="c-str">"#EF4E27"</span>
+}</code></pre>
+      </div>
+    </section>
+
+    <!-- 10 FORMAT -->
+    <section class="doc-section" id="limits">
+      <h2><span class="s-no">10</span> Format &amp; limits</h2>
+      <p>The device stores plain RIFF/PCM. Get the file right before you upload and you skip a whole class of failures.</p>
+      <div class="tbl-wrap">
+        <table class="tbl"><tbody>
+          <tr><td><b>Container</b></td><td class="m">RIFF / PCM</td></tr>
+          <tr><td><b>Sample format</b></td><td class="m">s16 LE (16-bit signed, little-endian)</td></tr>
+          <tr><td><b>Channels</b></td><td class="m">mono or stereo</td></tr>
+          <tr><td><b>Native rate</b></td><td class="m">46875 Hz</td></tr>
+          <tr><td><b>Accepted source rate</b></td><td class="m">3000 – 768000 Hz <span class="muted">(resampled to native)</span></td></tr>
+          <tr><td><b>Max length</b></td><td class="m">20 s</td></tr>
+        </tbody></table>
+      </div>
+    </section>
+
+    <!-- 11 REPRODUCE -->
+    <section class="doc-section" id="reproduce">
+      <h2><span class="s-no">11</span> Reproduce it</h2>
+      <p>Don't take our word for it. With <a href="https://github.com/gbevin/SendMIDI" target="_blank" rel="noopener" style="border-bottom:1px solid var(--rule)">sendmidi</a> and <a href="https://github.com/gbevin/ReceiveMIDI" target="_blank" rel="noopener" style="border-bottom:1px solid var(--rule)">receivemidi</a> you can greet a real unit from a terminal. <code>syx</code> takes the bytes <em>between</em> F0 and F7, in decimal.</p>
+      <div class="code">
+        <div class="code-top"><span class="dot act"></span><span class="t">macOS terminal · greet (command 1)</span></div>
+        <pre><code><span class="c-com"># listen on one tab</span>
+receivemidi dev <span class="c-str">"EP-133"</span> syx
+
+<span class="c-com"># send the greet on another</span>
+<span class="c-com">#        00 20 76  33  40  60  00  01   (hex)</span>
+sendmidi dev <span class="c-str">"EP-133"</span> syx <span class="c-num">0 32 118 51 64 96 0 1</span>
+
+<span class="c-com"># reply comes back as ASCII key/values:</span>
+<span class="c-com"># product=EP-133 firmware=2.0.5 serial=KO2…</span></code></pre>
+      </div>
+      <p class="muted" style="font-size:13.5px"><code>96</code> is flags <code>0x60</code> = is-request + request-id-present. <code>0</code> is the request id, <code>1</code> is Greet.</p>
+    </section>
+
+    <!-- 12 CREDITS -->
+    <section class="doc-section" id="credits" style="border-bottom:0">
+      <h2><span class="s-no">12</span> Credits</h2>
+      <p>None of this is official. We reverse-engineered it by cross-referencing Teenage Engineering's own web tool against live MIDI captures off real hardware — sending, watching, and diffing until the bytes made sense. Firmware <strong>2.0.5</strong>, device id <code>0x33</code> on our test unit. Your mileage may vary across firmware; corrections welcome on GitHub.</p>
+      <div class="callout teal" style="margin-top:18px"><span class="gx">♥</span><p>Found a byte we got wrong, or mapped a new firmware? Open a PR. The whole point is that the next person doesn't have to start from zero. — <b>Bombest Audio</b></p></div>
+    </section>
+
+  </div>
+</main>
+
+<footer class="footer wrap">
+  <div class="footer-grid">
+    <div>
+      <a class="brand" href="index.html" style="margin-bottom:14px">
+        <span class="badge">EP·133</span>
+        <span>Sample Tool</span>
+      </a>
+      <p>Reverse-engineered with love and a logic analyzer. This one's for the community — from Bombest Audio.</p>
+    </div>
+    <div>
+      <h4>Project</h4>
+      <ul>
+        <li><a href="index.html">Overview</a></li>
+        <li><a href="protocol.html">SysEx Protocol</a></li>
+        <li><a href="app.html">App Concept</a></li>
+        <li><a href="https://github.com/Bombest-Audio/ep_133_sample_tool" target="_blank" rel="noopener">Source on GitHub</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>The fine print</h4>
+      <ul>
+        <li>Our code is <a href="https://opensource.org/license/mit" target="_blank" rel="noopener">MIT licensed</a>.</li>
+        <li>TE's bundled assets stay TE's.</li>
+        <li>Built on <a href="https://github.com/garrettjwilke/ep_133_sample_tool" target="_blank" rel="noopener">garrettjwilke's tool</a>.</li>
+        <li>Not affiliated with Teenage Engineering.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-base">
+    <span>© Bombest Audio · MIT · No telemetry</span>
+    <span>EP-133 K.O. II · EP-1320 K.O. II · made by hand</span>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
