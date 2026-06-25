@@ -181,9 +181,13 @@ fun PadsScreen(viewModel: PadsViewModel) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             while (true) {
                 delay(1500)
-                // File-op mutex (fileOpMutex in MIDIRepository) serialises this poll against
-                // putSampleFile and all other file ops — safe to re-enable.
-                viewModel.refreshActiveGroupFromDevice()
+                // DISABLED pending the dispatch-correlation refactor (260623-w5i / backlog 999.4).
+                // The poll's drill-down (resolve /projects → active project → groups) hits an
+                // async response-correlation race: the device DOES answer the LIST(/projects) but
+                // the dispatcher infers the in-flight op from mutable global flags and drops the
+                // (reqId-matching) response, so the list times out 5s/cycle and would stall imports.
+                // Re-enable once responses route by a reqId→deferred map. Sample import works.
+                // viewModel.refreshActiveGroupFromDevice()
             }
         }
     }
