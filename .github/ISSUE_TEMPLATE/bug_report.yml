@@ -1,0 +1,60 @@
+name: Bug report
+description: Something's broken or not behaving like it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file this. The more concrete you are, the
+        faster it gets fixed.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+      placeholder: I tried to import a WAV and the upload stalled at 80%...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Walk through it so we can hit the same wall.
+      placeholder: |
+        1. Connect an EP-133 over USB
+        2. Open the Sample Import screen
+        3. Pick a 16 s stereo WAV
+        4. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Desktop (Electron)
+        - Android
+        - iOS
+        - JUCE plugin
+        - Web app (browser)
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device + firmware
+      description: EP-133 or EP-1320, and the firmware version if you know it.
+      placeholder: EP-133, firmware 2.0.5
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      placeholder: 1.2.0
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / SysEx output
+      description: >
+        Anything from DevTools (desktop) or logcat (Android) helps — especially
+        raw SysEx if it's a MIDI/protocol issue. This gets formatted as code.
+      render: shell
