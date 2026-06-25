@@ -12,6 +12,8 @@ Compatible with any **EP-133** or **EP-1320**.
 **A gift to the EP-133 community, from [Bombest Audio](https://bom.best).** Free,
 offline, open source. Our code is MIT — fork it, build on it, make it yours.
 
+🌐 **Website:** [bombest-audio.github.io/ep_133_sample_tool](https://bombest-audio.github.io/ep_133_sample_tool/) — overview, the [SysEx protocol reference](https://bombest-audio.github.io/ep_133_sample_tool/protocol.html), and the app design concept. (Source in [`website/`](website/).)
+
 ---
 
 ## Platforms
@@ -134,7 +136,7 @@ Reverse-engineered notes on the EP-133 / EP-1320 USB-MIDI **file-transfer SysEx 
 frame format, the file-session handshake, directory listing, sample upload, and the gotchas —
 verified on real hardware. For anyone building for the K.O. II.
 
-→ [docs/ep133-sysex-protocol.md](docs/ep133-sysex-protocol.md)
+→ [docs/ep133-sysex-protocol.md](docs/ep133-sysex-protocol.md) (or the [designed web version](https://bombest-audio.github.io/ep_133_sample_tool/protocol.html))
 
 ---
 
