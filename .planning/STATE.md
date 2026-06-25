@@ -81,6 +81,7 @@ Plan: 4 of 4 complete
 | 260621-czf | Serialize batch sample uploads via uploadMutex — fixes multi-pick imports failing with "transfer already in flight" | 2026-06-21 | 2808491 | [260621-czf-serialize-batch-uploads](./quick/260621-czf-serialize-batch-uploads/) |
 | 260621-lg4 | Rework /sounds upload to device's node-ID INIT protocol (ground truth from data/index.js) + AudioDecoder KEY_PCM_ENCODING fix + 20s/rate guards | 2026-06-21 | 9f907e8 | [260621-lg4-sounds-upload-protocol](./quick/260621-lg4-sounds-upload-protocol/) |
 | 260621-mju | Remove wrong A0/D0 note-60 pad special-case (hardware capture: A0 = note 37 ch 0, not 60 ch 6) — fixes A0 triggering a group C pad | 2026-06-21 | b4c6eb4 | [260621-mju-fix-pad0-mapping](./quick/260621-mju-fix-pad0-mapping/) |
+| 260625-iug | Make repo a proper public OSS gift from Bombest Audio — MIT LICENSE + NOTICE (TE-asset carve-out, garrettjwilke credit), CoC/SECURITY/CHANGELOG, GitHub templates, README credits, package.json fixes, and the Claude Design brief (landing + protocol page + app concept) | 2026-06-25 | 256291b | [260625-iug-oss-gift-setup](./quick/260625-iug-oss-gift-setup/) |
 
 ## Notes
 
