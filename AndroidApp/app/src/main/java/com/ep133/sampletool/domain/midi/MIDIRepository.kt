@@ -103,6 +103,11 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     // on the first PUT response; putSampleFile awaits it before sending any DATA pages.
     private var pendingPutInitDeferred: CompletableDeferred<Boolean>? = null
     private var pendingPutAckDeferred: CompletableDeferred<Boolean>? = null
+    // Hardware-proven (2026-06-24): the device echoes the request reqId in each PUT response.
+    // Track the reqId we are currently awaiting so the dispatcher can reject stale/unexpected
+    // responses (e.g. a stale FILE_INFO status=4 from a prior op) rather than completing the
+    // wrong deferred and desyncing the upload.
+    @Volatile private var awaitedPutReqId: Int = -1
 
     // ── Project enumeration state (Phase 4 Wave 2) ──
     // FILE_LIST by node ID returns concatenated directory entries; the dispatcher hands the
@@ -318,13 +323,15 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                     pendingNodeInfoDeferred != null              -> SysExProtocol.TE_SYSEX_FILE_INFO
                     else                                         -> -1
                 }
+                // Extract the response reqId from the raw frame (frame[6] holds high bits, frame[7] holds low 7 bits).
+                val responseReqId = ((message[6].toInt() and 0x0F) shl 7) or (message[7].toInt() and 0x7F)
                 val bodyHex = body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133MIDI", "MIDI META: FILE cmd=5 inFlightCmd=$inFlightCmd body[${body.size}] $bodyHex")
+                Log.d("EP133MIDI", "MIDI META: FILE cmd=5 inFlightCmd=$inFlightCmd responseReqId=$responseReqId body[${body.size}] $bodyHex")
                 if (inFlightCmd == -1) {
                     Log.w("EP133MIDI", "MIDI META: unrouted file response — no op in flight, body[${body.size}] $bodyHex")
                     return
                 }
-                dispatchFileResponse(inFlightCmd, body)
+                dispatchFileResponse(inFlightCmd, body, responseReqId)
             }
         }
     }
@@ -333,12 +340,13 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * Dispatch a FILE response to the matching in-flight handler. [fileCmd] is the op type
      * determined by the caller from in-flight state (NOT from body[0] — device responses do not
      * echo the subcommand). [body] is the WHOLE unpacked response body (no bytes stripped).
+     * [responseReqId] is the reqId extracted from the raw frame (frame[6] high bits + frame[7]).
      *
      * Hardware ground truth (2026-06-23):
      *   FILE_INIT reply unpacked: `00 0C 00 00 02 00` (starts 0x00, not 0x01=INIT)
      *   FILE_LIST reply unpacked: page-u16 then entries (starts with page word, not 0x04=LIST)
      */
-    private fun dispatchFileResponse(fileCmd: Int, body: ByteArray) {
+    private fun dispatchFileResponse(fileCmd: Int, body: ByteArray, responseReqId: Int = -1) {
         // Rename: parameter was historically called "payload" but is now always the whole body.
         val payload = body
         when (fileCmd) {
@@ -470,7 +478,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 }
             }
             SysExProtocol.TE_SYSEX_FILE_PUT -> {
-                if (transferInFlight) dispatchPagedPutResponse(payload)
+                if (transferInFlight) dispatchPagedPutResponse(payload, responseReqId)
             }
             SysExProtocol.TE_SYSEX_FILE_INFO -> {
                 // payload is already unpacked — use directly.
@@ -539,9 +547,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     /**
      * Route a paged FILE_PUT response.
      *
-     * Hardware-verified (2026-06-24): the device responds to the PUT INIT frame before it
-     * is ready to accept DATA pages. If DATA is sent before that first response arrives the
-     * device replies "unexpected page". Protocol:
+     * Hardware-proven (2026-06-24): the device echoes the request reqId in each response.
+     * Per-page acks are matched by reqId — a mismatch means the response is stale or from
+     * a different op (e.g. a FILE_INFO status=4 fired by an unrelated event). Mismatched
+     * responses are logged and ignored so they cannot complete the wrong deferred.
+     *
+     * Protocol:
      *   1. INIT sent → device responds with STATUS_OK or STATUS_SPECIFIC_SUCCESS_START.
      *      This response completes [pendingPutInitDeferred] (true on success, false on error).
      *   2. DATA pages sent one at a time, each awaited individually via [pendingPutAckDeferred].
@@ -553,16 +564,21 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * Routing: if pendingPutInitDeferred is non-null, it owns the first response. Once it is
      * cleared, each per-page deferred is freshly set by the caller before sending and consumed
      * here (completed true on success, false/exceptionally on error).
+     *
+     * @param payload      Body of the PUT response (first byte = status).
+     * @param responseReqId reqId decoded from the raw frame by the caller (-1 if not decoded).
      */
-    private fun dispatchPagedPutResponse(payload: ByteArray) {
+    private fun dispatchPagedPutResponse(payload: ByteArray, responseReqId: Int = -1) {
         val status = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
 
         // First response after PUT INIT: complete the init deferred.
+        // The INIT reqId is tracked by putSampleFile; we accept any response here because
+        // the INIT is the very first frame and no prior PUT responses can race against it.
         val initAck = pendingPutInitDeferred
         if (initAck != null) {
             val ok = status == SysExProtocol.STATUS_OK ||
                 status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START
-            Log.d("EP133MIDI", "MIDI META: PUT INIT ack status=$status ok=$ok")
+            Log.d("EP133MIDI", "MIDI META: PUT INIT ack responseReqId=$responseReqId status=$status ok=$ok")
             if (!initAck.isCompleted) {
                 if (ok) initAck.complete(true) else initAck.completeExceptionally(
                     IllegalStateException("PUT INIT error status $status"),
@@ -572,9 +588,16 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             return
         }
 
-        // Per-page responses: STATUS_OK and STATUS_SPECIFIC_SUCCESS_START are both success
-        // (the caller gates on the deferred and sends the next page only after it resolves).
+        // Per-page responses: validate reqId before completing the deferred.
+        // awaitedPutReqId is set by putSampleFile immediately before each sendMidi call.
         val ack = pendingPutAckDeferred ?: return
+        if (responseReqId != -1 && awaitedPutReqId != -1 && responseReqId != awaitedPutReqId) {
+            Log.w(
+                "EP133MIDI",
+                "MIDI META: mismatched file response reqId=$responseReqId awaiting=$awaitedPutReqId — ignoring",
+            )
+            return
+        }
         when {
             status == SysExProtocol.STATUS_OK ||
             status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START ->
@@ -830,6 +853,14 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         // the dispatcher can complete it the moment the response arrives.
         val initAck = CompletableDeferred<Boolean>()
         pendingPutInitDeferred = initAck
+        // Transfer-local reqId counter. INIT uses reqId 30; each DATA page and the terminator
+        // get the next value. reqId is 14-bit (encoded as (reqId >> 7) in frame[6] low nibble
+        // and (reqId & 0x7F) in frame[7]; buildFrame encodes this correctly).
+        var nextReqId = PUT_INIT_REQUEST_ID  // 30
+        // Flag: set to true once the INIT ack is received. Used by the failure path to decide
+        // whether to send a force-close terminator (only needed after INIT is acked, so the
+        // device has an open transfer it must close to accept new PUTs).
+        var initAcked = false
         return try {
             // INIT: announce parent dir, fileId=0 (new file), size, filename, and metadata.
             val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
@@ -837,10 +868,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 parentNodeId = parent,
                 fileSize = pcmBytes.size,
                 filename = name,
-                requestId = 30,
+                requestId = nextReqId,
                 metadataJson = metadataJson,
             )
+            Log.d("EP133MIDI", "MIDI META: outbound PUT INIT reqId=$nextReqId name=$name size=${pcmBytes.size}")
             midiManager.sendMidi(portId, initFrame)
+            nextReqId = (nextReqId + 1) and 0x3FFF
 
             // Await the device's INIT ack before sending any DATA pages.
             // Reference tool (data/index.js): awaits the PUT INIT response before looping DATA.
@@ -849,6 +882,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 Log.e("EP133APP", "putSampleFile: PUT INIT ack failed or timed out — aborting $name")
                 return false
             }
+            initAcked = true
             Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name")
 
             // DATA pages: slice pcmBytes into rawChunkSize chunks, awaiting each page's ack
@@ -861,11 +895,16 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 val chunk = pcmBytes.copyOfRange(offset, end)
                 val pageAck = CompletableDeferred<Boolean>()
                 pendingPutAckDeferred = pageAck
-                val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = 31)
+                awaitedPutReqId = nextReqId
+                val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = nextReqId)
+                Log.d("EP133MIDI", "MIDI META: outbound PUT DATA page=$page reqId=$nextReqId chunkSize=${chunk.size}")
                 midiManager.sendMidi(portId, dataFrame)
+                nextReqId = (nextReqId + 1) and 0x3FFF
                 val pageOk = withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { pageAck.await() } ?: false
                 if (!pageOk) {
                     Log.e("EP133APP", "putSampleFile: DATA page $page ack failed or timed out — aborting $name")
+                    forceCloseTransfer(portId, page + 1, nextReqId)
+                    nextReqId = (nextReqId + 1) and 0x3FFF
                     return false
                 }
                 offset = end
@@ -875,15 +914,50 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             // Zero-length DATA terminator (required by reference tool). Await its final ack.
             val termAck = CompletableDeferred<Boolean>()
             pendingPutAckDeferred = termAck
-            val terminatorFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = 31)
+            awaitedPutReqId = nextReqId
+            val terminatorFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = nextReqId)
+            Log.d("EP133MIDI", "MIDI META: outbound PUT terminator page=$page reqId=$nextReqId")
             midiManager.sendMidi(portId, terminatorFrame)
+            nextReqId = (nextReqId + 1) and 0x3FFF
             withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { termAck.await() } ?: false
         } catch (e: CancellationException) {
+            if (initAcked) {
+                // Best-effort close so the device doesn't stay wedged.
+                forceCloseTransfer(portId, 0, nextReqId)
+            }
             throw e
         } finally {
             pendingPutInitDeferred = null
             pendingPutAckDeferred = null
+            awaitedPutReqId = -1
             transferInFlight = false
+        }
+    }
+
+    /**
+     * Best-effort: send a zero-length DATA terminator to close an incomplete PUT transfer.
+     *
+     * A dangling incomplete PUT wedges the device — it ignores subsequent PUTs until power-cycle
+     * (hardware-proven, 2026-06-24). Called on any DATA page ack failure after the INIT has been
+     * acked, so the device can properly close the transfer and accept the next PUT.
+     *
+     * Uses a short timeout (FORCE_CLOSE_TIMEOUT_MS) and ignores the result — this is best-effort
+     * cleanup, not a blocking requirement.
+     */
+    private suspend fun forceCloseTransfer(portId: String, terminatorPage: Int, reqId: Int) {
+        try {
+            val termAck = CompletableDeferred<Boolean>()
+            pendingPutAckDeferred = termAck
+            awaitedPutReqId = reqId
+            val frame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, terminatorPage, ByteArray(0), requestId = reqId)
+            Log.w("EP133MIDI", "MIDI META: force-closed incomplete transfer page=$terminatorPage reqId=$reqId")
+            midiManager.sendMidi(portId, frame)
+            withTimeoutOrNull(FORCE_CLOSE_TIMEOUT_MS) { termAck.await() }
+        } catch (_: Exception) {
+            // Best-effort — ignore all errors, just clean up state
+        } finally {
+            pendingPutAckDeferred = null
+            awaitedPutReqId = -1
         }
     }
 
@@ -1413,5 +1487,10 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         // FILE_INIT handshake (Task 3 — once per connection).
         private const val FILE_INIT_REQUEST_ID    = 83
         private const val FILE_INIT_TIMEOUT_MS    = 5_000L
+        // putSampleFile uses a transfer-local counter starting here; each frame increments it.
+        // This is the INIT reqId; DATA pages and terminator get 31, 32, ... (masked to 14-bit).
+        internal const val PUT_INIT_REQUEST_ID    = 30
+        // Short timeout for the best-effort force-close terminator.
+        private const val FORCE_CLOSE_TIMEOUT_MS  = 2_000L
     }
 }

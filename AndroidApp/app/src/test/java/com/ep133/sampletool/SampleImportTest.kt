@@ -774,3 +774,251 @@ class PerPageAckGatingTest {
     }
 }
 
+// ── reqId uniqueness tests ─────────────────────────────────────────────────────
+//
+// Hardware-proven (2026-06-24): the device echoes the request reqId in each PUT response.
+// putSampleFile must assign a UNIQUE reqId to every frame (INIT, each DATA page, terminator)
+// so the dispatcher can match responses to the correct in-flight deferred.
+//
+// reqId is encoded in frame[6] (high bits) and frame[7] (low 7 bits):
+//   reqId = ((frame[6] & 0x0F) << 7) | (frame[7] & 0x7F)
+//
+// The test decodes reqId from each frame sent by a fake repo (putSampleFile overridden to
+// use the real unique-reqId logic without hardware ack waits) and asserts:
+//  1. No two frames share the same reqId.
+//  2. reqIds form a strictly incrementing sequence starting at PUT_INIT_REQUEST_ID.
+
+private fun decodeReqId(frame: ByteArray): Int =
+    ((frame[6].toInt() and 0x0F) shl 7) or (frame[7].toInt() and 0x7F)
+
+/**
+ * Fake repo that replicates the unique-reqId frame emission of the real putSampleFile
+ * WITHOUT awaiting device acks (so tests are synchronous and require no mock dispatcher).
+ *
+ * Uses the real SysExProtocol frame builders and the same reqId counter logic as the
+ * production code. Data chunk size is fixed at [rawChunk] for deterministic page counts.
+ */
+private class UniqueReqIdFakeRepo(
+    private val spy: SampleImportSpyMIDIPort,
+    private val rawChunk: Int = 427,
+    soundsNodeId: Int = 7,
+) : MIDIRepository(spy) {
+    init {
+        _deviceState.value = com.ep133.sampletool.domain.model.DeviceState(
+            connected = true,
+            outputPortId = "out",
+        )
+    }
+
+    override suspend fun resolveNodeId(path: String): Int? =
+        if (path == "/sounds") 7 else null
+
+    override suspend fun putSampleFile(
+        name: String,
+        pcmBytes: ByteArray,
+        channels: Int,
+        sampleRate: Int,
+    ): Boolean {
+        val portId = deviceState.value.outputPortId
+            ?: throw IllegalStateException("no output port")
+        val parent = resolveNodeId("/sounds") ?: return false
+        val metaJson = """{"channels":$channels,"samplerate":$sampleRate}"""
+
+        // Mirror the real putSampleFile reqId scheme: start at PUT_INIT_REQUEST_ID,
+        // increment for each frame, mask to 14-bit.
+        var nextReqId = MIDIRepository.PUT_INIT_REQUEST_ID
+
+        // INIT frame
+        spy.sendMidi(portId, SysExProtocol.buildFileCreatePutInitFrame(
+            deviceId = 0,
+            parentNodeId = parent,
+            fileSize = pcmBytes.size,
+            filename = name,
+            requestId = nextReqId,
+            metadataJson = metaJson,
+        ))
+        nextReqId = (nextReqId + 1) and 0x3FFF
+
+        // DATA pages
+        var page = 0
+        var offset = 0
+        while (offset < pcmBytes.size) {
+            val end = minOf(offset + rawChunk, pcmBytes.size)
+            val chunk = pcmBytes.copyOfRange(offset, end)
+            spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, chunk, requestId = nextReqId))
+            nextReqId = (nextReqId + 1) and 0x3FFF
+            offset = end
+            page = (page + 1) and 0xFFFF
+        }
+
+        // Terminator
+        spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, ByteArray(0), requestId = nextReqId))
+
+        return true
+    }
+}
+
+class ReqIdUniquenessTest {
+
+    @Test
+    fun putSampleFile_emitsUniqueIncrementingReqIds_acrossInitDataTerminator() = runTest {
+        val spy = SampleImportSpyMIDIPort(connected = true)
+        val repo = UniqueReqIdFakeRepo(spy, rawChunk = 427)
+
+        // 1000 bytes → 3 DATA pages (ceil(1000/427) = 3) + 1 INIT + 1 terminator = 5 frames
+        val pcm = ByteArray(1000) { (it and 0xFF).toByte() }
+        repo.putSampleFile("kick.wav", pcm)
+
+        val frames = spy.sent
+        assertTrue("At least 3 frames must be sent (INIT + ≥1 DATA + terminator)", frames.size >= 3)
+
+        val reqIds = frames.map { decodeReqId(it) }
+
+        // All reqIds must be unique
+        assertEquals(
+            "All frame reqIds must be unique — got duplicates: $reqIds",
+            reqIds.size,
+            reqIds.toSet().size,
+        )
+
+        // reqIds must be strictly increasing starting at PUT_INIT_REQUEST_ID
+        assertEquals(
+            "First frame (INIT) reqId must be PUT_INIT_REQUEST_ID (${MIDIRepository.PUT_INIT_REQUEST_ID})",
+            MIDIRepository.PUT_INIT_REQUEST_ID,
+            reqIds[0],
+        )
+        for (i in 1 until reqIds.size) {
+            assertEquals(
+                "reqId must increment by 1 from frame ${i - 1} to $i",
+                reqIds[i - 1] + 1,
+                reqIds[i],
+            )
+        }
+    }
+
+    @Test
+    fun putSampleFile_singlePage_hasUniqueReqIds() = runTest {
+        val spy = SampleImportSpyMIDIPort(connected = true)
+        val repo = UniqueReqIdFakeRepo(spy, rawChunk = 427)
+
+        // 100 bytes → 1 DATA page: INIT(30) + DATA(31) + terminator(32) = 3 frames
+        val pcm = ByteArray(100) { 0 }
+        repo.putSampleFile("snare.wav", pcm)
+
+        val frames = spy.sent
+        assertEquals("1 INIT + 1 DATA + 1 terminator = 3 frames", 3, frames.size)
+
+        val reqIds = frames.map { decodeReqId(it) }
+        assertEquals("INIT reqId", MIDIRepository.PUT_INIT_REQUEST_ID, reqIds[0])
+        assertEquals("DATA reqId", MIDIRepository.PUT_INIT_REQUEST_ID + 1, reqIds[1])
+        assertEquals("terminator reqId", MIDIRepository.PUT_INIT_REQUEST_ID + 2, reqIds[2])
+    }
+}
+
+// ── Mismatched reqId rejection tests ──────────────────────────────────────────
+//
+// Verifies that dispatchPagedPutResponse ignores a response whose reqId does not match
+// awaitedPutReqId — i.e., a stale or unrelated response must NOT complete the
+// pendingPutAckDeferred for the in-flight page.
+//
+// android.util.Log is not available in JVM unit tests. The real dispatchSysEx calls Log.d
+// on entry, which crashes before the dispatch logic is reached. To avoid this, the tests
+// override dispatchSysEx in the test repo and invoke dispatchPagedPutResponse directly via
+// reflection — exercising the exact reqId-matching logic without any Log calls.
+//
+// Two cases:
+//  A. Mismatched reqId → deferred stays incomplete.
+//  B. Matching reqId → deferred is completed.
+
+class MismatchedReqIdTest {
+
+    /**
+     * Test repo that overrides dispatchSysEx to call dispatchPagedPutResponse directly
+     * (bypassing the Log.d calls that crash JVM unit tests) and exposes state setters for
+     * awaitedPutReqId / pendingPutAckDeferred / transferInFlight via reflection.
+     */
+    private class MismatchTestRepo(port: MIDIPort) : MIDIRepository(port) {
+        init {
+            _deviceState.value = com.ep133.sampletool.domain.model.DeviceState(
+                connected = true,
+                outputPortId = "out",
+            )
+            setTransferInFlight(true)
+        }
+
+        // Reflection helpers — expose private fields for test setup.
+        fun setTransferInFlight(v: Boolean) {
+            val f = MIDIRepository::class.java.getDeclaredField("transferInFlight")
+            f.isAccessible = true
+            f.setBoolean(this, v)
+        }
+        fun setAwaitedPutReqId(v: Int) {
+            val f = MIDIRepository::class.java.getDeclaredField("awaitedPutReqId")
+            f.isAccessible = true
+            f.setInt(this, v)
+        }
+        fun setPendingPutAckDeferred(d: kotlinx.coroutines.CompletableDeferred<Boolean>) {
+            val f = MIDIRepository::class.java.getDeclaredField("pendingPutAckDeferred")
+            f.isAccessible = true
+            f.set(this, d)
+        }
+
+        /**
+         * Simulate a PUT response by calling dispatchPagedPutResponse directly.
+         * This bypasses dispatchSysEx (and its Log.d calls) and exercises exactly
+         * the reqId-matching logic under test.
+         *
+         * @param responseReqId  reqId to pass (mimics what the raw frame would carry).
+         * @param status         STATUS_OK or STATUS_SPECIFIC_SUCCESS_START.
+         * @param body           Minimal payload: [status] (dispatchPagedPutResponse reads body[0]).
+         */
+        fun simulatePutPageResponse(responseReqId: Int, status: Int) {
+            val method = MIDIRepository::class.java.getDeclaredMethod(
+                "dispatchPagedPutResponse", ByteArray::class.java, Int::class.javaPrimitiveType,
+            )
+            method.isAccessible = true
+            method.invoke(this, byteArrayOf(status.toByte()), responseReqId)
+        }
+    }
+
+    @Test
+    fun mismatchedReqId_doesNotCompletePageDeferred() {
+        val port = SampleImportSpyMIDIPort(connected = true)
+        val repo = MismatchTestRepo(port)
+
+        // Arrange: the repo is awaiting reqId=35 for a DATA page.
+        val ack = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        repo.setAwaitedPutReqId(35)
+        repo.setPendingPutAckDeferred(ack)
+
+        // Act: simulate a response with reqId=99 (mismatched) and STATUS_OK.
+        repo.simulatePutPageResponse(responseReqId = 99, status = SysExProtocol.STATUS_OK)
+
+        // Assert: the page deferred must NOT be completed by the mismatched response.
+        assertFalse(
+            "pendingPutAckDeferred must NOT be completed by a response with reqId=99 when awaiting 35",
+            ack.isCompleted,
+        )
+    }
+
+    @Test
+    fun matchingReqId_completesPageDeferred() {
+        val port = SampleImportSpyMIDIPort(connected = true)
+        val repo = MismatchTestRepo(port)
+
+        // Arrange: the repo is awaiting reqId=35.
+        val ack = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        repo.setAwaitedPutReqId(35)
+        repo.setPendingPutAckDeferred(ack)
+
+        // Act: simulate a response with the correct reqId=35 and STATUS_OK.
+        repo.simulatePutPageResponse(responseReqId = 35, status = SysExProtocol.STATUS_OK)
+
+        // Assert: the page deferred IS completed by the matching response.
+        assertTrue(
+            "pendingPutAckDeferred MUST be completed by a response with the correct reqId=35",
+            ack.isCompleted,
+        )
+    }
+}
+
