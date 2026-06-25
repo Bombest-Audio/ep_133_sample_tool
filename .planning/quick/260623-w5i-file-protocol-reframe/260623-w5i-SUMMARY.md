@@ -196,10 +196,99 @@ Upload is now raw-PCM + metadata JSON in INIT. **Hardware playback pending** —
 | PUT wire framing | Unchanged (hardware-verified: command=5, LSB-first packing, await-INIT, terminator) |
 | Active-group sync | Unchanged (still disabled) |
 
+## Offline fix 5 (2026-06-24) — DATA paging: negotiate chunk size + per-page ack
+
+**Commit:** `0c716e2`
+
+### Root cause
+
+Hardware evidence: FILE_INIT acks `chunkSize=512`; app was sending 4096-byte DATA chunks (`MAX_PAGE_BYTES`). A 4096-byte raw chunk 7-bit-packs to ~4.7 KB — far over the device's 512-byte per-message budget → device responds `status=1 "unexpected page"`. A sendmidi test with ~420-byte chunks (within budget) got `status=0` on every page. Second issue: the app fired all DATA pages back-to-back without waiting for per-page acks; the reference tool (`data/index.js`) awaits each page response before sending the next (USB-MIDI has no flow control).
+
+### Changes
+
+**`MIDIRepository.kt`:**
+
+- Added `internal fun computeSampleChunkSize(chunkSize: Int): Int` — mirrors `calculateMaxPayloadLength` from `data/index.js`:
+  ```
+  o = 11; s = chunkSize - 6; inner = s - 1 - o
+  maxPayload = inner - (inner / 8)   // 7-bit packing overhead
+  raw = maxPayload - 6               // DATA header headroom
+  clamped to [64, 440]; falls back to 256 when chunkSize <= 0
+  ```
+  For `deviceChunkSize=512` → **427 bytes**.
+- `putSampleFile`: replaced `SysExProtocol.MAX_PAGE_BYTES` with `computeSampleChunkSize(deviceChunkSize)`; logs chosen chunk size + page count.
+- `putSampleFile`: per-page serial ack — for each DATA chunk, sets a fresh `pendingPutAckDeferred`, sends the frame, awaits with timeout. If ack is false/timeout, aborts and returns false. Terminator frame uses the same fresh-deferred pattern.
+- `dispatchPagedPutResponse`: intermediate DATA responses now complete `pendingPutAckDeferred` with `true` for both `STATUS_OK` and `STATUS_SPECIFIC_SUCCESS_START` (previously `STATUS_SPECIFIC_SUCCESS_START` was silently swallowed).
+
+**`SampleImportTest.kt`:**
+
+New test classes:
+- `ChunkSizeComputationTest` (5 tests): `computeSampleChunkSize(512)→427`, `(0)→256`, `(-1)→256`, tiny-input clamps to 64, large-input clamps to 440.
+- `PerPageAckGatingTest` (3 tests): `ChunkFakeRepo` exercises chunk-size paging via a custom override. Tests: 1000 bytes with chunk=427 → 3 DATA pages + terminator; exact-one-page (427 bytes → 1 DATA); one-byte-over (428 bytes → 2 DATA).
+
+### Verification
+
+- `./gradlew :app:testDebugUnitTest` — all tests pass, 0 failures
+- `./gradlew :app:assembleDebug` — BUILD SUCCESSFUL
+
+### Status after fix 5
+
+| Area | Status |
+|---|---|
+| DATA chunk sizing | Fixed — negotiated `deviceChunkSize` (512 → 427 raw bytes per page) |
+| Per-page ack gating | Fixed — each DATA page awaited before next (serial, matches reference tool) |
+| Upload metadata JSON + raw PCM | Unchanged from fix 4 (hardware-PENDING) |
+| Active-group sync | Unchanged (still disabled) |
+
+## Offline fix 6 (2026-06-25) — Unique reqId per PUT frame + force-close on failure + reqId mismatch guard
+
+**Commit:** `ba62b55`
+
+### Bug 1 — reqId reuse caused device desync
+
+**Root cause (hardware-proven):** The device echoes the request reqId in each PUT response. The app was using `requestId=30` for INIT and `requestId=31` for ALL DATA pages and the terminator (hardcoded). Re-using the same reqId across pages means any stale or out-of-order response can complete the wrong page deferred.
+
+**Fix:**
+- `putSampleFile` now assigns a unique incrementing reqId per frame. Transfer-local counter starts at `PUT_INIT_REQUEST_ID` (30), increments by 1 after each frame, masked to 14-bit (0..0x3FFF) to stay in the SysEx field range.
+- `dispatchSysEx` decodes `responseReqId = ((frame[6] & 0x0F) << 7) | (frame[7] & 0x7F)` from the raw message bytes and passes it through to `dispatchPagedPutResponse`.
+- `dispatchPagedPutResponse` validates reqId on per-page acks: if `responseReqId != awaitedPutReqId` (both non -1), logs `"MIDI META: mismatched file response reqId=X awaiting=Y — ignoring"` and returns without completing the deferred. Matching reqId completes as before.
+- `awaitedPutReqId: Int = -1` tracks the currently-expected reqId; reset to -1 in `finally` block.
+- Companion constant `internal const val PUT_INIT_REQUEST_ID = 30`.
+
+### Bug 2 — Dangling incomplete PUT wedges device
+
+**Root cause (hardware-proven):** A PUT that sends INIT but never sends the zero-length terminator leaves the device in a wedged state where it ignores all subsequent PUTs until power-cycle.
+
+**Fix:**
+- `forceCloseTransfer(portId, terminatorPage, reqId)` — sends a zero-length DATA frame as terminator with its own reqId, waits up to `FORCE_CLOSE_TIMEOUT_MS` (2 s), ignores result; logs `"MIDI META: force-closed incomplete transfer page=N reqId=M"`.
+- Called on: DATA page ack timeout, error status response, and `CancellationException` — all conditional on `initAcked` being `true` (i.e., INIT already acked by device, so device is in a PUT session).
+- `initAcked: Boolean` local flag in `putSampleFile`; set `true` after `pendingPutInitDeferred` completes successfully.
+
+### Tests
+
+- `ReqIdUniquenessTest` (2 tests, `SampleImportTest.kt`): `UniqueReqIdFakeRepo` exercises the real reqId-incrementing logic without ack-await. Decodes reqId from each spy frame via `((frame[6] & 0x0F) << 7) | (frame[7] & 0x7F)`. Asserts: unique set size == frame count, first == `PUT_INIT_REQUEST_ID` (30), sequence increments by 1.
+- `MismatchedReqIdTest` (2 tests): calls `dispatchPagedPutResponse` directly via reflection to bypass `dispatchSysEx`'s `Log.d` calls (Log not mocked in JVM tests). Asserts: mismatched reqId leaves deferred incomplete; matching reqId completes it.
+- `build.gradle.kts`: added `testOptions { unitTests { isReturnDefaultValues = true } }` — Log methods return 0 instead of throwing `RuntimeException` in JVM unit tests. Required for any future tests that call production code paths containing `Log.*` calls.
+
+### Verification
+
+- `./gradlew :app:testDebugUnitTest` — all tests pass, 0 failures (162 pass + 4 new = 166 pass total)
+- `./gradlew :app:assembleDebug` — BUILD SUCCESSFUL
+
+### Status after fix 6
+
+| Area | Status |
+|---|---|
+| reqId uniqueness per PUT frame | Fixed — unique incrementing reqId, 14-bit masked |
+| reqId mismatch guard | Fixed — stale/unrelated responses ignored, logged |
+| Force-close on transfer failure | Fixed — terminator sent on any post-INIT failure |
+| Hardware test (PUT with correct reqIds) | PENDING |
+
 ## Deferred (hardware UAT)
 
+- **Sample upload DATA paging** — chunk size + per-page ack fixed offline; hardware test needed to confirm `status=0` on all DATA pages (was `status=1 "unexpected page"`).
 - **Sample upload playback** — upload format fixed offline; needs hardware test to confirm samples play cleanly (no header glitch).
 - **METADATA GET JSON fix** — offline fix applied; needs hardware round-trip to confirm `getMetadataJson` now returns `{"active":3000}` correctly.
 - **Active-group project→group mapping** — `getNodeInfo` returns null for the active-project nodeId. Needs hardware capture of the FILE_INFO response.
 - **`parseFileInitResponse` chunkSize offset** — reads body[1..4] as u32 BE. Tolerated (advisory).
-- **Hardware UAT (priority)** — deploy APK, test upload playback, confirm METADATA GET parsed JSON, confirm active-group sync chain.
+- **Hardware UAT (priority)** — deploy APK, test upload, confirm DATA pages ack OK with unique reqIds, confirm samples play, confirm METADATA GET parsed JSON, confirm active-group sync chain.
