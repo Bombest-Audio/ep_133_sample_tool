@@ -32,8 +32,8 @@ import org.junit.Assert.*
  * with a response frame whose status is controlled by [statusForDataAcks].
  *
  * Frame routing:
- *   - FILE_INIT frame (reqId=83) → FILE ack with status=0 and empty body (status-only).
- *   - PUT INIT frame  (reqId=30) → FILE ack with status=0 and empty body.
+ *   - FILE_INIT frame (reqId from nextFileReqId()) → FILE ack with status=0, empty body.
+ *   - PUT INIT frame  (reqId=PUT_INIT_REQUEST_ID=30) → FILE ack with status=0, empty body.
  *   - PUT DATA frame  (reqId≥31) → FILE ack with status=[statusForDataAcks] + empty body.
  *
  * The response is a minimal raw SysEx: F0 00 20 76 00 40 <reqHigh> <reqLow> 05 <status> F7

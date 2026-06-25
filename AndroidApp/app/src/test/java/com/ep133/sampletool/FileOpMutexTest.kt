@@ -100,7 +100,7 @@ class FileOpMutexTest {
     /**
      * Two concurrent [ensureFileSessionInit] calls both complete without hanging.
      *
-     * The first caller acquires the mutex, sends FILE_INIT (reqId=83), receives the auto-ack,
+     * The first caller acquires the mutex, sends FILE_INIT (reqId from nextFileReqId()), receives the auto-ack,
      * and releases.  The second caller then acquires the mutex, but since [fileSessionInitialized]
      * is already true it returns immediately.  Neither call deadlocks.
      */

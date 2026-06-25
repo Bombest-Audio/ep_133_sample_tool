@@ -25,6 +25,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * High-level MIDI interface for the EP-133.
@@ -52,6 +54,63 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * [resolveNodeIdInternal] for the NoLock pattern.
      */
     private val fileOpMutex = Mutex()
+
+    /**
+     * Monotonic request-ID counter for all FILE ops.
+     *
+     * Wraps in the 11-bit space 1..2046 (skips 0 and 2047=0x7FF which some devices treat as
+     * reserved). The fixed greet reqId (1) is skipped on wrap-around to avoid aliasing with
+     * [queryDeviceStatsInner]'s GREET frame; PUT_INIT_REQUEST_ID (30) is NOT in this counter's
+     * range because [putSampleFile] manages its own transfer-local counter starting at 30.
+     *
+     * Using a single shared counter means every FILE frame in flight (regardless of op type)
+     * has a globally unique reqId — stale or duplicate responses from a prior op can never
+     * satisfy [awaitedFileReqId] of a different op.
+     */
+    private val fileReqIdCounter = AtomicInteger(FILE_REQ_ID_INITIAL)
+
+    /**
+     * Return the next globally-unique file request ID, wrapping within [FILE_REQ_ID_MIN]..[FILE_REQ_ID_MAX].
+     * Skips 0 (invalid) and greet/put reserved IDs.
+     */
+    private fun nextFileReqId(): Int {
+        while (true) {
+            val cur = fileReqIdCounter.get()
+            val next = if (cur >= FILE_REQ_ID_MAX) FILE_REQ_ID_MIN else cur + 1
+            if (fileReqIdCounter.compareAndSet(cur, next)) {
+                // Skip IDs reserved for fixed ops: greet=1, PUT_INIT=30 range starts at 30.
+                // Greet is CMD_GREET (not a FILE op), but its reqId=1 appears in raw frames
+                // so avoid aliasing. PUT range 30..~60 is owned by putSampleFile's local counter.
+                if (next == 1 || next in 30..99) continue
+                return next
+            }
+        }
+    }
+
+    /**
+     * Guard for the active-group poll: set to true while a [getActiveGroupIndex] call is
+     * running.  Checked BEFORE acquiring [fileOpMutex] so that a queued poll (suspended on the
+     * mutex) does not accumulate behind a running poll — the second call returns null immediately
+     * rather than stacking up.
+     *
+     * This is an AtomicBoolean so it can be read from any thread without synchronisation.
+     * The fileOpMutex still serialises the actual op body; this flag is purely an entry guard.
+     */
+    private val activeGroupPollInFlight = AtomicBoolean(false)
+
+    // ── Active-group structure caches ─────────────────────────────────────────
+    // These eliminate the repeated FILE_LIST of /projects on every 1.5s poll tick.
+    //
+    // groupsNodeCache:     activeProjNodeId → groupsNodeId  (resolved once per project)
+    // groupNodeNameCache:  groupsNodeId     → map of (groupNodeId → name "A".."D")
+    //
+    // Both are invalidated on device greet (new connection) or when outputPortId goes null.
+    // If the cached value leads to a failed METADATA GET (device returns no "active"), the
+    // cache entries are left in place (structure is unlikely to change mid-session).
+    //
+    // HashMap is fine here — access is single-threaded (always inside fileOpMutex.withLock).
+    private val groupsNodeCache     = HashMap<Int, Int>()
+    private val groupNodeNameCache  = HashMap<Int, Map<Int, String>>()
 
     protected val _deviceState = MutableStateFlow(DeviceState())
     open val deviceState: StateFlow<DeviceState> = _deviceState.asStateFlow()
@@ -301,8 +360,11 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                     currentDeviceId = reportedDeviceId
                     Log.d("EP133MIDI", "GREET: adopted deviceId=0x${reportedDeviceId.toString(16)}")
                 }
-                // Reset file session on new greet (new connection).
+                // Reset file session and structure caches on new greet (new connection).
                 fileSessionInitialized = false
+                groupsNodeCache.clear()
+                groupNodeNameCache.clear()
+                Log.d("EP133MIDI", "GREET: cleared structure caches (new connection)")
 
                 val parsed = SysExProtocol.parseGreetResponse(payload)
                 Log.d("EP133APP", "GREET response: $parsed")
@@ -708,7 +770,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     }
 
     private suspend fun queryDeviceStatsInner(portId: String): Boolean {
-        // Step 1: GREET (firmware + device identity)
+        // Step 1: GREET (firmware + device identity). reqId=1 is the conventional greet ID;
+        // it is not a FILE op so it does not draw from nextFileReqId() and there is no
+        // awaitedFileReqId set for it (greet uses CMD_GREET, not TE_SYSEX_FILE).
         val greetDeferred = CompletableDeferred<Map<String, String>>()
         pendingGreetDeferred = greetDeferred
         val greetFrame = SysExProtocol.buildGreetFrame(currentDeviceId, requestId = 1)
@@ -718,10 +782,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         val firmware = greetResult["sw_version"] ?: ""
         _deviceState.value = _deviceState.value.copy(firmwareVersion = firmware)
 
-        // Step 2: FILE_METADATA on /sounds (storage bytes)
+        // Step 2: FILE_METADATA on /sounds (storage bytes). Use nextFileReqId() so this
+        // path-form METADATA GET never aliases with concurrent nodeId-form ops.
+        val metaReqId = nextFileReqId()
         val metaDeferred = CompletableDeferred<Map<String, String>>()
         pendingMetadataDeferred = metaDeferred
-        val metaFrame = SysExProtocol.buildFileMetadataFrame(currentDeviceId, "/sounds", requestId = 2)
+        val metaFrame = SysExProtocol.buildFileMetadataFrame(currentDeviceId, "/sounds", requestId = metaReqId)
         midiManager.sendMidi(portId, metaFrame)
         val metaResult = withTimeoutOrNull(3_000) { metaDeferred.await() }
         if (metaResult != null) {
@@ -733,13 +799,14 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             )
         }
 
-        // Step 3: FILE_LIST on /sounds (count samples).
+        // Step 3: FILE_LIST on /sounds (count samples). Use nextFileReqId().
         // Reset the running count first: if a prior run timed out before STATUS_OK, the
         // count was never cleared and would inflate this run's sampleCount.
+        val listReqId = nextFileReqId()
         fileListEntryCount = 0
         val fileListDeferred = CompletableDeferred<Int>()
         pendingFileListCountDeferred = fileListDeferred
-        val listFrame = SysExProtocol.buildFileListFrame(currentDeviceId, "/sounds", requestId = 3)
+        val listFrame = SysExProtocol.buildFileListFrame(currentDeviceId, "/sounds", requestId = listReqId)
         midiManager.sendMidi(portId, listFrame)
         val sampleCount = withTimeoutOrNull(5_000) { fileListDeferred.await() } ?: 0
         _deviceState.value = _deviceState.value.copy(sampleCount = sampleCount)
@@ -773,8 +840,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             pendingGetInitDeferred = initDeferred
             pendingGetPages = pages
             try {
-                val initFrame = SysExProtocol.buildFileGetInitFrame(currentDeviceId, nodeId, requestId = 10)
-                awaitedFileReqId = 10
+                val getInitReqId = nextFileReqId()
+                val initFrame = SysExProtocol.buildFileGetInitFrame(currentDeviceId, nodeId, requestId = getInitReqId)
+                awaitedFileReqId = getInitReqId
                 midiManager.sendMidi(portId, initFrame)
                 val init = withTimeoutOrNull(GET_INIT_TIMEOUT_MS) { initDeferred.await() }
                     ?: throw IllegalStateException("GET INIT timed out")
@@ -784,8 +852,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 val cap = init.fileSize + SysExProtocol.MAX_PAGE_BYTES
                 var page = 0
                 while (out.size() < init.fileSize) {
-                    val dataFrame = SysExProtocol.buildFileGetDataFrame(currentDeviceId, page, requestId = 11)
-                    awaitedFileReqId = 11
+                    val getDataReqId = nextFileReqId()
+                    val dataFrame = SysExProtocol.buildFileGetDataFrame(currentDeviceId, page, requestId = getDataReqId)
+                    awaitedFileReqId = getDataReqId
                     midiManager.sendMidi(portId, dataFrame)
                     val resp = withTimeoutOrNull(GET_PAGE_TIMEOUT_MS) { pages.receive() }
                         ?: throw IllegalStateException("GET DATA page $page timed out")
@@ -1090,10 +1159,11 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         val portId = _deviceState.value.outputPortId ?: return false
         val deferred = CompletableDeferred<Int>()
         pendingFileInitDeferred = deferred
-        val frame = SysExProtocol.buildFileInitFrame(currentDeviceId, requestId = FILE_INIT_REQUEST_ID)
+        val initReqId = nextFileReqId()
+        val frame = SysExProtocol.buildFileInitFrame(currentDeviceId, requestId = initReqId)
         val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-        Log.d("EP133MIDI", "MIDI META: outbound FILE_INIT frame[${frame.size}] reqId=$FILE_INIT_REQUEST_ID $hexDump")
-        awaitedFileReqId = FILE_INIT_REQUEST_ID
+        Log.d("EP133MIDI", "MIDI META: outbound FILE_INIT frame[${frame.size}] reqId=$initReqId $hexDump")
+        awaitedFileReqId = initReqId
         midiManager.sendMidi(portId, frame)
         val chunkSize = withTimeoutOrNull(FILE_INIT_TIMEOUT_MS) { deferred.await() }
         return if (chunkSize != null) {
@@ -1103,7 +1173,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         } else {
             Log.e("EP133MIDI", "FILE_INIT: timed out — proceeding anyway (hardware may not require it)")
             pendingFileInitDeferred = null
-            awaitedFileReqId = -1
+            if (awaitedFileReqId == initReqId) awaitedFileReqId = -1
             // Best-effort: if the device didn't respond, mark as initialized so we don't loop.
             fileSessionInitialized = true
             false
@@ -1195,7 +1265,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             // Active-slot pointer from /projects directory metadata (NoLock).
             val activeNode = queryProjectsActiveNodeNoLock()
 
-            val body = listNodeBody(projectsNode, requestId = 60) ?: return@withLock emptyList()
+            val body = listNodeBody(projectsNode, requestId = nextFileReqId()) ?: return@withLock emptyList()
 
             SysExProtocol.parseFileListEntries(body).map { entry ->
                 ProjectSlot(
@@ -1218,7 +1288,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         return try {
             val deferred = CompletableDeferred<Map<String, String>>()
             pendingMetadataDeferred = deferred
-            val frame = SysExProtocol.buildFileMetadataFrame(currentDeviceId, "/projects", requestId = 55)
+            val frame = SysExProtocol.buildFileMetadataFrame(currentDeviceId, "/projects", requestId = nextFileReqId())
             midiManager.sendMidi(portId, frame)
             val meta = withTimeoutOrNull(FILE_LIST_TIMEOUT_MS) { deferred.await() }
             meta?.get("active")?.toIntOrNull()
@@ -1246,6 +1316,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * Pages are accumulated until [SysExProtocol.isMetadataTerminator] fires, then
      * the accumulated JSON string is parsed into a [JSONObject].
      *
+     * MUST be called from within a [fileOpMutex] locked context.
+     *
      * **Defensive (HW-VERIFY-3):** if JSON parsing fails (device returned greet-style
      * `key:value` text instead), falls back to [SysExProtocol.parseGreetResponse] and
      * wraps the result in a JSONObject. This handles Phase-4 metadata (greet-format) when
@@ -1260,12 +1332,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         metadataJsonExpectedPage = 0
         val deferred = CompletableDeferred<String>()
         pendingMetadataJsonDeferred = deferred
+        val metaReqId = nextFileReqId()
         return try {
-            val frame = SysExProtocol.buildMetadataGetFrame(currentDeviceId, nodeId, page = 0, requestId = METADATA_GET_REQUEST_ID)
-            // Task 3: raw-byte log for HW-VERIFY-3
+            val frame = SysExProtocol.buildMetadataGetFrame(currentDeviceId, nodeId, page = 0, requestId = metaReqId)
             val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-            Log.d("EP133APP", "MIDI META: outbound METADATA GET nodeId=$nodeId reqId=$METADATA_GET_REQUEST_ID frame[${frame.size}] $hexDump")
-            awaitedFileReqId = METADATA_GET_REQUEST_ID
+            Log.d("EP133APP", "MIDI META: outbound METADATA GET nodeId=$nodeId reqId=$metaReqId frame[${frame.size}] $hexDump")
+            awaitedFileReqId = metaReqId
             midiManager.sendMidi(portId, frame)
             val accumulated = withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() }
                 ?: return JSONObject()
@@ -1295,7 +1367,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             metadataJsonInFlight = false
             if (pendingMetadataJsonDeferred === deferred) pendingMetadataJsonDeferred = null
             // Clear on timeout (dispatcher already cleared on match; on timeout it stays set).
-            if (awaitedFileReqId == METADATA_GET_REQUEST_ID) awaitedFileReqId = -1
+            if (awaitedFileReqId == metaReqId) awaitedFileReqId = -1
         }
     }
 
@@ -1311,12 +1383,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         metadataSetInFlight = true
         val deferred = CompletableDeferred<Boolean>()
         pendingMetadataSetAckDeferred = deferred
+        val setReqId = nextFileReqId()
         return try {
-            val frame = SysExProtocol.buildMetadataSetFrame(currentDeviceId, nodeId, json, requestId = METADATA_SET_REQUEST_ID)
-            // Task 3: raw-byte log for HW-VERIFY-3
+            val frame = SysExProtocol.buildMetadataSetFrame(currentDeviceId, nodeId, json, requestId = setReqId)
             val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-            Log.d("EP133APP", "MIDI META: outbound METADATA SET nodeId=$nodeId json=$json reqId=$METADATA_SET_REQUEST_ID frame[${frame.size}] $hexDump")
-            awaitedFileReqId = METADATA_SET_REQUEST_ID
+            Log.d("EP133APP", "MIDI META: outbound METADATA SET nodeId=$nodeId json=$json reqId=$setReqId frame[${frame.size}] $hexDump")
+            awaitedFileReqId = setReqId
             midiManager.sendMidi(portId, frame)
             withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() } ?: false
         } catch (e: CancellationException) {
@@ -1324,7 +1396,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         } finally {
             metadataSetInFlight = false
             if (pendingMetadataSetAckDeferred === deferred) pendingMetadataSetAckDeferred = null
-            if (awaitedFileReqId == METADATA_SET_REQUEST_ID) awaitedFileReqId = -1
+            if (awaitedFileReqId == setReqId) awaitedFileReqId = -1
         }
     }
 
@@ -1337,12 +1409,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         val portId = _deviceState.value.outputPortId ?: return null
         val deferred = CompletableDeferred<SysExProtocol.NodeInfo>()
         pendingNodeInfoDeferred = deferred
+        val infoReqId = nextFileReqId()
         return try {
-            val frame = SysExProtocol.buildFileInfoFrame(currentDeviceId, nodeId, requestId = FILE_INFO_REQUEST_ID)
-            // Task 3: raw-byte log for HW-VERIFY-3
+            val frame = SysExProtocol.buildFileInfoFrame(currentDeviceId, nodeId, requestId = infoReqId)
             val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-            Log.d("EP133APP", "MIDI META: outbound FILE_INFO nodeId=$nodeId reqId=$FILE_INFO_REQUEST_ID frame[${frame.size}] $hexDump")
-            awaitedFileReqId = FILE_INFO_REQUEST_ID
+            Log.d("EP133APP", "MIDI META: outbound FILE_INFO nodeId=$nodeId reqId=$infoReqId frame[${frame.size}] $hexDump")
+            awaitedFileReqId = infoReqId
             midiManager.sendMidi(portId, frame)
             withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() }
         } catch (e: CancellationException) {
@@ -1352,49 +1424,121 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             null
         } finally {
             if (pendingNodeInfoDeferred === deferred) pendingNodeInfoDeferred = null
-            if (awaitedFileReqId == FILE_INFO_REQUEST_ID) awaitedFileReqId = -1
+            if (awaitedFileReqId == infoReqId) awaitedFileReqId = -1
         }
     }
 
     /**
      * Read the device's current active group and return its index (0=A, 1=B, 2=C, 3=D).
      *
-     * Walk: /projects → active-project nodeId → project name → /projects/<name>/groups →
-     * groups-dir active pointer → group nodeId → getNode → name → PadChannel index.
+     * Fast path (after first call): the heavy directory-walk is cached so subsequent poll ticks
+     * issue only two METADATA GET round-trips (projects-node → active-project, groups-node →
+     * active-group). The one-time resolution of each cache entry is logged verbosely.
      *
-     * Group name on device is literally "A", "B", "C", or "D" per `GROUPS=["A","B","C","D"]`
-     * in the reference tool. Name-based lookup is used (HW-VERIFY-2 will confirm).
+     * Guard: if a poll is already in flight ([activeGroupPollInFlight]), the new call returns
+     * null immediately rather than queuing behind the mutex. This prevents 1.5 s poll ticks from
+     * accumulating into a backlog when the device is slow.
+     *
+     * Cache invalidation: both caches are cleared on device greet (new connection).
+     *
+     * Full walk:
+     *   1. METADATA GET on projectsNode → "active" = activeProjNodeId  (fast, cached node)
+     *   2. If groupsNodeCache[activeProjNodeId] miss: resolveNodeIdInternal to find groups dir;
+     *      log all children to confirm structure (HW-VERIFY-2).
+     *   3. METADATA GET on groupsNode → "active" = activeGroupNodeId  (fast, cached node)
+     *   4. If groupNodeNameCache[groupsNode] miss: list groupsNode children; log name→nodeId
+     *      map (HW-VERIFY-2); cache it.
+     *   5. Look up activeGroupNodeId in name map; find PadChannel index by name.
      *
      * @return Group index 0–3, or null if the device is disconnected / no active project.
      */
     suspend fun getActiveGroupIndex(): Int? {
         Log.d("EP133APP", "MIDI META: getActiveGroupIndex() called, outputPort=${_deviceState.value.outputPortId}")
         if (_deviceState.value.outputPortId == null) return null
-        return fileOpMutex.withLock {
-            // Task 3: ensure FILE_INIT handshake before any file op (NoLock — we hold the mutex).
-            ensureFileSessionInitNoLock()
-            try {
-                val projectsNode = resolveNodeIdInternal("/projects") ?: return@withLock null
-                val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
-                    .takeIf { it >= 0 } ?: return@withLock null
-                val projName = getNodeInfo(activeProjNodeId)?.name ?: return@withLock null
-                // HW-VERIFY-2: log the project name so we can confirm node-name format.
-                Log.d("EP133APP", "MIDI META: active project name='$projName' nodeId=$activeProjNodeId")
-                val groupsNode = resolveNodeIdInternal("/projects/$projName/groups") ?: return@withLock null
-                val activeGroupNodeId = getMetadataJson(groupsNode).optInt("active", -1)
-                    .takeIf { it >= 0 } ?: return@withLock null
-                val groupInfo = getNodeInfo(activeGroupNodeId) ?: return@withLock null
-                // HW-VERIFY-2: log the group name — should be "A".."D".
-                Log.d("EP133APP", "MIDI META: active group name='${groupInfo.name}' nodeId=${groupInfo.nodeId}")
-                val idx = PadChannel.entries.indexOfFirst { it.name == groupInfo.name }
-                idx.takeIf { it >= 0 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e("EP133APP", "MIDI META: getActiveGroupIndex failed", e)
-                null
-            }
+        // Poll guard: return immediately if a poll is already running. This prevents a
+        // 1.5 s tick from stacking up behind the mutex while a previous tick's FILE_LIST
+        // is still in flight — the root cause of the poll-backlog timeout loop.
+        if (!activeGroupPollInFlight.compareAndSet(false, true)) {
+            Log.d("EP133APP", "MIDI META: getActiveGroupIndex — poll already in flight, skipping")
+            return null
         }
+        return try {
+            fileOpMutex.withLock {
+                ensureFileSessionInitNoLock()
+                try {
+                    getActiveGroupIndexNoLock()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e("EP133APP", "MIDI META: getActiveGroupIndex failed", e)
+                    null
+                }
+            }
+        } finally {
+            activeGroupPollInFlight.set(false)
+        }
+    }
+
+    /**
+     * NoLock body for [getActiveGroupIndex].
+     * MUST only be called from within a [fileOpMutex] locked context.
+     */
+    private suspend fun getActiveGroupIndexNoLock(): Int? {
+        // Step 1: resolve the /projects node once (cached implicitly by resolveNodeIdInternal
+        // finding it by name from root). We need the node ID so we can METADATA GET it.
+        // Use the fast METADATA GET path — no directory list needed here.
+        val projectsNode = resolveNodeIdInternal("/projects") ?: return null
+
+        // Step 2: METADATA GET on projects node → get active-project nodeId (fast, 1 round-trip).
+        val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
+            .takeIf { it >= 0 } ?: return null
+        Log.d("EP133APP", "MIDI META: active project nodeId=$activeProjNodeId")
+
+        // Step 3: resolve groups dir — cache hit avoids directory walk after first call.
+        val groupsNode = groupsNodeCache.getOrPut(activeProjNodeId) {
+            // One-time: need the project name to build the path, so do FILE_INFO on activeProjNodeId.
+            val projName = getNodeInfo(activeProjNodeId)?.name ?: run {
+                Log.w("EP133APP", "MIDI META: could not get project name for nodeId=$activeProjNodeId")
+                return null
+            }
+            Log.d("EP133APP", "MIDI META: active project name='$projName' (one-time resolution)")
+            val gn = resolveNodeIdInternal("/projects/$projName/groups") ?: run {
+                Log.w("EP133APP", "MIDI META: /projects/$projName/groups not found — device may use different structure")
+                return null
+            }
+            Log.d("EP133APP", "MIDI META: resolved groups dir nodeId=$gn for project='$projName' (cached)")
+            gn
+        }
+
+        // Step 4: METADATA GET on groups dir → get active-group nodeId (fast, 1 round-trip).
+        val activeGroupNodeId = getMetadataJson(groupsNode).optInt("active", -1)
+            .takeIf { it >= 0 } ?: return null
+        Log.d("EP133APP", "MIDI META: active group nodeId=$activeGroupNodeId")
+
+        // Step 5: resolve group name — cache hit avoids directory walk after first call.
+        val nameMap = groupNodeNameCache.getOrPut(groupsNode) {
+            // One-time: list groups dir children to build nodeId→name map.
+            val body = listNodeBody(groupsNode, requestId = nextFileReqId()) ?: run {
+                Log.w("EP133APP", "MIDI META: could not list groups dir nodeId=$groupsNode")
+                return null
+            }
+            val entries = SysExProtocol.parseFileListEntries(body)
+            // Log the actual structure — HW-VERIFY-2 confirms group names.
+            Log.d("EP133APP", "MIDI META: groups dir children (one-time resolution): ${entries.map { "${it.nodeId}='${it.name}'" }}")
+            if (entries.isEmpty()) {
+                Log.w("EP133APP", "MIDI META: groups dir nodeId=$groupsNode has no children — device structure unexpected")
+                return null
+            }
+            entries.associate { it.nodeId to it.name }
+        }
+
+        val groupName = nameMap[activeGroupNodeId] ?: run {
+            Log.w("EP133APP", "MIDI META: active group nodeId=$activeGroupNodeId not in groups dir map=$nameMap")
+            return null
+        }
+        Log.d("EP133APP", "MIDI META: active group name='$groupName' nodeId=$activeGroupNodeId")
+        val idx = PadChannel.entries.indexOfFirst { it.name == groupName }
+        return idx.takeIf { it >= 0 }
     }
 
     /**
@@ -1446,9 +1590,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private suspend fun resolveNodeIdInternal(path: String): Int? {
         val segments = path.trim('/').split('/').filter { it.isNotEmpty() }
         var nodeId = 0   // root
-        var rid = 70
         for (segment in segments) {
-            val body = listNodeBody(nodeId, requestId = rid++)
+            val body = listNodeBody(nodeId, requestId = nextFileReqId())
             if (body == null) {
                 Log.d("EP133APP", "MIDI META: resolveInternal('$path') seg='$segment' parent=$nodeId → listNodeBody NULL")
                 return null
@@ -1572,22 +1715,26 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         private const val GET_PAGE_TIMEOUT_MS = 5_000L
         private const val PUT_ACK_TIMEOUT_MS = 15_000L
         // Node-ID FILE_LIST + /projects metadata query bound (enumeration, Wave 2).
+        // Reverted from 10 s (the bump didn't help — root cause was reqId aliasing, not latency).
         private const val FILE_LIST_TIMEOUT_MS = 5_000L
         // Metadata GET/SET + FILE_INFO round-trip timeout (Step 1 — active-group sync).
         private const val METADATA_TIMEOUT_MS = 5_000L
-        // Fixed request IDs for the new metadata/info round-trips (non-overlapping with
-        // Phase-4 IDs: greet=1, meta=/sounds=2, list=/sounds=3, GET=10/11, PUT=20/21/30/31,
-        // list=60, /projects=55, resolve=50+).
-        private const val METADATA_GET_REQUEST_ID = 80
-        private const val METADATA_SET_REQUEST_ID = 81
-        private const val FILE_INFO_REQUEST_ID    = 82
         // FILE_INIT handshake (Task 3 — once per connection).
-        private const val FILE_INIT_REQUEST_ID    = 83
         private const val FILE_INIT_TIMEOUT_MS    = 5_000L
         // putSampleFile uses a transfer-local counter starting here; each frame increments it.
         // This is the INIT reqId; DATA pages and terminator get 31, 32, ... (masked to 14-bit).
+        // The global nextFileReqId() counter skips the range 30..99 so it never aliases these.
         internal const val PUT_INIT_REQUEST_ID    = 30
         // Short timeout for the best-effort force-close terminator.
         private const val FORCE_CLOSE_TIMEOUT_MS  = 2_000L
+
+        // ── nextFileReqId() counter bounds ──────────────────────────────────────
+        // 11-bit space: 1..2046. 0 and 2047 (0x7FF) skipped (reserved/invalid).
+        // The range 30..99 is skipped (owned by putSampleFile's transfer-local counter).
+        // The value 1 is skipped (conventional greet reqId — CMD_GREET, not TE_SYSEX_FILE,
+        // but skip for clarity). Initial value starts at 100 so first call returns 100.
+        internal const val FILE_REQ_ID_MIN     = 100
+        internal const val FILE_REQ_ID_MAX     = 2046
+        internal const val FILE_REQ_ID_INITIAL = 100
     }
 }

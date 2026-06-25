@@ -46,15 +46,20 @@ class FileReqIdDedupTest {
         override fun closeAllListeners() {}
         override fun prewarmSendPort(portId: String) {}
         override fun close() {}
+
+        /** Extract the reqId from the last sent FILE frame (frame[6] high nibble + frame[7] low 7). */
+        fun lastSentReqId(): Int {
+            val frame = sent.lastOrNull() ?: return -1
+            if (frame.size < 8) return -1
+            return ((frame[6].toInt() and 0x0F) shl 7) or (frame[7].toInt() and 0x7F)
+        }
     }
 
-    // ── Test double: MIDIRepository subclass that exposes dispatchSysEx ────────
+    // ── Test doubles ──────────────────────────────────────────────────────────
 
     /**
-     * Exposes [exposedDispatch] so tests can inject FILE response frames directly, and
-     * exposes the awaitedFileReqId state indirectly via [driveFileInitResponseWithReqId].
-     *
-     * Overrides [resolveNodeId] to avoid hardware round-trips.
+     * MIDIRepository subclass that exposes dispatchSysEx for frame injection and
+     * overrides resolveNodeId to avoid hardware round-trips for tests 1–3.
      */
     private class TestableRepo(port: SpyPort) : MIDIRepository(port) {
         init {
@@ -64,9 +69,25 @@ class FileReqIdDedupTest {
         /** Inject a raw SysEx frame as if received from the device. */
         fun injectSysEx(frame: ByteArray) = dispatchSysEx(frame)
 
-        /** Override resolveNodeId to return a fixed nodeId without hardware. */
+        /** Override resolveNodeId to return a fixed nodeId without hardware round-trips. */
         override suspend fun resolveNodeId(path: String): Int? =
             if (path == "/sounds") 99 else null
+    }
+
+    /**
+     * MIDIRepository subclass that exposes dispatchSysEx WITHOUT overriding resolveNodeId.
+     *
+     * Used in [duplicateInitResponse_doesNotPoisonListDeferred] which drives the real
+     * ensureFileSessionInit + listNodeBody pipeline so the INIT→LIST reqId transition
+     * can be observed and stale-response injection can be tested correctly.
+     */
+    private class RealWalkRepo(port: SpyPort) : MIDIRepository(port) {
+        init {
+            _deviceState.value = DeviceState(connected = true, outputPortId = "out")
+        }
+
+        /** Inject a raw SysEx frame as if received from the device. */
+        fun injectSysEx(frame: ByteArray) = dispatchSysEx(frame)
     }
 
     // ── Frame-building helpers ─────────────────────────────────────────────────
@@ -103,28 +124,49 @@ class FileReqIdDedupTest {
     }
 
     /**
-     * Build a minimal FILE_LIST response frame for injection (same envelope, distinct body).
-     * Body: status=0, page u16 (00 00), one short entry "X" so parseFileListEntries gets something.
-     * Dispatcher routes this to the FILE_LIST deferred when pendingNodeListDeferred != null.
+     * Build a minimal FILE_LIST response frame that the dispatcher will correctly parse.
+     *
+     * Real device response layout for a FILE frame (verified 2026-06-23):
+     *   [F0][TE_ID_0][TE_ID_1][TE_ID_2][deviceId][0x40][flags|reqIdHigh][reqIdLow]
+     *   [TE_SYSEX_FILE=5][status][7-bit-packed body...][F7]
+     *
+     * In dispatchSysEx: payload = frame[9..end-1]; fileStatus = payload[0] = status;
+     * packedBody = payload[1..]; body = unpack7bit(packedBody).
+     *
+     * So we must NOT use SysExProtocol.buildFrame (which packs the ENTIRE payload including
+     * the status byte). Instead we manually place the status byte unpackaged at position 9,
+     * then pack only the body content and append it.
+     *
+     * Body content after unpacking = page-u16-BE followed by entry bytes.
+     * The FILE_LIST handler strips page u16 (first 2 bytes) and passes remainder to
+     * parseFileListEntries. Entry format: nodeId-u16-BE, flags-u8, size-u32-BE, name-NUL.
      */
     private fun buildFakeFileListResponse(reqId: Int): ByteArray {
-        // Raw body: status=0, then page u16 BE, then a 7-byte entry header + name
-        // File entry format: [nodeId u16 BE][flags][size u32 BE][name NUL]
+        // Entry for "sounds" with nodeId=99.
         val entry = byteArrayOf(
-            0x00, 0x63,          // nodeId = 99 (the expected sounds nodeId)
-            0x01,                // flags = FILE
+            0x00, 0x63,             // nodeId = 99
+            0x02,                   // flags = DIRECTORY (0x02) — sounds is a dir
             0x00, 0x00, 0x00, 0x00, // size = 0
         ) + "sounds".toByteArray(Charsets.US_ASCII) + byteArrayOf(0x00)
-        val rawBody = byteArrayOf(
-            0x00,           // status = 0 (STATUS_OK)
-            0x00, 0x00,     // page u16 = 0
-        ) + entry
-        return SysExProtocol.buildFrame(
-            deviceId  = 0,
-            command   = SysExProtocol.TE_SYSEX_FILE,
-            requestId = reqId,
-            payload   = rawBody,
-        )
+        // Body = page u16 (0x0000) + entry
+        val body = byteArrayOf(0x00, 0x00) + entry
+        // Pack the body for the packed section of the frame.
+        val packed = SysExProtocol.pack7bit(body)
+        // Assemble the frame manually: header + status byte (raw) + packed body + F7
+        val reqHigh = ((reqId shr 7) and 0x0F).toByte()
+        val reqLow  = (reqId and 0x7F).toByte()
+        return byteArrayOf(
+            0xF0.toByte(),
+            SysExProtocol.TE_ID_0,
+            SysExProtocol.TE_ID_1,
+            SysExProtocol.TE_ID_2,
+            0x00,               // deviceId
+            0x40,
+            reqHigh,
+            reqLow,
+            SysExProtocol.TE_SYSEX_FILE.toByte(),
+            0x00,               // status = STATUS_OK (NOT packed — raw byte at position 9)
+        ) + packed + byteArrayOf(0xF7.toByte())
     }
 
     // ── Tests ──────────────────────────────────────────────────────────────────
@@ -132,9 +174,12 @@ class FileReqIdDedupTest {
     /**
      * A FILE response whose reqId matches awaitedFileReqId completes the in-flight deferred.
      *
-     * Scenario: FILE_INIT send sets awaitedFileReqId=83; matching response (reqId=83)
-     * completes pendingFileInitDeferred. Verified by calling ensureFileSessionInit() in a
-     * coroutine and then injecting the matching response.
+     * Scenario: FILE_INIT send is observed; matching response (same reqId extracted from the
+     * sent frame) completes pendingFileInitDeferred.
+     *
+     * With nextFileReqId() the INIT reqId is no longer a fixed constant — it is whatever the
+     * counter returns at test time. We read it from the sent frame so the test stays correct
+     * regardless of counter state.
      */
     @Test
     fun matchingFileResponse_completesDeferred() = runTest {
@@ -147,12 +192,15 @@ class FileReqIdDedupTest {
             initResult.complete(repo.ensureFileSessionInit())
         }
 
-        // Wait until the frame is sent (awaitedFileReqId = 83 set before sendMidi).
+        // Wait until the frame is sent (awaitedFileReqId set before sendMidi).
         kotlinx.coroutines.yield()
 
-        // Inject a matching response (reqId=83 == FILE_INIT_REQUEST_ID).
-        val response = buildFakeFileResponse(reqId = 83)
-        repo.injectSysEx(response)
+        // Extract the reqId the repo used from the sent frame.
+        val initReqId = port.lastSentReqId()
+        assertTrue("port should have sent a FILE_INIT frame (reqId > 0)", initReqId > 0)
+
+        // Inject a matching response.
+        repo.injectSysEx(buildFakeFileResponse(reqId = initReqId))
 
         job.join()
         // ensureFileSessionInit should have returned true (init deferred completed).
@@ -162,16 +210,15 @@ class FileReqIdDedupTest {
     /**
      * A FILE response with a stale/duplicate reqId (mismatch) does NOT complete any deferred.
      *
-     * Scenario: awaitedFileReqId=83 (FILE_INIT in flight); a duplicate of the PREVIOUS op's
-     * response arrives with reqId=50 (stale). The dispatcher must drop it — the INIT deferred
-     * must NOT be completed.
+     * Scenario: FILE_INIT is in flight; a response with a different reqId arrives (stale).
+     * The dispatcher must drop it — the INIT deferred must NOT be completed.
      */
     @Test
     fun staleFileResponse_doesNotCompleteDeferred() = runTest {
         val port = SpyPort()
         val repo = TestableRepo(port)
 
-        // Start FILE_INIT — sets awaitedFileReqId=83, pendingFileInitDeferred is live.
+        // Start FILE_INIT — pendingFileInitDeferred is live.
         var initCompleted = false
         val initJob = launch(Dispatchers.Unconfined) {
             repo.ensureFileSessionInit()
@@ -179,16 +226,20 @@ class FileReqIdDedupTest {
         }
         kotlinx.coroutines.yield()
 
-        // Inject a stale response with reqId=50 (different from awaitedFileReqId=83).
-        val staleResponse = buildFakeFileResponse(reqId = 50)
+        val initReqId = port.lastSentReqId()
+        assertTrue(initReqId > 0)
+
+        // Inject a stale response with a different reqId (initReqId + 1 wraps safely).
+        val staleReqId = if (initReqId < MIDIRepository.FILE_REQ_ID_MAX) initReqId + 1 else initReqId - 1
+        val staleResponse = buildFakeFileResponse(reqId = staleReqId)
         repo.injectSysEx(staleResponse)
 
         // Give the coroutine a chance to complete if the deferred was wrongly completed.
         kotlinx.coroutines.yield()
 
-        // The INIT deferred must NOT have been completed — initCompleted should still be false.
+        // The INIT deferred must NOT have been completed.
         assertFalse(
-            "Stale FILE response (reqId=50) must not complete INIT deferred (awaiting reqId=83)",
+            "Stale FILE response (reqId=$staleReqId) must not complete INIT deferred (awaiting reqId=$initReqId)",
             initCompleted,
         )
 
@@ -217,7 +268,10 @@ class FileReqIdDedupTest {
         }
         kotlinx.coroutines.yield()
 
-        val response = buildFakeFileResponse(reqId = 83)
+        val initReqId = port.lastSentReqId()
+        assertTrue(initReqId > 0)
+
+        val response = buildFakeFileResponse(reqId = initReqId)
         // First injection: matches, completes deferred, clears awaitedFileReqId.
         repo.injectSysEx(response)
         initJob.join()
@@ -233,24 +287,26 @@ class FileReqIdDedupTest {
     }
 
     /**
-     * When a FILE_INIT response (reqId=83) arrives while the LIST deferred is in flight
-     * (awaitedFileReqId=50 for a LIST at reqId=50), the INIT duplicate is ignored.
+     * When a FILE_INIT response arrives while the LIST deferred is in flight, the INIT
+     * duplicate is ignored.
      *
      * This is the exact hardware-confirmed failure mode: a duplicate FILE_INIT response
-     * (reqId=83) arrives just after the LIST request was sent (awaitedFileReqId=50).
-     * Before the fix: inFlightCmd=FILE_LIST → LIST deferred completed with INIT body → null parse.
-     * After the fix: reqId=83 != awaitedFileReqId=50 → frame dropped → LIST deferred unaffected.
+     * arrives just after the LIST request was sent. The reqIds differ → duplicate dropped →
+     * LIST deferred unaffected.
+     *
+     * This test uses [RealWalkRepo] (no resolveNodeId override) so the real
+     * ensureFileSessionInit + resolveNodeIdInternal pipeline is exercised, making the
+     * INIT→LIST reqId transition observable and testable.
      */
     @Test
     fun duplicateInitResponse_doesNotPoisonListDeferred() = runTest {
         val port = SpyPort()
-        val repo = TestableRepo(port)
+        val repo = RealWalkRepo(port)
 
-        // Register a fake LIST deferred: set awaitedFileReqId=50 to simulate a LIST being in flight.
-        // We do this by starting resolveNodeId with statsQueryInFlight=false (fresh repo).
-        // Drive resolveNodeId — internally it calls ensureFileSessionInit then listNodeBody.
-        // We intercept by injecting an INIT match first (reqId=83), then inject a stale duplicate
-        // (reqId=83) while LIST is in flight (awaitedFileReqId=50).
+        // Drive resolveNodeId("/sounds") — the real implementation calls:
+        //   fileOpMutex.withLock → ensureFileSessionInitNoLock (sends FILE_INIT)
+        //                        → resolveNodeIdInternal("/sounds") (sends FILE_LIST of root)
+        // We observe both reqIds from the sent frames.
         var nodeId: Int? = -1
         val resolveJob = launch(Dispatchers.Unconfined) {
             nodeId = repo.resolveNodeId("/sounds")
@@ -258,25 +314,32 @@ class FileReqIdDedupTest {
         // Let resolveNodeId start and reach ensureFileSessionInit.
         kotlinx.coroutines.yield()
 
-        // Inject the FILE_INIT response (reqId=83) → INIT deferred completes, awaitedFileReqId cleared.
-        repo.injectSysEx(buildFakeFileResponse(reqId = 83))
+        // Capture FILE_INIT reqId from the first sent frame.
+        val initReqId = port.lastSentReqId()
+        assertTrue("port should have sent FILE_INIT", initReqId > 0)
+
+        // Inject the FILE_INIT response → INIT deferred completes, awaitedFileReqId cleared.
+        repo.injectSysEx(buildFakeFileResponse(reqId = initReqId))
         kotlinx.coroutines.yield()
 
-        // Now resolveNodeId proceeds to listNodeBody which sets awaitedFileReqId=50.
-        // Inject a STALE DUPLICATE of the INIT response (reqId=83) — simulates HW duplicate.
-        // With the fix: reqId=83 != awaitedFileReqId=50 → dispatcher drops it.
-        repo.injectSysEx(buildFakeFileResponse(reqId = 83))  // stale duplicate
+        // Now resolveNodeIdInternal sends a FILE_LIST of the root node (segment="sounds").
+        val listReqId = port.lastSentReqId()
+        assertTrue("port should have sent FILE_LIST after INIT", listReqId > 0)
+        assertTrue("LIST reqId must differ from INIT reqId", listReqId != initReqId)
+
+        // Inject a STALE DUPLICATE of the INIT response — simulates HW duplicate arriving late.
+        // With the fix: initReqId != listReqId (awaitedFileReqId) → dispatcher drops it.
+        repo.injectSysEx(buildFakeFileResponse(reqId = initReqId))  // stale duplicate
         kotlinx.coroutines.yield()
 
         // The LIST deferred must NOT have been completed by the stale INIT duplicate.
-        // nodeId should still be null-ish (resolveJob still waiting for real LIST response).
-        // Inject the CORRECT LIST response (reqId=50) → LIST deferred completes → entry found.
-        repo.injectSysEx(buildFakeFileListResponse(reqId = 50))
+        // Inject the CORRECT LIST response with a "sounds" entry → LIST deferred completes.
+        repo.injectSysEx(buildFakeFileListResponse(reqId = listReqId))
         resolveJob.join()
 
         // If the stale INIT response had poisoned the LIST deferred, resolveNodeId would have
-        // returned null (no "sounds" in an INIT body). With the fix, the real LIST response
-        // arrived and nodeId should be non-null.
+        // returned null (no "sounds" in an INIT body). With the fix the real LIST response
+        // arrived and nodeId should be the "sounds" entry's nodeId (99, per buildFakeFileListResponse).
         assertNotNull(
             "resolveNodeId must succeed after stale INIT duplicate is dropped and real LIST arrives",
             nodeId,
