@@ -669,7 +669,7 @@ table.tbl tr:hover td { background: color-mix(in srgb, var(--panel) 60%, transpa
     <header class="doc-hero">
       <span class="eyebrow live">Hardware-verified · firmware 2.0.5</span>
       <h1 style="margin-top:16px">The EP-133 file &amp; playback SysEx protocol.</h1>
-      <p class="lede">Everything we figured out getting samples on and off the K.O. II. There's no spec sheet for this, so we wrote one — all of it pulled straight off real hardware and cross-checked against TE's own web tool. This one's for the community, from Bombest Audio.</p>
+      <p class="lede">Everything we figured out getting samples on and off the K.O. II. There's no spec sheet for this, so we wrote one. All of it pulled straight off real hardware and cross-checked against TE's own web tool. This one's for the community, from Bombest Audio.</p>
       <div class="meta">
         <span class="chip"><span class="dot ok"></span>MFR&nbsp; <b class="mono" style="color:var(--live)">00 20 76</b></span>
         <span class="chip">DEVICE&nbsp; <b class="mono">0x33</b></span>
@@ -681,8 +681,8 @@ table.tbl tr:hover td { background: color-mix(in srgb, var(--panel) 60%, transpa
     <!-- 1 TRANSPORT -->
     <section class="doc-section" id="transport">
       <h2><span class="s-no">01</span> Transport</h2>
-      <p>The K.O. II shows up as a plain USB-MIDI device — no driver, no app, nothing to install. On macOS it lands in CoreMIDI as <code>EP-133</code>. If your DAW can see it, so can this.</p>
-      <p>Two totally separate things ride that one port. The pads just send <strong>ordinary MIDI notes</strong> — <code>36</code>–<code>83</code>, spread across the four groups A / B / C / D. That part's easy. Everything else — the filesystem, uploads, playback — is <strong>SysEx only</strong>. There's no CC or note that loads a WAV. It all rides the frames below.</p>
+      <p>The K.O. II shows up as a plain USB-MIDI device. No driver, no app, nothing to install. On macOS it lands in CoreMIDI as <code>EP-133</code>. If your DAW can see it, so can this.</p>
+      <p>Two totally separate things ride that one port. The pads just send <strong>ordinary MIDI notes</strong>: <code>36</code>–<code>83</code>, spread across the four groups A / B / C / D. That part's easy. Everything else (the filesystem, uploads, playback) is <strong>SysEx only</strong>. There's no CC or note that loads a WAV. It all rides the frames below.</p>
       <dl class="kv">
         <dt>CoreMIDI name</dt><dd>EP-133</dd>
         <dt>Pad notes</dt><dd>36–83 (groups A / B / C / D)</dd>
@@ -711,7 +711,7 @@ table.tbl tr:hover td { background: color-mix(in srgb, var(--panel) 60%, transpa
       </div>
 
       <h3>Response frame</h3>
-      <p>The reply is the same shape with two twists: your MIDI library hands it to you <strong>without the leading <code>F0</code></strong>, and there's a one-byte <strong>STATUS</strong> code wedged in right after the command. Pull that STATUS byte off before you touch the payload — miss it and everything slides over (gotcha #0).</p>
+      <p>The reply is the same shape with two twists: your MIDI library hands it to you <strong>without the leading <code>F0</code></strong>, and there's a one-byte <strong>STATUS</strong> code wedged in right after the command. Pull that STATUS byte off before you touch the payload. Miss it and everything slides over (gotcha #0).</p>
       <div class="frame">
         <div class="byte mfr"><div class="hex">00</div><div class="lbl">MFR</div></div>
         <div class="byte mfr"><div class="hex">20</div><div class="lbl">MFR</div></div>
@@ -727,7 +727,7 @@ table.tbl tr:hover td { background: color-mix(in srgb, var(--panel) 60%, transpa
       </div>
 
       <table class="tbl" style="margin-top:8px"><tbody>
-        <tr><td class="m"><b>00 20 76</b></td><td>Manufacturer ID — Teenage Engineering.</td></tr>
+        <tr><td class="m"><b>00 20 76</b></td><td>Teenage Engineering's manufacturer ID.</td></tr>
         <tr><td class="m"><b>0x33</b></td><td>Device ID on the tested unit. Yours may differ; read it from Greet.</td></tr>
         <tr><td class="m"><b>0x40</b></td><td>Subsystem byte. Always present.</td></tr>
         <tr><td class="m"><b>flags</b></td><td><code>0x40</code> = is-request &nbsp;·&nbsp; <code>0x20</code> = request-id-present. A request that wants a reply id sets both → <code>0x60</code>.</td></tr>
@@ -737,7 +737,7 @@ table.tbl tr:hover td { background: color-mix(in srgb, var(--panel) 60%, transpa
     <!-- 3 PACKING -->
     <section class="doc-section" id="packing">
       <h2><span class="s-no">03</span> 7-bit packing</h2>
-      <p>SysEx data bytes only carry 7 bits — the top bit is off-limits. So to move real 8-bit bytes, the device packs them <strong>LSB-first</strong>: one high-bits byte holds the 8th bit of the next seven data bytes, where bit <code>k</code> of that high-bits byte belongs to data byte <code>k</code>.</p>
+      <p>SysEx data bytes only carry 7 bits; the top bit is off-limits. So to move real 8-bit bytes, the device packs them <strong>LSB-first</strong>: one high-bits byte holds the 8th bit of the next seven data bytes, where bit <code>k</code> of that high-bits byte belongs to data byte <code>k</code>.</p>
       <div class="frame">
         <div class="byte cmd"><div class="hex">H</div><div class="lbl">high&nbsp;bits</div></div>
         <div class="byte"><div class="hex">d0</div><div class="lbl">bit&nbsp;0</div></div>
@@ -753,13 +753,13 @@ table.tbl tr:hover td { background: color-mix(in srgb, var(--panel) 60%, transpa
         <pre><code><span class="c-com">// LSB-first: high bit of data[k] lives in bit k of highbits</span>
 unpacked[k] = (data[k] &amp; <span class="c-num">0x7F</span>) | (((highbits &gt;&gt; k) &amp; <span class="c-num">1</span>) &lt;&lt; <span class="c-num">7</span>);</code></pre>
       </div>
-      <p>Flip the bit order and everything past 0x7F gets quietly mangled — your WAV header reads fine and the audio comes out garbage. It's LSB-first. Not MSB-first (gotcha #2).</p>
+      <p>Flip the bit order and everything past 0x7F gets quietly mangled. Your WAV header reads fine and the audio comes out garbage. It's LSB-first. Not MSB-first (gotcha #2).</p>
     </section>
 
     <!-- 4 HANDSHAKE -->
     <section class="doc-section" id="handshake">
       <h2><span class="s-no">04</span> Handshake</h2>
-      <p><strong>Greet</strong> (command <code>1</code>) is the hello. You get back an ASCII key/value string — product, firmware, serial — so you know you've got the right unit and can read its real device id.</p>
+      <p><strong>Greet</strong> (command <code>1</code>) is the hello. You get back an ASCII key/value string (product, firmware, serial) so you know you've got the right unit and can read its real device id.</p>
       <div class="code">
         <div class="code-top"><span class="dot ok"></span><span class="t">greet · command 1 · response payload</span></div>
         <pre><code><span class="c-key">product</span>=EP-133 <span class="c-key">firmware</span>=<span class="c-num">2.0.5</span> <span class="c-key">serial</span>=<span class="c-str">KO2xxxxxxxx</span></code></pre>
@@ -775,13 +775,13 @@ unpacked[k] = (data[k] &amp; <span class="c-num">0x7F</span>) | (((highbits &gt;
     <!-- 5 SUBCOMMANDS -->
     <section class="doc-section" id="subcommands">
       <h2><span class="s-no">05</span> File subcommands</h2>
-      <p>All the file and playback work lives under <strong>command <code>5</code></strong>. The first payload byte picks the subcommand. (It's 5 — not 127. See gotcha #1.)</p>
+      <p>All the file and playback work lives under <strong>command <code>5</code></strong>. The first payload byte picks the subcommand. (It's 5, not 127. See gotcha #1.)</p>
       <div class="tbl-wrap">
         <table class="tbl">
           <thead><tr><th>Subcommand</th><th>Code</th><th>Does</th></tr></thead>
           <tbody>
             <tr><td class="m"><b>FILE_INIT</b></td><td class="code">1</td><td>Open a file session, negotiate chunk size.</td></tr>
-            <tr><td class="m"><b>FILE_PUT</b></td><td class="code">2</td><td>Upload a file — the WAV import path.</td></tr>
+            <tr><td class="m"><b>FILE_PUT</b></td><td class="code">2</td><td>Upload a file (the WAV import path).</td></tr>
             <tr><td class="m"><b>FILE_GET</b></td><td class="code">3</td><td>Download a file off the device.</td></tr>
             <tr><td class="m"><b>FILE_LIST</b></td><td class="code">4</td><td>List children of a node.</td></tr>
             <tr><td class="m"><b>FILE_PLAYBACK</b></td><td class="code">5</td><td>Trigger playback of a node.</td></tr>
@@ -817,7 +817,7 @@ unpacked[k] = (data[k] &amp; <span class="c-num">0x7F</span>) | (((highbits &gt;
     <!-- 7 FILE_PUT -->
     <section class="doc-section" id="put">
       <h2><span class="s-no">07</span> FILE_PUT upload sequence</h2>
-      <p>This right here is the whole reason the tool exists. Getting a WAV onto the device is a strict handshake — every step waits on the one before it. Rush it and you get "unexpected page" back, or worse, the device wedges (gotcha #4).</p>
+      <p>This right here is the whole reason the tool exists. Getting a WAV onto the device is a strict handshake: every step waits on the one before it. Rush it and you get "unexpected page" back, or worse, the device wedges (gotcha #4).</p>
       <div class="flow">
         <div class="step">
           <div class="sn">1</div>
@@ -826,12 +826,12 @@ unpacked[k] = (data[k] &amp; <span class="c-num">0x7F</span>) | (((highbits &gt;
         </div>
         <div class="step">
           <div class="sn">2</div>
-          <div class="sb"><h4>Resolve /sounds</h4><p>Locate the sounds directory — node <code>1000</code> — as the upload target.</p></div>
+          <div class="sb"><h4>Resolve /sounds</h4><p>Locate the sounds directory (node <code>1000</code>) as the upload target.</p></div>
           <div class="sx">node 1000</div>
         </div>
         <div class="step">
           <div class="sn">3</div>
-          <div class="sb"><h4>PUT INIT</h4><p>Announce the file. The device assigns a <strong>fileId</strong> — wait for it, you'll need it on every page.</p></div>
+          <div class="sb"><h4>PUT INIT</h4><p>Announce the file. The device hands back a <strong>fileId</strong>; wait for it, you'll need it on every page.</p></div>
           <div class="sx">cmd 5 · sub 2<br><span class="await">await fileId</span></div>
         </div>
         <div class="step">
@@ -857,8 +857,8 @@ unpacked[k] = (data[k] &amp; <span class="c-num">0x7F</span>) | (((highbits &gt;
         <div class="callout"><span class="gx">#1</span><p><b>File ops are command 5, not 127.</b> 127 looks like the obvious "system" command. It's not the one. Everything filesystem lives under 5.</p></div>
         <div class="callout"><span class="gx">#2</span><p><b>Packing is LSB-first.</b> Bit <code>k</code> of the high-bits byte maps to data byte <code>k</code>. Decode it MSB-first and you get garbage that looks just right enough to fool you.</p></div>
         <div class="callout teal"><span class="gx">#3</span><p><b>Wait for every ack.</b> Fire pages off without waiting and you'll get "unexpected page". One page out, one ack in, then the next. No rushing.</p></div>
-        <div class="callout teal"><span class="gx">#4</span><p><b>Always send the terminator.</b> Leave a PUT half-finished and the device wedges — it goes quiet until you power-cycle it. Send that zero-length final page no matter what, even when you're bailing out.</p></div>
-        <div class="callout"><span class="gx">#5</span><p><b>Pack every multi-byte field.</b> Node ids, file ids, lengths — anything bigger than 7 bits gets 7-bit packed too. No exceptions.</p></div>
+        <div class="callout teal"><span class="gx">#4</span><p><b>Always send the terminator.</b> Leave a PUT half-finished and the device wedges; it goes quiet until you power-cycle it. Send that zero-length final page no matter what, even when you're bailing out.</p></div>
+        <div class="callout"><span class="gx">#5</span><p><b>Pack every multi-byte field.</b> Node ids, file ids, lengths: anything bigger than 7 bits gets 7-bit packed too. No exceptions.</p></div>
       </div>
     </section>
 
@@ -928,7 +928,7 @@ sendmidi dev <span class="c-str">"EP-133"</span> syx <span class="c-num">0 32 11
     <!-- 12 CREDITS -->
     <section class="doc-section" id="credits" style="border-bottom:0">
       <h2><span class="s-no">12</span> Credits</h2>
-      <p>None of this is official. We reverse-engineered the whole thing — cross-referencing TE's own web tool against live MIDI captures off real hardware, sending, watching, and diffing until the bytes lined up. Firmware <strong>2.0.5</strong>, device id <code>0x33</code> on our unit. Other firmware might differ; if you catch something, send a correction on GitHub.</p>
+      <p>None of this is official. We reverse-engineered the whole thing by cross-referencing TE's own web tool against live MIDI captures off real hardware, sending, watching, and diffing until the bytes lined up. Firmware <strong>2.0.5</strong>, device id <code>0x33</code> on our unit. Other firmware might differ; if you catch something, send a correction on GitHub.</p>
       <div class="callout teal" style="margin-top:18px"><span class="gx">♥</span><p>Caught a byte we got wrong, or mapped a new firmware? Open a PR. The whole point of this is so the next person doesn't have to start from zero. — <b>Bombest Audio</b></p></div>
     </section>
 
