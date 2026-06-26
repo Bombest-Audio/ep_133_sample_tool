@@ -38,18 +38,14 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import androidx.compose.runtime.LaunchedEffect
 
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.model.EP133Pads
@@ -100,10 +96,12 @@ class PadsViewModel(private val midi: MIDIRepository) : ViewModel() {
 
     fun selectChannel(channel: PadChannel) {
         // Optimistic: update UI immediately so the tap feels instant.
+        val changed = channel != _selectedChannel.value
         _selectedChannel.value = channel
         _pressedIndices.value = emptySet()
-        // Async: propagate to device via FILE_METADATA SET.
-        viewModelScope.launch { midi.setActiveGroup(channel.ordinal) }
+        // Async: propagate to device via FILE_METADATA SET — only when the group
+        // actually changed, so re-tapping the active chip doesn't spam redundant writes.
+        if (changed) viewModelScope.launch { midi.setActiveGroup(channel.ordinal) }
     }
 
     /**
