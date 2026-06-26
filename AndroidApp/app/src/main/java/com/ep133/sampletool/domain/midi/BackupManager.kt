@@ -102,18 +102,20 @@ class BackupManager(private val midi: MIDIRepository) {
 
             if (entry.path.isBlank()) return@forEachIndexed
 
-            // Issue FILE_GET for each file
+            // Issue FILE_GET for each file with a unique request id we can correlate on.
+            val requestId = 20 + index
             val getFrame = SysExProtocol.buildFileGetFrame(
-                deviceId, entry.path, chunkIndex = 0, requestId = 20 + index,
+                deviceId, entry.path, chunkIndex = 0, requestId = requestId,
             )
             midi.sendMidiDirect(portId, getFrame)
 
-            // Wait for file chunk response (simplified single-chunk model).
-            // Use first(): collect {} on a SharedFlow never completes, so the previous
-            // version always hit the timeout and returned null — every chunk was dropped
-            // and backups contained only metadata.json.
+            // Wait for THIS file's chunk, matched by the echoed request id so a late/stray
+            // response for another entry can't be mis-bound. Use first { } (not collect {}):
+            // collect on a SharedFlow never completes, so the previous version always hit the
+            // timeout and returned null — every chunk was dropped and backups contained only
+            // metadata.json.
             val chunk = withTimeoutOrNull(3_000) {
-                midi.fileChunks.first()
+                midi.fileChunks.first { it.first == requestId }
             }
 
             if (chunk != null) {

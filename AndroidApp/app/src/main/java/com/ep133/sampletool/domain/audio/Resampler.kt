@@ -10,9 +10,11 @@ import kotlin.math.roundToInt
  * but is overkill for the EP-133's 8-12 kHz effective audio bandwidth. Linear interp is
  * audibly indistinguishable for this use case (05-RESEARCH: "audibly fine for EP-133").
  *
- * Cap rule (05-RESEARCH A2): the device never upsamples beyond 46875 Hz. If the source
- * rate is already 46875, the array is returned unchanged. The [dstRate] parameter always
- * means 46875 in production; it is kept as a parameter for testability only.
+ * Cap rule (05-RESEARCH A2): the device never upsamples beyond 46875 Hz, so the effective
+ * target is clamped to [DEVICE_SAMPLE_RATE] — passing a higher [dstRate] cannot drive
+ * upsampling past the device rate. If the source rate is already at the target, the array
+ * is returned unchanged. The [dstRate] parameter always means 46875 in production; it is
+ * kept as a parameter for testability only.
  *
  * No Android imports — pure JVM; fully unit-testable on the JVM test runner.
  *
@@ -60,14 +62,18 @@ object Resampler {
         require(srcRate > 0) { "srcRate must be > 0, was $srcRate" }
         require(dstRate > 0) { "dstRate must be > 0, was $dstRate" }
 
-        // Fast-path: no-op at the device rate (Landmine 2 — no resample artifact)
-        if (srcRate == dstRate) return pcm
+        // Clamp the target: the device never upsamples beyond its native rate (A2), so a
+        // dstRate above DEVICE_SAMPLE_RATE is capped rather than honored.
+        val targetRate = dstRate.coerceAtMost(DEVICE_SAMPLE_RATE)
+
+        // Fast-path: no-op at the target rate (Landmine 2 — no resample artifact)
+        if (srcRate == targetRate) return pcm
 
         // Number of frames (samples per channel) in the source
         val srcFrames = pcm.size / channels
 
-        // Compute output frame count: round(srcFrames * dstRate / srcRate)
-        val dstFrames = (srcFrames * dstRate.toDouble() / srcRate).roundToInt()
+        // Compute output frame count: round(srcFrames * targetRate / srcRate)
+        val dstFrames = (srcFrames * targetRate.toDouble() / srcRate).roundToInt()
 
         // Allocate interleaved output
         val out = ShortArray(dstFrames * channels)
@@ -79,7 +85,7 @@ object Resampler {
 
             // Linear interpolate to dstFrames
             for (i in 0 until dstFrames) {
-                val srcPos = i * srcRate.toDouble() / dstRate
+                val srcPos = i * srcRate.toDouble() / targetRate
                 val lo = srcPos.toInt()
                 val frac = srcPos - lo
                 val hiIdx = if (lo + 1 < src.size) lo + 1 else lo  // clamp at tail

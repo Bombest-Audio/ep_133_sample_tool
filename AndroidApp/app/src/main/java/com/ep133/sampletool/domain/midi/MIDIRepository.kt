@@ -219,8 +219,10 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private val _fileListEntries = MutableSharedFlow<FileListEntry>(extraBufferCapacity = 128)
     val fileListEntries: SharedFlow<FileListEntry> = _fileListEntries.asSharedFlow()
 
-    private val _fileChunks = MutableSharedFlow<Pair<String, ByteArray>>(extraBufferCapacity = 32)
-    val fileChunks: SharedFlow<Pair<String, ByteArray>> = _fileChunks.asSharedFlow()
+    // Legacy single-chunk FILE_GET responses, keyed by the echoed request id so a consumer
+    // can correlate each chunk to the GET it sent (responses may arrive out of order).
+    private val _fileChunks = MutableSharedFlow<Pair<Int, ByteArray>>(extraBufferCapacity = 32)
+    val fileChunks: SharedFlow<Pair<Int, ByteArray>> = _fileChunks.asSharedFlow()
 
     // ── Repository coroutine scope (for queryDeviceStats background launch) ──
     // Use Dispatchers.Default (not Main) to avoid requiring Android Looper in unit tests.
@@ -576,10 +578,10 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 if (transferInFlight) {
                     dispatchPagedGetResponse(payload)
                 } else {
-                    // Legacy Phase 2 single-chunk path — emit to fileChunks for BackupManager.
-                    val path = ""  // path tracking handled by BackupManager
+                    // Legacy Phase 2 single-chunk path — emit (echoed reqId, payload) so
+                    // BackupManager can correlate the chunk to the FILE_GET it sent.
                     repositoryScope.launch {
-                        _fileChunks.emit(path to payload)
+                        _fileChunks.emit(responseReqId to payload)
                     }
                 }
             }

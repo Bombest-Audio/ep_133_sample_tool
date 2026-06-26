@@ -172,25 +172,13 @@ fun PadsScreen(viewModel: PadsViewModel) {
         }
     }
 
-    // Device→app active-group poll: runs every 1500 ms while the screen is RESUMED.
-    // Pauses automatically when the lifecycle drops below RESUMED (screen hidden/backgrounded)
-    // to avoid background MIDI churn. Reconciles device state with the UI without blocking
-    // the main thread (refreshActiveGroupFromDevice launches on viewModelScope internally).
-    val lifecycleOwner = LocalLifecycleOwner.current
-    LaunchedEffect(lifecycleOwner) {
-        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            while (true) {
-                delay(1500)
-                // DISABLED pending the dispatch-correlation refactor (260623-w5i / backlog 999.4).
-                // The poll's drill-down (resolve /projects → active project → groups) hits an
-                // async response-correlation race: the device DOES answer the LIST(/projects) but
-                // the dispatcher infers the in-flight op from mutable global flags and drops the
-                // (reqId-matching) response, so the list times out 5s/cycle and would stall imports.
-                // Re-enable once responses route by a reqId→deferred map. Sample import works.
-                // viewModel.refreshActiveGroupFromDevice()
-            }
-        }
-    }
+    // Device→app active-group poll intentionally not running yet. It's blocked on the
+    // dispatch-correlation refactor (260623-w5i / backlog 999.4): the drill-down
+    // (resolve /projects → active project → groups) hits an async response-correlation race
+    // where the dispatcher drops the (reqId-matching) LIST(/projects) reply, so the poll
+    // times out 5s/cycle and would stall imports. Re-add a lifecycle-scoped
+    // repeatOnLifecycle(RESUMED) loop calling viewModel.refreshActiveGroupFromDevice() once
+    // responses route by a reqId→deferred map. No idle wake-up loop until then.
 
     Column(
         modifier = Modifier
