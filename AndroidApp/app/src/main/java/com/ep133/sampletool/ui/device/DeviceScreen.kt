@@ -131,7 +131,7 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
             _isBackupInProgress.value = true
             _backupProgress.value = 0f
             val backupManager = BackupManager(midi)
-            backupManager.createBackup(deviceId = 0).collect { progress ->
+            backupManager.createBackup().collect { progress ->
                 when (progress) {
                     is BackupProgress.Progress -> {
                         if (progress.total > 0) {
@@ -179,7 +179,7 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
         viewModelScope.launch {
             _isRestoreInProgress.value = true
             _restoreProgress.value = 0f
-            BackupManager(midi).restore(bytes, deviceId = 0).collect { progress ->
+            BackupManager(midi).restore(bytes).collect { progress ->
                 when (progress) {
                     is RestoreProgress.Progress -> {
                         if (progress.total > 0) {

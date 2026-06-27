@@ -865,6 +865,34 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     }
 
     /**
+     * Enumerate the EP-133 /sounds directory — every sample file as a [SysExProtocol.FileEntry]
+     * (nodeId + name + size). Used by [BackupManager]. Empty list if offline or unanswered.
+     */
+    open suspend fun listSoundEntries(): List<SysExProtocol.FileEntry> {
+        if (_deviceState.value.outputPortId == null) return emptyList()
+        return fileOpMutex.withLock {
+            ensureFileSessionInitNoLock()
+            val soundsNode = resolveNodeIdInternal("/sounds") ?: return@withLock emptyList()
+            val body = listNodeBody(soundsNode, requestId = nextFileReqId()) ?: return@withLock emptyList()
+            SysExProtocol.parseFileListEntries(body).filter { it.name.isNotBlank() }
+        }
+    }
+
+    /**
+     * Download a file node's full contents via the multi-chunk GET ([getProjectArchive]). Returns
+     * null on timeout / device error instead of throwing, so a backup can skip one bad file and
+     * keep going.
+     */
+    open suspend fun getFileBytes(nodeId: Int): ByteArray? = try {
+        getProjectArchive(nodeId)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w("EP133APP", "getFileBytes($nodeId) failed", e)
+        null
+    }
+
+    /**
      * Read the /projects directory metadata "active" pointer (the currently-loaded slot).
      *
      * NoLock: must only be called from within a [fileOpMutex] locked context.
