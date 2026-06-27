@@ -200,21 +200,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     // (pendingNodeListDeferred / nodeListBuffer removed — node FILE_LIST correlates by reqId)
 
     // ── Metadata JSON round-trip state (Step 1 — active-group sync) ──
-    // The nodeId-form METADATA GET response streams pages of JSON fragments; we accumulate
-    // them into a StringBuilder and complete the deferred on the terminator page.
-    // METADATA SET posts a single frame and awaits an ack on the matching response.
-    // FILE_INFO (getNode) completes a single-shot deferred with the parsed NodeInfo.
-    //
-    // Branch guard: metadataJsonInFlight is true while getMetadataJson/setMetadata owns the
-    // METADATA dispatcher slot. When false, incoming METADATA responses fall through to the
-    // legacy greet-style parse used by queryProjectsActiveNode (Phase-4 storage queries).
-    @Volatile private var metadataJsonInFlight = false
-    private var pendingMetadataJsonDeferred: CompletableDeferred<String>? = null
-    private val metadataJsonBuffer = StringBuilder(256)
-    private var metadataJsonExpectedPage = 0
-
-    @Volatile private var metadataSetInFlight = false
-    private var pendingMetadataSetAckDeferred: CompletableDeferred<Boolean>? = null
+    // (metadata GET/SET in-flight flags + deferreds removed — both now correlate by reqId via
+    //  fileWaiters; see getMetadataJson / setMetadata.)
 
     // (pendingNodeInfoDeferred removed — FILE_INFO now correlates by reqId via fileWaiters)
 
@@ -411,7 +398,6 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 // statsQueryInFlight / transferInFlight / ensureFileSessionInit). Determine the
                 // in-flight op from state and pass the WHOLE unpacked body to the handler.
                 val inFlightCmd = when {
-                    metadataJsonInFlight || metadataSetInFlight  -> SysExProtocol.TE_SYSEX_FILE_METADATA
                     transferInFlight                             -> SysExProtocol.TE_SYSEX_FILE_PUT
                     pendingGetInitDeferred != null || pendingGetPages != null -> SysExProtocol.TE_SYSEX_FILE_GET
                     else                                         -> -1
@@ -472,71 +458,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         // Rename: parameter was historically called "payload" but is now always the whole body.
         val payload = body
         when (fileCmd) {
-            SysExProtocol.TE_SYSEX_FILE_METADATA -> {
-                // Payload is already unpacked (dispatcher unpacks the full body before splitting).
-                val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133APP", "MIDI META: inbound METADATA payload[${payload.size}] $hexDump")
-
-                when {
-                    metadataJsonInFlight -> {
-                        // nodeId-form METADATA GET: accumulate JSON pages until terminator.
-                        // payload is already unpacked — use directly (no second unpack7bit call).
-                        if (SysExProtocol.isMetadataTerminator(payload)) {
-                            // Final page — may still carry a fragment before the NUL.
-                            if (payload.size > 2) {
-                                try {
-                                    val (_, fragment) = SysExProtocol.parseMetadataPage(payload)
-                                    metadataJsonBuffer.append(fragment)
-                                } catch (_: Exception) { /* ignore malformed fragment on terminator */ }
-                            }
-                            val accumulated = metadataJsonBuffer.toString()
-                            Log.d("EP133APP", "MIDI META: METADATA GET complete, accumulated JSON: $accumulated")
-                            pendingMetadataJsonDeferred?.complete(accumulated)
-                            pendingMetadataJsonDeferred = null
-                        } else {
-                            try {
-                                val (page, fragment) = SysExProtocol.parseMetadataPage(payload)
-                                if (page == metadataJsonExpectedPage) {
-                                    metadataJsonBuffer.append(fragment)
-                                    metadataJsonExpectedPage++
-                                } else {
-                                    Log.e("EP133APP", "MIDI META: unexpected metadata page $page, expected $metadataJsonExpectedPage")
-                                    pendingMetadataJsonDeferred?.completeExceptionally(
-                                        IllegalStateException("unexpected metadata page $page, expected $metadataJsonExpectedPage"),
-                                    )
-                                    pendingMetadataJsonDeferred = null
-                                }
-                            } catch (e: Exception) {
-                                Log.e("EP133APP", "MIDI META: METADATA page parse failed", e)
-                                pendingMetadataJsonDeferred?.completeExceptionally(e)
-                                pendingMetadataJsonDeferred = null
-                            }
-                        }
-                    }
-                    metadataSetInFlight -> {
-                        // nodeId-form METADATA SET ack: any response completes the round-trip.
-                        Log.d("EP133APP", "MIDI META: METADATA SET ack received")
-                        pendingMetadataSetAckDeferred?.complete(true)
-                        pendingMetadataSetAckDeferred = null
-                    }
-                    else -> {
-                        // Legacy path-form METADATA response (Phase-4 storage queries / queryProjectsActiveNode).
-                        // payload is already unpacked — parse directly as ASCII key:value text.
-                        val text = try {
-                            String(payload, Charsets.US_ASCII).trim(' ')
-                        } catch (_: Exception) { "" }
-                        val parsed = text.split(";")
-                            .filter { it.contains(":") }
-                            .associate { entry ->
-                                val idx = entry.indexOf(':')
-                                entry.substring(0, idx) to entry.substring(idx + 1)
-                            }
-                        Log.d("EP133APP", "FILE_METADATA response: $parsed")
-                        pendingMetadataDeferred?.complete(parsed)
-                        pendingMetadataDeferred = null
-                    }
-                }
-            }
+            // METADATA GET/SET now correlate by reqId via fileWaiters (see getMetadataJson /
+            // setMetadata); the legacy path-form metadata branch is gone with them.
             SysExProtocol.TE_SYSEX_FILE_LIST -> {
                 // Node-ID-form FILE_LIST now correlates by reqId via fileWaiters (see listNodeBody).
                 // Only the legacy path-form stats listing can still reach this branch.
@@ -1283,84 +1206,44 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      */
     suspend fun getMetadataJson(nodeId: Int): JSONObject {
         val portId = _deviceState.value.outputPortId ?: return JSONObject()
-        metadataJsonInFlight = true
-        metadataJsonBuffer.clear()
-        metadataJsonExpectedPage = 0
-        val deferred = CompletableDeferred<String>()
-        pendingMetadataJsonDeferred = deferred
-        val metaReqId = nextFileReqId()
+        val reqId = nextFileReqId()
+        val frame = SysExProtocol.buildMetadataGetFrame(currentDeviceId, nodeId, page = 0, requestId = reqId)
+        Log.d("EP133APP", "MIDI META: outbound METADATA GET nodeId=$nodeId reqId=$reqId")
+        val resp = awaitFileOp(reqId, FileOpKind.METADATA_GET, portId, frame, METADATA_TIMEOUT_MS)
+            ?: return JSONObject()
+        // Hardware-verified (2026-06-24): the body is a 2-byte page prefix + {"active":3000} +
+        // trailing NUL. Active-group metadata fits one page; extract the outermost { ... } span
+        // and parse. (Multi-page metadata is not used by any caller.)
+        val accumulated = String(resp.body, Charsets.US_ASCII)
+        val jsonSpan = run {
+            val s = accumulated.indexOf('{')
+            val e = accumulated.lastIndexOf('}')
+            if (s >= 0 && e > s) accumulated.substring(s, e + 1) else accumulated
+        }
+        Log.d("EP133APP", "MIDI META: METADATA GET jsonSpan='$jsonSpan' for nodeId=$nodeId")
         return try {
-            val frame = SysExProtocol.buildMetadataGetFrame(currentDeviceId, nodeId, page = 0, requestId = metaReqId)
-            val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-            Log.d("EP133APP", "MIDI META: outbound METADATA GET nodeId=$nodeId reqId=$metaReqId frame[${frame.size}] $hexDump")
-            awaitedFileReqId = metaReqId
-            midiManager.sendMidi(portId, frame)
-            val accumulated = withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() }
-                ?: return JSONObject()
-            // Hardware-verified (2026-06-24): METADATA GET response body is
-            //   `00 00 7B 22 61 63 74 69 76 65 22 3A 33 30 30 30 7D 00`
-            // i.e. a 2-byte page prefix + {"active":3000} + trailing NUL. Strip the prefix
-            // and NUL by scanning for the outermost '{' ... '}' span before parsing.
-            val jsonSpan = run {
-                val s = accumulated.indexOf('{')
-                val e = accumulated.lastIndexOf('}')
-                if (s >= 0 && e > s) accumulated.substring(s, e + 1) else accumulated
-            }
-            Log.d("EP133APP", "MIDI META: METADATA GET jsonSpan='$jsonSpan' for nodeId=$nodeId")
-            // JSON-first parse on the extracted span; defensive greet fallback if that also fails.
-            try {
-                JSONObject(jsonSpan)
-            } catch (_: Exception) {
-                Log.d("EP133APP", "MIDI META: JSON parse failed, trying greet fallback for nodeId=$nodeId")
-                val greetMap = SysExProtocol.parseGreetResponse(accumulated.toByteArray(Charsets.US_ASCII))
-                val fallback = JSONObject()
-                greetMap.forEach { (k, v) -> fallback.put(k, v) }
-                fallback
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } finally {
-            metadataJsonInFlight = false
-            if (pendingMetadataJsonDeferred === deferred) pendingMetadataJsonDeferred = null
-            // Clear on timeout (dispatcher already cleared on match; on timeout it stays set).
-            if (awaitedFileReqId == metaReqId) awaitedFileReqId = -1
+            JSONObject(jsonSpan)
+        } catch (_: Exception) {
+            Log.d("EP133APP", "MIDI META: JSON parse failed, trying greet fallback for nodeId=$nodeId")
+            val greetMap = SysExProtocol.parseGreetResponse(accumulated.toByteArray(Charsets.US_ASCII))
+            JSONObject().apply { greetMap.forEach { (k, v) -> put(k, v) } }
         }
     }
 
     /**
      * Write [json] as the metadata for [nodeId] via a single METADATA SET frame (METADATA_SET = 1).
+     * Correlates the ack by reqId via [fileWaiters].
      *
-     * Awaits the ack deferred completed by [dispatchFileResponse] on the matching response.
-     *
-     * @return true if the device responded (any non-error ack), false on timeout.
+     * @return true if the device responded (any ack), false on timeout.
      */
     suspend fun setMetadata(nodeId: Int, json: String): Boolean {
         val portId = _deviceState.value.outputPortId ?: return false
-        metadataSetInFlight = true
-        val deferred = CompletableDeferred<Boolean>()
-        pendingMetadataSetAckDeferred = deferred
-        val setReqId = nextFileReqId()
-        return try {
-            val frame = SysExProtocol.buildMetadataSetFrame(currentDeviceId, nodeId, json, requestId = setReqId)
-            val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-            Log.d("EP133APP", "MIDI META: outbound METADATA SET nodeId=$nodeId json=$json reqId=$setReqId frame[${frame.size}] $hexDump")
-            awaitedFileReqId = setReqId
-            midiManager.sendMidi(portId, frame)
-            withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() } ?: false
-        } catch (e: CancellationException) {
-            throw e
-        } finally {
-            metadataSetInFlight = false
-            if (pendingMetadataSetAckDeferred === deferred) pendingMetadataSetAckDeferred = null
-            if (awaitedFileReqId == setReqId) awaitedFileReqId = -1
-        }
+        val reqId = nextFileReqId()
+        val frame = SysExProtocol.buildMetadataSetFrame(currentDeviceId, nodeId, json, requestId = reqId)
+        Log.d("EP133APP", "MIDI META: outbound METADATA SET nodeId=$nodeId json=$json reqId=$reqId")
+        return awaitFileOp(reqId, FileOpKind.METADATA_SET, portId, frame, METADATA_TIMEOUT_MS) != null
     }
 
-    /**
-     * Fetch the [SysExProtocol.NodeInfo] for a specific [nodeId] via FILE_INFO (op 11).
-     *
-     * @return Parsed [NodeInfo] or null on timeout / parse error.
-     */
     /**
      * Shared spine for single-response file ops: register a [FileWaiter.OneShot] under [reqId],
      * send [frame], and await the response the device echoes back under that reqId (routed via
