@@ -31,3 +31,10 @@ AndroidApp/app/src/main/assets/data/
 
 # macOS
 ._*
+
+# Signing credentials — NEVER commit (release keystore + secrets)
+*.jks
+*.keystore
+*.p12
+keystore.properties
+.secrets/
