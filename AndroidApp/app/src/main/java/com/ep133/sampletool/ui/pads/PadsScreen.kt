@@ -4,6 +4,7 @@ import android.view.MotionEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -204,7 +205,6 @@ fun PadsScreen(viewModel: PadsViewModel) {
 
         Column(
             modifier = Modifier
-                .weight(1f)
                 .onSizeChanged { size ->
                     gridWidthPx = size.width.toFloat()
                     gridHeightPx = size.height.toFloat()
@@ -254,9 +254,7 @@ fun PadsScreen(viewModel: PadsViewModel) {
         ) {
             rows.forEachIndexed { rowIdx, rowPads ->
                 Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     rowPads.forEachIndexed { colIdx, pad ->
@@ -276,7 +274,7 @@ fun PadsScreen(viewModel: PadsViewModel) {
                             state = state,
                             modifier = Modifier
                                 .weight(1f)
-                                .fillMaxHeight(),
+                                .aspectRatio(1f),
                         )
                     }
                     // Fill remaining columns if row is short
@@ -286,6 +284,8 @@ fun PadsScreen(viewModel: PadsViewModel) {
                 }
             }
         }
+
+        Spacer(modifier = Modifier.weight(1f))
 
         // ── Legend ────────────────────────────────────────────────────────────
         Row(
