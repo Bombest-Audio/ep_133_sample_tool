@@ -171,27 +171,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     // (pendingFileInitDeferred removed — FILE_INIT now correlates by reqId via fileWaiters)
 
     // ── Paged project transfer state (Phase 4 GATE) ──
-    // A paged GET/PUT keeps its request registered across STATUS_SPECIFIC_SUCCESS_START
-    // and resolves on STATUS_OK. Unlike a single CompletableDeferred, intermediate DATA
-    // responses keep arriving, so pages flow through a Channel (RESEARCH Pitfall 3).
-    @Volatile private var transferInFlight = false
-    // (pendingGetInitDeferred / pendingGetPages removed — paged GET correlates by reqId)
-    // Hardware-verified (2026-06-24): device returns "unexpected page" if DATA frames are sent
-    // before the INIT response arrives. pendingPutInitDeferred is completed by the dispatcher
-    // on the first PUT response; putSampleFile awaits it before sending any DATA pages.
-    private var pendingPutInitDeferred: CompletableDeferred<Boolean>? = null
-    private var pendingPutAckDeferred: CompletableDeferred<Boolean>? = null
-    // Hardware-proven (2026-06-24): the device echoes the request reqId in each response.
-    // awaitedFileReqId is set immediately before EVERY file-op send (INIT, LIST, METADATA,
-    // INFO, PUT INIT, PUT DATA, GET INIT, GET DATA) and cleared once the matching response
-    // is consumed. The dispatcher ignores any FILE response whose reqId doesn't match —
-    // this is the primary defence against duplicate responses poisoning the wrong deferred
-    // (hardware-confirmed root cause 2026-06-24: duplicate FILE_INIT response completing
-    // the LIST deferred → resolveNodeId returns null → upload aborts).
-    @Volatile private var awaitedFileReqId: Int = -1
-    // awaitedPutReqId is kept for PUT-specific per-page ack matching inside
-    // dispatchPagedPutResponse (the PUT path checks both fields).
-    @Volatile private var awaitedPutReqId: Int = -1
+    // fileOpMutex serializes whole file ops (the device tolerates one transfer at a time), and
+    // each op registers a reqId-keyed waiter in fileWaiters — so there is no shared in-flight
+    // state to track. (transferInFlight / pendingPut* / awaited*ReqId removed with backlog 999.4.)
 
     // ── Project enumeration state (Phase 4 Wave 2) ──
     // FILE_LIST by node ID returns concatenated directory entries; the dispatcher hands the
@@ -388,186 +370,22 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 // Guard only when there is no status byte at all (payload itself is empty).
                 if (payload.isEmpty()) return
 
-                // Hardware-verified (2026-06-23): device FILE responses do NOT echo the subcommand.
-                // FILE_INIT reply unpacked body starts 0x00 (not 0x01=INIT); FILE_LIST reply starts
-                // with the page u16 (not 0x04=LIST). Routing by body[0] as a subcommand would never
-                // match and leave pendingFileInitDeferred dangling — session never opens.
-                //
-                // Fix: requests are serialised (one file op in flight at a time, gated by
-                // statsQueryInFlight / transferInFlight / ensureFileSessionInit). Determine the
-                // in-flight op from state and pass the WHOLE unpacked body to the handler.
-                val inFlightCmd = when {
-                    transferInFlight                             -> SysExProtocol.TE_SYSEX_FILE_PUT
-                    else                                         -> -1
-                }
-                // Extract the response reqId from the raw frame.
-                // Frame layout (no F0 — already stripped by parseMidiInput accumulation):
-                //   message[0]=F0, [1..3]=TE ID, [4]=deviceId, [5]=0x40, [6]=flags|reqIdHigh, [7]=reqIdLow
-                // reqId high bits = message[6] & 0x0F; low 7 bits = message[7] & 0x7F.
-                // This is the SAME extraction used by the existing awaitedPutReqId path (commit ba62b55).
+                // reqId-first routing (backlog 999.4): every file op registers a waiter under its
+                // unique reqId, and route() delivers each response to the waiter that owns it. An
+                // unmatched reqId is a stale or duplicate response (the device sends each response
+                // twice) and is dropped.
                 val responseReqId = ((message[6].toInt() and 0x0F) shl 7) or (message[7].toInt() and 0x7F)
-                // reqId-first routing (backlog 999.4): if a migrated op registered a waiter for
-                // this reqId, the registry delivers the response and we are done. Ops not yet
-                // migrated register no waiter, so route() returns Unmatched and we fall through
-                // to the legacy in-flight-flag handling below.
                 val routed = fileWaiters.route(FileResponse(responseReqId, fileStatus, body))
-                if (routed != FileWaiterRegistry.RouteResult.Unmatched) {
-                    Log.d("EP133MIDI", "MIDI META: routed FILE response reqId=$responseReqId -> $routed")
-                    return
+                if (routed == FileWaiterRegistry.RouteResult.Unmatched) {
+                    Log.w("EP133MIDI", "MIDI META: unrouted FILE response reqId=$responseReqId status=$fileStatus — dropped")
                 }
-                val bodyHex = body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133MIDI", "MIDI META: FILE cmd=5 inFlightCmd=$inFlightCmd responseReqId=$responseReqId awaitedFileReqId=$awaitedFileReqId body[${body.size}] $bodyHex")
-                if (inFlightCmd == -1) {
-                    Log.w("EP133MIDI", "MIDI META: unrouted file response — no op in flight, body[${body.size}] $bodyHex")
-                    return
-                }
-                // Unified reqId guard: ignore any file response whose reqId doesn't match what we
-                // are currently awaiting. This prevents a duplicate response (hardware sends each
-                // response twice due to duplicate MidiReceiver connections) from completing the
-                // NEXT op's deferred — the root cause of resolveNodeId("/sounds") returning null.
-                // awaitedFileReqId is set before every send and cleared after the awaited response.
-                if (awaitedFileReqId != -1 && responseReqId != awaitedFileReqId) {
-                    Log.w(
-                        "EP133MIDI",
-                        "MIDI META: ignoring stale/dup file response reqId=$responseReqId awaiting=$awaitedFileReqId — dropped",
-                    )
-                    return
-                }
-                // Clear awaitedFileReqId now that we matched and are about to consume the response.
-                // dispatchFileResponse completes the in-flight deferred; subsequent sends will set
-                // awaitedFileReqId again before the next send.
-                awaitedFileReqId = -1
-                dispatchFileResponse(inFlightCmd, body, responseReqId, fileStatus)
             }
         }
     }
 
-    /**
-     * Dispatch a FILE response to the matching in-flight handler. [fileCmd] is the op type
-     * determined by the caller from in-flight state (NOT from body[0] — device responses do not
-     * echo the subcommand). [body] is the WHOLE unpacked response body (no bytes stripped).
-     * [responseReqId] is the reqId extracted from the raw frame (frame[6] high bits + frame[7]).
-     *
-     * Hardware ground truth (2026-06-23):
-     *   FILE_INIT reply unpacked: `00 0C 00 00 02 00` (starts 0x00, not 0x01=INIT)
-     *   FILE_LIST reply unpacked: page-u16 then entries (starts with page word, not 0x04=LIST)
-     */
-    private fun dispatchFileResponse(fileCmd: Int, body: ByteArray, responseReqId: Int = -1, fileStatus: Int = -1) {
-        // Rename: parameter was historically called "payload" but is now always the whole body.
-        val payload = body
-        when (fileCmd) {
-            // METADATA GET/SET now correlate by reqId via fileWaiters (see getMetadataJson /
-            // setMetadata); the legacy path-form metadata branch is gone with them.
-            SysExProtocol.TE_SYSEX_FILE_LIST -> {
-                // Node-ID-form FILE_LIST now correlates by reqId via fileWaiters (see listNodeBody).
-                // Only the legacy path-form stats listing can still reach this branch.
-
-                // Legacy path-form FILE_LIST (Phase-4 queryDeviceStats /sounds listing).
-                // Body format is unverified on HW now — keep existing behaviour to avoid regressing
-                // stats path. Log the raw body for the next hardware capture session.
-                val hexDump = body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133APP", "FILE_LIST legacy path body[${body.size}] $hexDump")
-                val status = body.getOrNull(0)?.toInt()?.and(0xFF) ?: return
-                if (status == SysExProtocol.STATUS_OK || status == SysExProtocol.STATUS_SPECIFIC_SUCCESS_START) {
-                    fileListEntryCount++
-                    // Parse entry path from payload for BackupManager (path after status byte)
-                    val entryPath = if (payload.size > 1) {
-                        String(payload.copyOfRange(1, payload.size), Charsets.US_ASCII).trimEnd('\u0000')
-                    } else ""
-                    repositoryScope.launch {
-                        _fileListEntries.emit(FileListEntry(entryPath, fileListEntryCount))
-                    }
-                }
-                if (status == SysExProtocol.STATUS_OK) {
-                    pendingFileListCountDeferred?.complete(fileListEntryCount)
-                    pendingFileListCountDeferred = null
-                    fileListEntryCount = 0
-                }
-            }
-            SysExProtocol.TE_SYSEX_FILE_GET -> {
-                // Paged GET (getProjectArchive / getFileBytes) is reqId-routed via fileWaiters.
-                // The legacy single-chunk emit remains only for the not-yet-rebuilt BackupManager.
-                repositoryScope.launch { _fileChunks.emit(responseReqId to payload) }
-            }
-            SysExProtocol.TE_SYSEX_FILE_PUT -> {
-                if (transferInFlight) dispatchPagedPutResponse(payload, responseReqId, fileStatus)
-            }
-            // FILE_INFO is handled by reqId routing via fileWaiters (see getNodeInfo) and no
-            // longer falls through here.
-        }
-    }
-
-    // (dispatchPagedGetResponse removed — paged FILE_GET correlates per page by reqId via
-    //  fileWaiters; see getProjectArchive.)
-
-    /**
-     * Route a paged FILE_PUT response.
-     *
-     * Hardware-proven (2026-06-24): the device echoes the request reqId in each response.
-     * Per-page acks are matched by reqId — a mismatch means the response is stale or from
-     * a different op (e.g. a FILE_INFO status=4 fired by an unrelated event). Mismatched
-     * responses are logged and ignored so they cannot complete the wrong deferred.
-     *
-     * Protocol:
-     *   1. INIT sent → device responds with STATUS_OK or STATUS_SPECIFIC_SUCCESS_START.
-     *      This response completes [pendingPutInitDeferred] (true on success, false on error).
-     *   2. DATA pages sent one at a time, each awaited individually via [pendingPutAckDeferred].
-     *      The device responds with STATUS_OK or STATUS_SPECIFIC_SUCCESS_START per page;
-     *      both are treated as success so the caller can send the next page.
-     *   3. Final DATA (zero-length terminator) → device responds with STATUS_OK.
-     *      This is also routed through [pendingPutAckDeferred] (same machinery).
-     *
-     * Routing: if pendingPutInitDeferred is non-null, it owns the first response. Once it is
-     * cleared, each per-page deferred is freshly set by the caller before sending and consumed
-     * here (completed true on success, false/exceptionally on error).
-     *
-     * @param payload      Body of the PUT response (bytes AFTER the status — may be empty for a
-     *                     STATUS-ONLY ack such as a PUT DATA page ack from hardware).
-     * @param responseReqId reqId decoded from the raw frame by the caller (-1 if not decoded).
-     * @param fileStatus   Status byte already extracted by dispatchSysEx before unpacking the
-     *                     body. This is the authoritative status value — do NOT re-read from
-     *                     payload[0], which would be wrong when the body is empty.
-     */
-    private fun dispatchPagedPutResponse(payload: ByteArray, responseReqId: Int = -1, fileStatus: Int = -1) {
-        // Use the pre-extracted fileStatus. If caller passed -1 (legacy / direct call),
-        // fall back to payload[0] for backwards-compatibility only.
-        val status = if (fileStatus != -1) fileStatus else payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
-
-        // First response after PUT INIT: complete the init deferred.
-        // The INIT reqId is tracked by putSampleFile; we accept any response here because
-        // the INIT is the very first frame and no prior PUT responses can race against it.
-        val initAck = pendingPutInitDeferred
-        if (initAck != null) {
-            val ok = status == SysExProtocol.STATUS_OK ||
-                status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START
-            Log.d("EP133MIDI", "MIDI META: PUT INIT ack responseReqId=$responseReqId status=$status ok=$ok")
-            if (!initAck.isCompleted) {
-                if (ok) initAck.complete(true) else initAck.completeExceptionally(
-                    IllegalStateException("PUT INIT error status $status"),
-                )
-            }
-            pendingPutInitDeferred = null
-            return
-        }
-
-        // Per-page responses: validate reqId before completing the deferred.
-        // awaitedPutReqId is set by putSampleFile immediately before each sendMidi call.
-        val ack = pendingPutAckDeferred ?: return
-        if (responseReqId != -1 && awaitedPutReqId != -1 && responseReqId != awaitedPutReqId) {
-            Log.w(
-                "EP133MIDI",
-                "MIDI META: mismatched file response reqId=$responseReqId awaiting=$awaitedPutReqId — ignoring",
-            )
-            return
-        }
-        when {
-            status == SysExProtocol.STATUS_OK ||
-            status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START ->
-                if (!ack.isCompleted) ack.complete(true)
-            else ->
-                if (!ack.isCompleted) ack.complete(false)
-        }
-    }
+    // dispatchFileResponse / dispatchPagedPutResponse removed — every file response now routes by
+    // reqId through fileWaiters (see the TE_SYSEX_FILE branch in dispatchSysEx). The per-op body
+    // parsing lives in each awaiting op, not the dispatcher.
 
     /** Refresh device state from MIDIManager. */
     fun refreshDeviceState() {
