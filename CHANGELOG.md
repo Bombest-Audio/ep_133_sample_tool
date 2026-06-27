@@ -15,6 +15,11 @@ and opens the whole thing up as a community project.
 - Native **Android** app — Kotlin + Jetpack Compose. Pads, Beats, Sounds, Chords,
   Device, Projects, and Sample Import screens talking straight to the MIDI layer,
   with the original web app kept as a WebView fallback for backup/restore/sync.
+- A **Teenage-Engineering-grade redesign** of the whole Android UI — every screen
+  rebuilt on a hardware-faithful design system (faceplate grays, rubberized pads,
+  mono labels, hairline rules). Light and dark themes, plus an EP-133 ↔ EP-1320
+  rust SKU you flip right from the header.
+- **Signed release builds** for Android, so the APK installs clean as a sideload.
 - Native **iOS** app (Swift/SwiftUI WKWebView wrapper) and a **JUCE** AU/VST3
   plugin wrapper for the DAW.
 - **Import your own WAV samples over USB** straight to the device's `/sounds` — the
@@ -29,6 +34,18 @@ and opens the whole thing up as a community project.
 
 ### Changed
 - `package.json` now declares its MIT license and points at the Bombest-Audio org.
+
+### Fixed
+- Rebuilt how the app handles EP-133 file responses: every reply is now matched to
+  its request by request id, instead of guessing from in-flight flags. The old way
+  dropped reqId-matching replies under rapid or overlapping transfers — which
+  silently broke sample import, truncated backups, and forced active-group sync off.
+  It's race-proof now.
+- **Backups no longer truncate.** Multi-chunk sample files download in full instead
+  of stopping after the first chunk (older backups came out with barely more than a
+  metadata file).
+- Device→app **active-group sync** works again: tap a group on the hardware and the
+  app follows along.
 
 ## [1.2.0] - 2025-05-28
 
