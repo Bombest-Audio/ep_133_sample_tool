@@ -4,30 +4,19 @@ package com.ep133.sampletool.ui.`import`
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.FileUpload
-import androidx.compose.material3.Button
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedCard
-import androidx.compose.material3.Scaffold
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -38,14 +27,26 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.midi.SampleImportProgress
-import com.ep133.sampletool.ui.theme.TEColors
+import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
+import com.ep133.sampletool.ui.theme.Ep133SectionLabel
+import com.ep133.sampletool.ui.theme.LocalEP133Tokens
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -249,15 +250,24 @@ class SampleImportViewModel(
 // Screen composable
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Hard 2–3dp corner used across the faceplate UI (mirrors the design's `border-radius:2px`). */
+private val PanelRadius = RoundedCornerShape(3.dp)
+private val Mono = FontFamily.Monospace
+
+/** Number of page cells in the per-file SysEx progress strip (mirrors the design's 12-cell grid). */
+private const val PAGE_CELLS = 12
+
 /**
  * Import screen: pick audio files from device storage and load them onto the EP-133.
  *
- * Mirrors [DeviceScreen] for SnackbarHostState + LaunchedEffect + Scaffold structure.
- * Uses a [LazyColumn] of [StagedSampleRow] items, each showing per-file state +
- * [LinearProgressIndicator].
+ * The app shell ([com.ep133.sampletool.ui.theme.Ep133Scaffold]) owns the header + bottom nav;
+ * this renders the body only. A faceplate [Box] over [LocalEP133Tokens] backs a drop-zone hint,
+ * a [LazyColumn] of [StagedSampleRow] items (each a tactile paged-SysEx strip), a protocol note,
+ * and the pick/import primary action.
  */
 @Composable
 fun SampleImportScreen(viewModel: SampleImportViewModel) {
+    val t = LocalEP133Tokens.current
     val stagedSamples by viewModel.stagedSamples.collectAsState()
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -269,175 +279,292 @@ fun SampleImportScreen(viewModel: SampleImportViewModel) {
         }
     }
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-    ) { innerPadding ->
+    // Batch summary for the header readout: count of done / errored files.
+    val doneCount = stagedSamples.count { it.isDone() }
+    val errorCount = stagedSamples.count { it.isError() }
+    val headLabel = when {
+        stagedSamples.isEmpty() -> "IDLE"
+        errorCount > 0 -> "$errorCount ERR · $doneCount OK"
+        doneCount == stagedSamples.size -> "ALL DONE"
+        else -> "$doneCount / ${stagedSamples.size} OK"
+    }
+    val headColor = when {
+        errorCount > 0 -> t.accent
+        stagedSamples.isNotEmpty() && doneCount == stagedSamples.size -> t.live
+        else -> t.text3
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(t.bg)) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(horizontal = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(11.dp),
         ) {
-            // Header
-            Text(
-                text = "IMPORT SAMPLES",
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            // Offline-pick hint — conversion works offline, only upload needs the device.
-            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.FileUpload,
-                        contentDescription = null,
-                        modifier = Modifier.size(40.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        text = "Pick audio files to import onto your EP-133.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Text(
-                        text = "Conversion works offline. Connect your EP-133 via USB to upload.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Button(
-                        onClick = { viewModel.triggerPick() },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.FileUpload,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Pick Files")
-                    }
-                }
+            // Batch status readout — mono eyebrow + live/done/err tint.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Ep133SectionLabel("Sample Import", modifier = Modifier.weight(1f))
+                Text(
+                    text = headLabel,
+                    color = headColor,
+                    fontFamily = Mono,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 0.6.sp,
+                )
             }
 
-            // Staged list
-            if (stagedSamples.isNotEmpty()) {
+            // Drop / pick zone — dashed inset panel, conversion is offline-capable.
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(PanelRadius)
+                    .background(t.inset, PanelRadius)
+                    .dashedBorder(t.rule)
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 Text(
-                    text = "FILES (${stagedSamples.size})",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = "DROP OR PICK · RIFF/PCM · s16 · ≤20s",
+                    color = t.text3,
+                    fontFamily = Mono,
+                    fontSize = 10.sp,
+                    letterSpacing = 0.4.sp,
+                    textAlign = TextAlign.Center,
                 )
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "pick WAVs to upload",
+                    color = t.text,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                )
+            }
+
+            // Staged list — one tactile SysEx strip per file. Weighted so the action stays pinned.
+            if (stagedSamples.isNotEmpty()) {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
                     itemsIndexed(stagedSamples) { _, sample ->
                         StagedSampleRow(sample)
                     }
+                    item {
+                        ProtocolNote()
+                    }
+                }
+            } else {
+                // No files yet — keep the protocol note visible and absorb the slack.
+                Column(modifier = Modifier.weight(1f)) {
+                    ProtocolNote()
                 }
             }
+
+            // Primary action — pick files / re-pick to stage more.
+            Ep133PrimaryButton(
+                label = if (stagedSamples.isEmpty()) "PICK FILES" else "PICK MORE FILES",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 14.dp),
+                onClick = { viewModel.triggerPick() },
+            )
         }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 70.dp),
+        )
     }
 }
 
 /**
- * One row in the staged-import list: name, state label, LinearProgressIndicator,
- * and a check/error glyph + message on terminal states.
+ * One row in the staged-import list — a tactile paged-SysEx strip: name + state code, a 12-cell
+ * page grid that fills with accent (or terminal teal/accent), and a mono meta/percent footer.
  */
 @Composable
 private fun StagedSampleRow(sample: StagedSample) {
-    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+    val t = LocalEP133Tokens.current
+
+    val stateLabel = when (sample.state) {
+        StagedSampleState.Pending -> "PENDING"
+        StagedSampleState.Converting -> "CONVERTING"
+        StagedSampleState.Loading -> "LOADING"
+        StagedSampleState.Done -> "DONE"
+        StagedSampleState.Error -> "ERROR"
+    }
+    val stateColor = when (sample.state) {
+        StagedSampleState.Done -> t.live
+        StagedSampleState.Error -> t.accent
+        else -> t.text2
+    }
+    // Fill color for completed page cells; terminal states recolor the whole strip.
+    val fillColor = when (sample.state) {
+        StagedSampleState.Done -> t.live
+        StagedSampleState.Error -> t.accent
+        else -> t.accent
+    }
+    // How many cells are "filled". Converting shows a small lead-in; Loading tracks progress.
+    val filledCells = when (sample.state) {
+        StagedSampleState.Pending -> 0
+        StagedSampleState.Converting -> 1
+        StagedSampleState.Loading -> (sample.progress * PAGE_CELLS).toInt().coerceIn(0, PAGE_CELLS)
+        StagedSampleState.Done -> PAGE_CELLS
+        StagedSampleState.Error -> (sample.progress * PAGE_CELLS).toInt().coerceIn(0, PAGE_CELLS)
+    }
+    val pct = (sample.progress * 100).toInt().coerceIn(0, 100)
+    val footLabel = when (sample.state) {
+        StagedSampleState.Pending -> "QUEUED"
+        StagedSampleState.Converting -> "DECODE → s16"
+        StagedSampleState.Loading -> "$pct%"
+        StagedSampleState.Done -> "100%"
+        StagedSampleState.Error -> sample.errorMessage ?: "FAILED"
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(PanelRadius)
+            .background(t.panel, PanelRadius)
+            .border(1.dp, t.rule, PanelRadius)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        // File name + state code.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // State glyph
-                when (sample.state) {
-                    StagedSampleState.Done -> Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = "Done",
-                        modifier = Modifier.size(18.dp),
-                        tint = TEColors.Teal,
-                    )
-                    StagedSampleState.Error -> Icon(
-                        imageVector = Icons.Default.Error,
-                        contentDescription = "Error",
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.error,
-                    )
-                    else -> Box(modifier = Modifier.size(18.dp))
-                }
-                Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = sample.name,
+                modifier = Modifier.weight(1f),
+                color = t.text,
+                fontFamily = Mono,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = stateLabel,
+                color = stateColor,
+                fontFamily = Mono,
+                fontSize = 9.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.4.sp,
+            )
+        }
 
-                // File name
-                Text(
-                    text = sample.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-
-                // State label
-                Text(
-                    text = when (sample.state) {
-                        StagedSampleState.Pending -> "PENDING"
-                        StagedSampleState.Converting -> "CONVERTING"
-                        StagedSampleState.Loading -> "LOADING"
-                        StagedSampleState.Done -> "DONE"
-                        StagedSampleState.Error -> "ERROR"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = when (sample.state) {
-                        StagedSampleState.Done -> TEColors.Teal
-                        StagedSampleState.Error -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-            }
-
-            // Progress bar (indeterminate for active states, determinate otherwise)
-            if (sample.state != StagedSampleState.Pending) {
-                Spacer(modifier = Modifier.height(6.dp))
-                when (sample.state) {
-                    StagedSampleState.Converting, StagedSampleState.Loading -> {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    }
-                    StagedSampleState.Done -> {
-                        LinearProgressIndicator(
-                            progress = { 1f },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = TEColors.Teal,
-                        )
-                    }
-                    StagedSampleState.Error -> {
-                        LinearProgressIndicator(
-                            progress = { sample.progress },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                    else -> {}
-                }
-            }
-
-            // Error message
-            if (sample.state == StagedSampleState.Error && sample.errorMessage != null) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = sample.errorMessage,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+        // 12-cell paged-SysEx strip — each cell is a page ack.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            repeat(PAGE_CELLS) { i ->
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(7.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(if (i < filledCells) fillColor else t.inset),
                 )
             }
         }
+
+        // Meta on the left, percent / error on the right.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "SysEx · paged",
+                color = t.text3,
+                fontFamily = Mono,
+                fontSize = 9.sp,
+                letterSpacing = 0.3.sp,
+            )
+            Text(
+                text = footLabel,
+                modifier = Modifier.weight(1f, fill = false),
+                color = if (sample.isError()) t.accent else t.text3,
+                fontFamily = Mono,
+                fontSize = 9.sp,
+                letterSpacing = 0.3.sp,
+                textAlign = TextAlign.End,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
+}
+
+/** The paged-SysEx explainer — inset panel with a live accent rail and a mono "i" marker. */
+@Composable
+private fun ProtocolNote() {
+    val t = LocalEP133Tokens.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(PanelRadius)
+            .background(t.inset, PanelRadius)
+            .border(1.dp, t.rule, PanelRadius)
+            .accentRail(t.live)
+            .padding(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        Text(
+            text = "i",
+            color = t.live,
+            fontFamily = Mono,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            text = "paged SysEx — each page waits for its ack. terminator on finish, so it never " +
+                "wedges the device.",
+            color = t.text2,
+            fontSize = 11.5.sp,
+            lineHeight = 17.sp,
+        )
+    }
+}
+
+// ── Lightweight decoration modifiers ──────────────────────────────────────────
+
+/**
+ * A dashed hairline border around the drop zone — the design's `1px dashed`. Drawn with a dashed
+ * [Stroke] over the rounded shape so it reads as a pick affordance distinct from the solid panels.
+ */
+private fun Modifier.dashedBorder(color: Color): Modifier = this.drawBehind {
+    val stroke = Stroke(
+        width = 1.dp.toPx(),
+        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()), 0f),
+    )
+    val radius = 3.dp.toPx()
+    drawRoundRect(
+        color = color,
+        cornerRadius = CornerRadius(radius, radius),
+        style = stroke,
+    )
+}
+
+/**
+ * A 3dp colored left rail (the design's `border-left:3px solid`), drawn as a thin leading bar
+ * inside the panel's rounded clip.
+ */
+private fun Modifier.accentRail(color: Color): Modifier = this.drawBehind {
+    drawRect(
+        color = color,
+        size = androidx.compose.ui.geometry.Size(3.dp.toPx(), size.height),
+    )
 }

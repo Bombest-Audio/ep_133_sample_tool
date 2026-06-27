@@ -18,22 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Remove
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Usb
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedIconButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -46,9 +30,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 
@@ -57,7 +44,11 @@ import com.ep133.sampletool.domain.model.EP133Pads
 import com.ep133.sampletool.domain.sequencer.BeatsMode
 import com.ep133.sampletool.domain.sequencer.SeqState
 import com.ep133.sampletool.domain.sequencer.SequencerEngine
-import com.ep133.sampletool.ui.theme.TEColors
+import com.ep133.sampletool.ui.theme.Ep133Chip
+import com.ep133.sampletool.ui.theme.Ep133LiveBadge
+import com.ep133.sampletool.ui.theme.Ep133SectionLabel
+import com.ep133.sampletool.ui.theme.Ep133StatusDot
+import com.ep133.sampletool.ui.theme.LocalEP133Tokens
 import kotlinx.coroutines.launch
 
 class BeatsViewModel(
@@ -96,8 +87,15 @@ class BeatsViewModel(
     fun clearLiveGrid() = sequencer.clearLiveGrid()
 }
 
+/** Hard 3dp faceplate corner radius, matching the EP-133 component kit. */
+private val Radius = RoundedCornerShape(3.dp)
+
+/** Mono labels/codes — JetBrains Mono in the design, Monospace on device. */
+private val Mono = FontFamily.Monospace
+
 @Composable
 fun BeatsScreen(viewModel: BeatsViewModel) {
+    val t = LocalEP133Tokens.current
     val state by viewModel.state.collectAsState()
     val deviceState by viewModel.deviceState.collectAsState()
 
@@ -105,8 +103,9 @@ fun BeatsScreen(viewModel: BeatsViewModel) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
-                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .background(t.bg)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             TransportBar(
                 playing = state.playing,
@@ -116,18 +115,15 @@ fun BeatsScreen(viewModel: BeatsViewModel) {
                 onPause = viewModel::pause,
                 onStop = viewModel::stop,
                 onBpmAdjust = viewModel::adjustBpm,
-                onClear = if (state.mode == BeatsMode.EDIT) viewModel::clearTrack
-                          else viewModel::clearLiveGrid,
                 onModeChange = viewModel::setMode,
             )
-
-            Spacer(modifier = Modifier.height(12.dp))
 
             when (state.mode) {
                 BeatsMode.EDIT -> SequencerGrid(
                     state = state,
                     onToggleStep = viewModel::toggleStep,
                     onSelectTrack = viewModel::selectTrack,
+                    onClearTrack = viewModel::clearTrack,
                     modifier = Modifier.weight(1f),
                 )
                 BeatsMode.LIVE -> LiveSequencerGrid(
@@ -136,9 +132,11 @@ fun BeatsScreen(viewModel: BeatsViewModel) {
                 )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            StatusChips(state = state)
 
-            TrackInfoBar(state = state)
+            if (state.mode == BeatsMode.LIVE) {
+                CaptureBanner()
+            }
         }
 
         // Disconnected overlay — does not navigate away (D-18)
@@ -146,23 +144,20 @@ fun BeatsScreen(viewModel: BeatsViewModel) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)),
+                    .background(t.bg.copy(alpha = 0.88f)),
                 contentAlignment = Alignment.Center,
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Usb,
-                        contentDescription = null,
-                        modifier = Modifier.size(40.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Ep133StatusDot(t.text3, size = 12)
                     Text(
-                        text = "Connect EP-133 to use BEATS",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = "CONNECT EP-133 TO USE BEATS",
+                        color = t.text2,
+                        fontFamily = Mono,
+                        fontSize = 11.sp,
+                        letterSpacing = 0.8.sp,
                         textAlign = TextAlign.Center,
                     )
                 }
@@ -171,6 +166,7 @@ fun BeatsScreen(viewModel: BeatsViewModel) {
     }
 }
 
+// ── Mode toggle + BPM + transport in one faceplate row ────────────────────────
 @Composable
 private fun TransportBar(
     playing: Boolean,
@@ -180,110 +176,114 @@ private fun TransportBar(
     onPause: () -> Unit,
     onStop: () -> Unit,
     onBpmAdjust: (Int) -> Unit,
-    onClear: () -> Unit,
     onModeChange: (BeatsMode) -> Unit,
 ) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        tonalElevation = 2.dp,
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-            // Mode toggle
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                BeatsMode.entries.forEach { m ->
-                    FilterChip(
-                        selected = m == mode,
-                        onClick = { onModeChange(m) },
-                        label = { Text(m.name, style = MaterialTheme.typography.labelMedium) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = TEColors.Orange,
-                            selectedLabelColor = Color.White,
-                        ),
-                    )
-                }
-            }
+        // EDIT / LIVE segmented toggle
+        ModeTab(label = "EDIT", selected = mode == BeatsMode.EDIT) { onModeChange(BeatsMode.EDIT) }
+        ModeTab(label = "LIVE", selected = mode == BeatsMode.LIVE) { onModeChange(BeatsMode.LIVE) }
 
-            Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.weight(1f))
 
-            // Transport controls
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FilledIconButton(
-                    onClick = if (playing) onPause else onPlay,
-                    modifier = Modifier.size(48.dp),
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = TEColors.Orange,
-                        contentColor = Color.White,
-                    ),
-                ) {
-                    Icon(
-                        imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = if (playing) "Pause" else "Play",
-                        modifier = Modifier.size(28.dp),
-                    )
-                }
+        // BPM readout with steppers (mono)
+        StepButton(glyph = "–", onClick = { onBpmAdjust(-1) })
+        Text(
+            text = "$bpm",
+            modifier = Modifier.width(38.dp),
+            color = LocalEP133Tokens.current.text,
+            fontFamily = Mono,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
+        StepButton(glyph = "+", onClick = { onBpmAdjust(1) })
 
-                FilledIconButton(
-                    onClick = onStop,
-                    modifier = Modifier.size(48.dp),
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    ),
-                ) {
-                    Icon(Icons.Filled.Stop, contentDescription = "Stop", modifier = Modifier.size(24.dp))
-                }
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                OutlinedIconButton(onClick = { onBpmAdjust(-1) }, modifier = Modifier.size(40.dp)) {
-                    Icon(Icons.Filled.Remove, contentDescription = "Decrease BPM")
-                }
-
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = "$bpm",
-                        style = MaterialTheme.typography.displaySmall,
-                        modifier = Modifier.width(52.dp),
-                        textAlign = TextAlign.Center,
-                    )
-                    Text(
-                        text = "BPM",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                OutlinedIconButton(onClick = { onBpmAdjust(1) }, modifier = Modifier.size(40.dp)) {
-                    Icon(Icons.Filled.Add, contentDescription = "Increase BPM")
-                }
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                OutlinedIconButton(onClick = onClear, modifier = Modifier.size(40.dp)) {
-                    Icon(Icons.Filled.Clear, contentDescription = "Clear")
-                }
-            }
-        }
+        // Stop + play/pause transport
+        StepButton(glyph = "■", onClick = onStop)
+        PlayButton(playing = playing, onClick = if (playing) onPause else onPlay)
     }
 }
 
+@Composable
+private fun ModeTab(label: String, selected: Boolean, onClick: () -> Unit) {
+    val t = LocalEP133Tokens.current
+    val bg by animateColorAsState(
+        targetValue = if (selected) t.accent else t.panel,
+        animationSpec = tween(150),
+        label = "modeTabBg",
+    )
+    Box(
+        modifier = Modifier
+            .clip(Radius)
+            .background(bg, Radius)
+            .border(1.dp, t.rule, Radius)
+            .clickable(onClick = onClick)
+            .padding(vertical = 7.dp, horizontal = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = if (selected) t.onAccent else t.text2,
+            fontFamily = Mono,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.5.sp,
+        )
+    }
+}
+
+@Composable
+private fun StepButton(glyph: String, onClick: () -> Unit) {
+    val t = LocalEP133Tokens.current
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .clip(Radius)
+            .background(t.panel, Radius)
+            .border(1.dp, t.rule, Radius)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text = glyph, color = t.text, fontFamily = Mono, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun PlayButton(playing: Boolean, onClick: () -> Unit) {
+    val t = LocalEP133Tokens.current
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .clip(Radius)
+            .background(t.live, Radius)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = if (playing) "❚❚" else "▶",
+            color = t.onAccent,
+            fontFamily = Mono,
+            fontSize = 11.sp,
+        )
+    }
+}
+
+// ── EDIT grid — track rows of 16 step cells, mono track label + clear ─────────
 @Composable
 private fun SequencerGrid(
     state: SeqState,
     onToggleStep: (track: Int, step: Int) -> Unit,
     onSelectTrack: (Int) -> Unit,
+    onClearTrack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         state.tracks.forEachIndexed { trackIndex, track ->
             val isSelected = trackIndex == state.selectedTrack
@@ -293,6 +293,7 @@ private fun SequencerGrid(
                     .weight(1f)
                     .fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
             ) {
                 TrackLabel(
                     name = track.name,
@@ -317,6 +318,12 @@ private fun SequencerGrid(
                         )
                     }
                 }
+
+                // Per-row clear — wired to the selected-track clear handler.
+                ClearButton(
+                    enabled = isSelected,
+                    onClick = onClearTrack,
+                )
             }
         }
     }
@@ -328,21 +335,22 @@ private fun LiveSequencerGrid(
     state: SeqState,
     modifier: Modifier = Modifier,
 ) {
+    val t = LocalEP133Tokens.current
     val liveNotes = remember(state.liveGrid) { state.liveGrid.keys.sorted() }
 
     if (liveNotes.isEmpty()) {
         Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Ep133LiveBadge(label = "LISTENING")
                 Text(
-                    text = "LISTENING",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TEColors.Teal,
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Play a pattern on the EP-133",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = "PLAY A PATTERN ON THE EP-133",
+                    color = t.text3,
+                    fontFamily = Mono,
+                    fontSize = 9.5.sp,
+                    letterSpacing = 0.6.sp,
                 )
             }
         }
@@ -351,7 +359,7 @@ private fun LiveSequencerGrid(
 
     Column(
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         liveNotes.forEach { note ->
             val activeSteps = state.liveGrid[note] ?: emptySet()
@@ -365,6 +373,7 @@ private fun LiveSequencerGrid(
                     .weight(1f)
                     .fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
             ) {
                 TrackLabel(name = label, isSelected = false, onClick = {})
 
@@ -396,32 +405,38 @@ private fun TrackLabel(
     isSelected: Boolean,
     onClick: () -> Unit,
 ) {
-    val labelBg by animateColorAsState(
-        targetValue = if (isSelected) TEColors.OrangeContainer else Color.Transparent,
+    val t = LocalEP133Tokens.current
+    val labelColor by animateColorAsState(
+        targetValue = if (isSelected) t.accent else t.text2,
         animationSpec = tween(150),
-        label = "trackLabelBg",
+        label = "trackLabelColor",
     )
 
     Box(
         modifier = Modifier
-            .width(64.dp)
+            .width(46.dp)
             .fillMaxHeight()
-            .clip(RoundedCornerShape(6.dp))
-            .background(labelBg)
             .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 4.dp),
+            .padding(vertical = 4.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
         Text(
-            text = name,
-            style = MaterialTheme.typography.labelLarge,
-            color = if (isSelected) TEColors.Orange else MaterialTheme.colorScheme.onSurface,
+            text = name.uppercase(),
+            color = labelColor,
+            fontFamily = Mono,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.4.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
+/**
+ * One sequencer step: hard-cornered (3dp) box. Off = inset; on = accent. The current playhead
+ * gets a brighter accent fill plus a live ring; beat boundaries (every 4th) carry a firmer rule.
+ */
 @Composable
 private fun StepCell(
     isActive: Boolean,
@@ -430,14 +445,15 @@ private fun StepCell(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val t = LocalEP133Tokens.current
     val haptic = LocalHapticFeedback.current
 
     val fillColor by animateColorAsState(
         targetValue = when {
-            isActive && isPlayhead -> TEColors.Teal
-            isActive -> TEColors.Orange
-            isPlayhead -> TEColors.TealContainer
-            else -> MaterialTheme.colorScheme.surfaceVariant
+            isActive && isPlayhead -> t.live
+            isActive -> t.accent
+            isPlayhead -> t.live.copy(alpha = 0.22f)
+            else -> t.inset
         },
         animationSpec = tween(60),
         label = "stepFill",
@@ -445,9 +461,9 @@ private fun StepCell(
 
     val borderColor by animateColorAsState(
         targetValue = when {
-            isPlayhead -> TEColors.Teal
-            isBeatBoundary -> MaterialTheme.colorScheme.outline
-            else -> MaterialTheme.colorScheme.outlineVariant
+            isPlayhead -> t.live
+            isBeatBoundary -> t.text3
+            else -> t.rule
         },
         animationSpec = tween(60),
         label = "stepBorder",
@@ -455,15 +471,14 @@ private fun StepCell(
 
     val borderWidth = when {
         isPlayhead -> 2.dp
-        isBeatBoundary -> 1.dp
-        else -> 0.5.dp
+        else -> 1.dp
     }
 
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(4.dp))
-            .border(borderWidth, borderColor, RoundedCornerShape(4.dp))
-            .background(fillColor)
+            .clip(Radius)
+            .background(fillColor, Radius)
+            .border(borderWidth, borderColor, Radius)
             .clickable {
                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 onClick()
@@ -472,67 +487,79 @@ private fun StepCell(
 }
 
 @Composable
-private fun TrackInfoBar(state: SeqState) {
-    if (state.mode == BeatsMode.LIVE) {
-        val noteCount = state.liveGrid.size
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(8.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            tonalElevation = 1.dp,
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "LIVE CAPTURE",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TEColors.Teal,
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                Text(
-                    text = "$noteCount notes",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        return
+private fun ClearButton(enabled: Boolean, onClick: () -> Unit) {
+    val t = LocalEP133Tokens.current
+    Box(
+        modifier = Modifier
+            .size(22.dp)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "⌫",
+            color = if (enabled) t.text2 else t.text3,
+            fontFamily = Mono,
+            fontSize = 12.sp,
+        )
     }
+}
+
+// ── Status chip row — page / steps / selected-track / mode badge ──────────────
+@Composable
+private fun StatusChips(state: SeqState) {
+    val t = LocalEP133Tokens.current
 
     val selectedTrack by remember(state.selectedTrack, state.tracks) {
         derivedStateOf { state.tracks.getOrNull(state.selectedTrack) }
     }
 
-    Surface(
+    Row(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 1.dp,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = selectedTrack?.name ?: "",
-                style = MaterialTheme.typography.titleMedium,
-                color = TEColors.Orange,
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            if (selectedTrack != null) {
-                Text(
-                    text = "VEL",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "${selectedTrack!!.velocity}",
-                    style = MaterialTheme.typography.titleMedium,
-                )
+        Ep133Chip(label = "PAGE 1/1")
+        Ep133Chip(label = "16 STEPS")
+
+        if (state.mode == BeatsMode.EDIT) {
+            selectedTrack?.let { track ->
+                Ep133Chip(label = "${track.name} · ${track.velocity}", selected = true)
             }
+        } else {
+            Ep133Chip(label = "${state.liveGrid.size} NOTES", selected = true)
         }
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        if (state.mode == BeatsMode.LIVE) {
+            Ep133LiveBadge(label = "LIVE")
+        } else {
+            Ep133SectionLabel(text = "EDIT")
+        }
+    }
+}
+
+// ── LIVE capture banner — pulsing dot + read-only note ────────────────────────
+@Composable
+private fun CaptureBanner() {
+    val t = LocalEP133Tokens.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(Radius)
+            .background(t.inset, Radius)
+            .border(1.dp, t.rule, Radius)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        Ep133StatusDot(t.accent, size = 9)
+        Text(
+            text = "CAPTURE GRID — READ ONLY. play pads to record live; steps fill as they land.",
+            color = t.text2,
+            fontFamily = Mono,
+            fontSize = 10.sp,
+            letterSpacing = 0.3.sp,
+        )
     }
 }
