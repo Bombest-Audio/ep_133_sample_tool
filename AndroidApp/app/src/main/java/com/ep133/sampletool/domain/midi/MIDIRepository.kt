@@ -168,7 +168,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     // to bound response sizes. Reset to false on greet (new connection).
     @Volatile private var fileSessionInitialized = false
     private var deviceChunkSize: Int = 512
-    private var pendingFileInitDeferred: CompletableDeferred<Int>? = null
+    // (pendingFileInitDeferred removed — FILE_INIT now correlates by reqId via fileWaiters)
 
     // ── Paged project transfer state (Phase 4 GATE) ──
     // A paged GET/PUT keeps its request registered across STATUS_SPECIFIC_SUCCESS_START
@@ -197,8 +197,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     // ── Project enumeration state (Phase 4 Wave 2) ──
     // FILE_LIST by node ID returns concatenated directory entries; the dispatcher hands the
     // accumulated body to a CompletableDeferred keyed by nodeListInFlight.
-    private var pendingNodeListDeferred: CompletableDeferred<ByteArray>? = null
-    private val nodeListBuffer = java.io.ByteArrayOutputStream(512)
+    // (pendingNodeListDeferred / nodeListBuffer removed — node FILE_LIST correlates by reqId)
 
     // ── Metadata JSON round-trip state (Step 1 — active-group sync) ──
     // The nodeId-form METADATA GET response streams pages of JSON fragments; we accumulate
@@ -412,9 +411,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 // statsQueryInFlight / transferInFlight / ensureFileSessionInit). Determine the
                 // in-flight op from state and pass the WHOLE unpacked body to the handler.
                 val inFlightCmd = when {
-                    pendingFileInitDeferred != null              -> SysExProtocol.TE_SYSEX_FILE_INIT
                     metadataJsonInFlight || metadataSetInFlight  -> SysExProtocol.TE_SYSEX_FILE_METADATA
-                    pendingNodeListDeferred != null              -> SysExProtocol.TE_SYSEX_FILE_LIST
                     transferInFlight                             -> SysExProtocol.TE_SYSEX_FILE_PUT
                     pendingGetInitDeferred != null || pendingGetPages != null -> SysExProtocol.TE_SYSEX_FILE_GET
                     else                                         -> -1
@@ -475,21 +472,6 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         // Rename: parameter was historically called "payload" but is now always the whole body.
         val payload = body
         when (fileCmd) {
-            SysExProtocol.TE_SYSEX_FILE_INIT -> {
-                // Whole body passed. Session opening is what matters; chunkSize parse is
-                // approximate (parseFileInitResponse reads body[1..4], which with real HW
-                // capture `00 0C 00 00 02 00` yields a large number — tolerated). Never throw.
-                val hexDump = body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133MIDI", "MIDI META: FILE_INIT response body[${body.size}] $hexDump")
-                val chunkSize = try {
-                    SysExProtocol.parseFileInitResponse(body)
-                } catch (_: Exception) { 512 }
-                Log.d("EP133MIDI", "MIDI META: FILE_INIT negotiated chunkSize=$chunkSize (approx)")
-                deviceChunkSize = chunkSize
-                fileSessionInitialized = true
-                pendingFileInitDeferred?.complete(chunkSize)
-                pendingFileInitDeferred = null
-            }
             SysExProtocol.TE_SYSEX_FILE_METADATA -> {
                 // Payload is already unpacked (dispatcher unpacks the full body before splitting).
                 val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
@@ -556,18 +538,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 }
             }
             SysExProtocol.TE_SYSEX_FILE_LIST -> {
-                // Hardware ground truth: FILE_LIST response body = [page u16 BE][entries...].
-                // No status byte — the old body[0]-as-status routing was wrong.
-                val nodeDeferred = pendingNodeListDeferred
-                if (nodeDeferred != null) {
-                    // Skip the leading page u16 (2 bytes); pass raw entry data to parseFileListEntries.
-                    val entriesBody = if (body.size > 2) body.copyOfRange(2, body.size) else ByteArray(0)
-                    nodeListBuffer.write(entriesBody)
-                    nodeDeferred.complete(nodeListBuffer.toByteArray())
-                    pendingNodeListDeferred = null
-                    nodeListBuffer.reset()
-                    return
-                }
+                // Node-ID-form FILE_LIST now correlates by reqId via fileWaiters (see listNodeBody).
+                // Only the legacy path-form stats listing can still reach this branch.
 
                 // Legacy path-form FILE_LIST (Phase-4 queryDeviceStats /sounds listing).
                 // Body format is unverified on HW now — keep existing behaviour to avoid regressing
@@ -1162,23 +1134,20 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private suspend fun ensureFileSessionInitNoLock(): Boolean {
         if (fileSessionInitialized) return true
         val portId = _deviceState.value.outputPortId ?: return false
-        val deferred = CompletableDeferred<Int>()
-        pendingFileInitDeferred = deferred
-        val initReqId = nextFileReqId()
-        val frame = SysExProtocol.buildFileInitFrame(currentDeviceId, requestId = initReqId)
-        val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-        Log.d("EP133MIDI", "MIDI META: outbound FILE_INIT frame[${frame.size}] reqId=$initReqId $hexDump")
-        awaitedFileReqId = initReqId
-        midiManager.sendMidi(portId, frame)
-        val chunkSize = withTimeoutOrNull(FILE_INIT_TIMEOUT_MS) { deferred.await() }
-        return if (chunkSize != null) {
-            Log.d("EP133MIDI", "FILE_INIT: session initialized, chunkSize=$chunkSize")
-            // awaitedFileReqId already cleared by dispatcher on match.
+        val reqId = nextFileReqId()
+        val frame = SysExProtocol.buildFileInitFrame(currentDeviceId, requestId = reqId)
+        Log.d("EP133MIDI", "MIDI META: outbound FILE_INIT reqId=$reqId")
+        val resp = awaitFileOp(reqId, FileOpKind.INIT, portId, frame, FILE_INIT_TIMEOUT_MS)
+        return if (resp != null) {
+            // chunkSize parse is approximate (real HW capture `00 0C 00 00 02 00` yields a large
+            // number — tolerated). Session opening is what matters; never throw.
+            val chunkSize = try { SysExProtocol.parseFileInitResponse(resp.body) } catch (_: Exception) { 512 }
+            deviceChunkSize = chunkSize
+            fileSessionInitialized = true
+            Log.d("EP133MIDI", "FILE_INIT: session initialized, chunkSize=$chunkSize (approx)")
             true
         } else {
             Log.e("EP133MIDI", "FILE_INIT: timed out — proceeding anyway (hardware may not require it)")
-            pendingFileInitDeferred = null
-            if (awaitedFileReqId == initReqId) awaitedFileReqId = -1
             // Best-effort: if the device didn't respond, mark as initialized so we don't loop.
             fileSessionInitialized = true
             false
@@ -1212,28 +1181,10 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      */
     private suspend fun listNodeBody(nodeId: Int, requestId: Int): ByteArray? {
         val portId = _deviceState.value.outputPortId ?: return null
-        val deferred = CompletableDeferred<ByteArray>()
-        pendingNodeListDeferred = deferred
-        nodeListBuffer.reset()
-        return try {
-            val frame = SysExProtocol.buildFileListByNodeFrame(currentDeviceId, nodeId, requestId = requestId)
-            awaitedFileReqId = requestId
-            midiManager.sendMidi(portId, frame)
-            withTimeoutOrNull(FILE_LIST_TIMEOUT_MS) { deferred.await() }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e("EP133APP", "node FILE_LIST failed for node $nodeId", e)
-            null
-        } finally {
-            if (pendingNodeListDeferred === deferred) {
-                pendingNodeListDeferred = null
-                nodeListBuffer.reset()
-            }
-            // Clear the guard regardless: on match the dispatcher already cleared it;
-            // on timeout it is still set to the stale reqId and must be unblocked.
-            if (awaitedFileReqId == requestId) awaitedFileReqId = -1
-        }
+        val frame = SysExProtocol.buildFileListByNodeFrame(currentDeviceId, nodeId, requestId = requestId)
+        val resp = awaitFileOp(requestId, FileOpKind.LIST, portId, frame, FILE_LIST_TIMEOUT_MS) ?: return null
+        // Body = [page u16 BE][entries...]; skip the 2-byte page word to return raw entry data.
+        return if (resp.body.size > 2) resp.body.copyOfRange(2, resp.body.size) else ByteArray(0)
     }
 
     /**
