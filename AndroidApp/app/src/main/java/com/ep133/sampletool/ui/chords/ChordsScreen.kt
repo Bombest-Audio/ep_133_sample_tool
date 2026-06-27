@@ -1,16 +1,16 @@
 package com.ep133.sampletool.ui.chords
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,33 +21,33 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.ep133.sampletool.domain.model.ChordProgression
 import com.ep133.sampletool.domain.model.Vibe
 import com.ep133.sampletool.domain.model.resolveChordName
-import com.ep133.sampletool.ui.theme.TEColors
+import com.ep133.sampletool.ui.theme.Ep133Chip
+import com.ep133.sampletool.ui.theme.Ep133SectionLabel
+import com.ep133.sampletool.ui.theme.LocalEP133Tokens
 
 private val KEY_OPTIONS = listOf("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
 
-@OptIn(ExperimentalLayoutApi::class)
+/** Hard-corner radius mirroring the design's faceplate UI. */
+private val Radius = RoundedCornerShape(3.dp)
+
+/** Mono labels/codes (the design uses JetBrains Mono; Monospace is the on-device fallback). */
+private val Mono = FontFamily.Monospace
+
 @Composable
 fun ChordsScreen(
     viewModel: ChordsViewModel,
@@ -71,93 +71,59 @@ fun ChordsScreen(
     val selectedSound by viewModel.selectedSound.collectAsState()
     val showSoundPicker by viewModel.showSoundPicker.collectAsState()
 
+    val t = LocalEP133Tokens.current
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .background(t.bg)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // Sound selector row
+        // Sound selector row (shared composable — behavior preserved)
         SoundSelectorRow(
             sound = selectedSound,
             onClick = viewModel::openSoundPicker,
         )
 
-        Spacer(modifier = Modifier.height(4.dp))
-
-        // Offline notice — shown when no EP-133 connected
+        // Offline notice — shown when no EP-133 connected (shared composable)
         if (!deviceState.connected) {
             OfflineNotice()
-            Spacer(modifier = Modifier.height(4.dp))
         }
 
-        HorizontalDivider(modifier = Modifier.padding(bottom = 8.dp))
-
-        Text(
-            text = "KEY",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-        )
-
+        // Key selector — horizontal chip row
+        Ep133SectionLabel("KEY")
         LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            contentPadding = PaddingValues(end = 4.dp),
         ) {
             items(KEY_OPTIONS) { key ->
-                FilterChip(
+                Ep133Chip(
+                    label = key,
                     selected = key == keyRoot,
                     onClick = { viewModel.setKey(key) },
-                    label = {
-                        Text(
-                            text = key,
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = TEColors.Orange,
-                        selectedLabelColor = Color.White,
-                    ),
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Text(
-            text = "VIBES",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-        )
-
+        // Vibe filter chips — horizontal scroll
+        Ep133SectionLabel("VIBES")
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(horizontal = 4.dp),
+            contentPadding = PaddingValues(end = 4.dp),
         ) {
             items(Vibe.entries.toList()) { vibe ->
-                val selected = vibe in selectedVibes
-                FilterChip(
-                    selected = selected,
+                Ep133Chip(
+                    label = vibe.label,
+                    selected = vibe in selectedVibes,
                     onClick = { viewModel.toggleVibe(vibe) },
-                    label = {
-                        Text(
-                            text = vibe.label,
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = TEColors.Orange,
-                        selectedLabelColor = Color.White,
-                    ),
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
-
+        // Progression cards
         LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.weight(1f),
         ) {
             items(progressions, key = { it.id }) { progression ->
@@ -172,18 +138,13 @@ fun ChordsScreen(
             }
 
             item {
-                FilledTonalButton(
-                    onClick = { viewModel.selectProgression(ChordProgression("custom", "My Progression", emptyList(), emptySet())) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
-                    shape = RoundedCornerShape(12.dp),
-                ) {
-                    Text(
-                        text = "+ BUILD YOUR OWN",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                }
+                BuildCustomButton(
+                    onClick = {
+                        viewModel.selectProgression(
+                            ChordProgression("custom", "My Progression", emptyList(), emptySet()),
+                        )
+                    },
+                )
             }
         }
     }
@@ -197,7 +158,10 @@ fun ChordsScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+/**
+ * One progression row: faceplate panel card with a play/stop circle, the progression name, a mono
+ * roman-numeral → chord-name line, and a bar-count tag. Mirrors the design's progression cards.
+ */
 @Composable
 private fun ProgressionCard(
     progression: ChordProgression,
@@ -207,78 +171,111 @@ private fun ProgressionCard(
     onStop: () -> Unit,
     onSelect: () -> Unit,
 ) {
-    ElevatedCard(
-        onClick = onSelect,
-        shape = RoundedCornerShape(12.dp),
+    val t = LocalEP133Tokens.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(Radius)
+            .background(t.panel2, Radius)
+            .border(1.dp, t.rule, Radius)
+            .clickable(onClick = onSelect)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
     ) {
-        Row(
+        // Play / stop circle
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.Top,
+                .size(38.dp)
+                .clip(RoundedCornerShape(50))
+                .background(if (isThisPlaying) t.live else t.accent)
+                .clickable(onClick = if (isThisPlaying) onStop else onPlay),
+            contentAlignment = Alignment.Center,
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = progression.name,
-                    style = MaterialTheme.typography.titleMedium,
-                )
+            Icon(
+                imageVector = if (isThisPlaying) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                contentDescription = if (isThisPlaying) "Stop" else "Play",
+                tint = if (isThisPlaying) t.liveInk else t.onAccent,
+                modifier = Modifier.size(20.dp),
+            )
+        }
 
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Text(
-                    text = progression.degrees.joinToString(" \u2192 ") { it.roman },
-                    style = MaterialTheme.typography.displaySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                Text(
-                    text = progression.degrees.joinToString(" \u2192 ") { resolveChordName(it, keyRoot) },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    progression.vibes.forEach { vibe ->
-                        AssistChip(
-                            onClick = {},
-                            label = {
-                                Text(
-                                    text = vibe.label,
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
-                            },
-                            colors = AssistChipDefaults.assistChipColors(
-                                containerColor = TEColors.OrangeContainer,
-                                labelColor = TEColors.Orange,
-                            ),
-                        )
-                    }
-                }
+        // Name + roman / chord-name line
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = progression.name,
+                color = t.text,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                letterSpacing = (-0.1).sp,
+            )
+            val line = if (progression.degrees.isEmpty()) {
+                "EMPTY"
+            } else {
+                progression.degrees.joinToString("  →  ") { resolveChordName(it, keyRoot) }
             }
+            Text(
+                text = line,
+                color = t.text2,
+                fontFamily = Mono,
+                fontSize = 9.5.sp,
+                letterSpacing = 0.2.sp,
+            )
+        }
 
-            Spacer(modifier = Modifier.width(8.dp))
+        // Bar-count tag
+        Text(
+            text = "${progression.degrees.size} BAR",
+            color = t.text3,
+            fontFamily = Mono,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 0.5.sp,
+        )
+    }
+}
 
-            FilledIconButton(
-                onClick = if (isThisPlaying) onStop else onPlay,
-                modifier = Modifier.size(44.dp),
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = if (isThisPlaying) TEColors.Teal else TEColors.Orange,
-                    contentColor = Color.White,
-                ),
-            ) {
-                Icon(
-                    imageVector = if (isThisPlaying) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                    contentDescription = if (isThisPlaying) "Stop" else "Play",
-                    modifier = Modifier.size(24.dp),
-                )
-            }
+/** Dashed "build custom" entry that opens the chord builder. Mirrors the design's dashed CTA. */
+@Composable
+private fun BuildCustomButton(onClick: () -> Unit) {
+    val t = LocalEP133Tokens.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp)
+            .clip(Radius)
+            .background(t.inset, Radius)
+            .border(
+                width = 1.dp,
+                color = t.rule,
+                shape = Radius,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            text = "build custom",
+            color = t.text,
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "CHORD BUILDER",
+                color = t.accent,
+                fontFamily = Mono,
+                fontSize = 10.sp,
+                letterSpacing = 0.6.sp,
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = "→",
+                color = t.accent,
+                fontFamily = Mono,
+                fontSize = 10.sp,
+            )
         }
     }
 }
