@@ -33,7 +33,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -165,13 +169,20 @@ fun PadsScreen(viewModel: PadsViewModel) {
         }
     }
 
-    // Device→app active-group poll intentionally not running yet. It's blocked on the
-    // dispatch-correlation refactor (260623-w5i / backlog 999.4): the drill-down
-    // (resolve /projects → active project → groups) hits an async response-correlation race
-    // where the dispatcher drops the (reqId-matching) LIST(/projects) reply, so the poll
-    // times out 5s/cycle and would stall imports. Re-add a lifecycle-scoped
-    // repeatOnLifecycle(RESUMED) loop calling viewModel.refreshActiveGroupFromDevice() once
-    // responses route by a reqId→deferred map. No idle wake-up loop until then.
+    // Device→app active-group sync: while the screen is RESUMED, poll the device every 1500 ms
+    // and reconcile the selected group with the hardware. Unblocked by the reqId→waiter dispatcher
+    // refactor (backlog 999.4) — file responses now route by reqId, so the metadata drill-down
+    // (resolve /projects → active project → groups) no longer drops replies or stalls imports.
+    // The repo guards re-entrancy with activeGroupPollInFlight, so a slow tick can't pile up.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) {
+                delay(1500)
+                viewModel.refreshActiveGroupFromDevice()
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
