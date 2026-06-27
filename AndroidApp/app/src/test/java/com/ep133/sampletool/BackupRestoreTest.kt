@@ -73,13 +73,12 @@ class BackupRestoreTest {
             chunkIndex = 0,
             requestId = 1,
         )
-        // frame[8] = CMD_PRODUCT_SPECIFIC
-        assertEquals(SysExProtocol.CMD_PRODUCT_SPECIFIC, frame[8].toInt() and 0x7F)
-        // Unpack payload: byte[0] = TE_SYSEX_FILE, byte[1] = TE_SYSEX_FILE_GET (3)
+        // Hardware-verified (2026-06-23): command = TE_SYSEX_FILE (5), NOT CMD_PRODUCT_SPECIFIC (127).
+        assertEquals("frame[8] = TE_SYSEX_FILE (5)", SysExProtocol.TE_SYSEX_FILE, frame[8].toInt() and 0x7F)
+        // Body starts at subcommand (no leading TE_SYSEX_FILE byte): byte[0] = TE_SYSEX_FILE_GET (3)
         val packedPayload = frame.copyOfRange(9, frame.size - 1)
         val unpacked = SysExProtocol.unpack7bit(packedPayload)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE, unpacked[0].toInt() and 0xFF)
-        assertEquals(SysExProtocol.TE_SYSEX_FILE_GET, unpacked[1].toInt() and 0xFF)
+        assertEquals("body[0] = TE_SYSEX_FILE_GET (3)", SysExProtocol.TE_SYSEX_FILE_GET, unpacked[0].toInt() and 0xFF)
     }
 
     @Ignore("restore flow requires wiring BackupManager to a fake MIDIRepository that tracks sendRawBytes calls — deferred for Phase 4 test coverage")

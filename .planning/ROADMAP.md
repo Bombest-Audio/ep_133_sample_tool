@@ -11,6 +11,17 @@
 - [x] **Phase 2: Android Device Management** — Real device stats, full backup/restore, performance screen hardening (completed 2026-03-30)
 - [ ] **Phase 3: iOS Native UI** — Build all four SwiftUI screens mirroring the Android Compose screens
 - [ ] **Phase 4: Project Management** — Project browser, project-level backup, backup library, share sheet
+- [ ] **Phase 5: Sample Import (Android)** — Import audio files via SAF, convert to EP-133 WAV, load onto the device over the Phase 4 FILE_PUT stack
+
+## Backlog
+
+Unscheduled ideas (999.x). Promote into a milestone via `/gsd:review-backlog`.
+
+- [ ] **Phase 999.2: Desktop Splice-folder sync (Electron)** — On the desktop/Electron target, watch the user's local Splice folder (`~/Splice` macOS, `C:\Documents\Splice` Windows) and sync new samples onto the EP-133. Desktop-only and ToS-clean (reads the user's own local files — no Splice API). This is where a true "Splice sync" belongs; Android can't reach Splice without violating ToS (see 05-RESEARCH.md). Captured 2026-06-20.
+
+- [ ] **Phase 999.3: Firmware update — detect, download, flash** — Let the app check for newer EP-133/EP-1320 firmware, download it, and flash the device. The greet response already reports the installed versions (`sw_version`, `bl_version` — see `docs/ep133-sysex-protocol.md`), so the app can compare the device's `sw_version` against the latest published release and surface an "update available" prompt. Flashing rides the same TE SysEx stack we reverse-engineered: the reference web tool (`data/index.js`) has an `ensureDeviceInBootloader` routine plus a bootloader/firmware-write path — research that to map the bootloader-enter + image-transfer protocol (likely a variant of the paged FILE_PUT already implemented). **Open questions for research:** where firmware images are hosted and how to detect "latest" (TE has no public API — may need to observe what the web tool fetches), the exact bootloader-entry + flash sequence, image format/signing, and recovery/bricking safety. Highest-risk feature — a bad flash can brick the device, so it needs strong guards, post-flash verification, and a documented recovery path. Cross-platform wherever USB-MIDI works (desktop/Android; iOS if USB-MIDI permits). Captured 2026-06-25 (new firmware dropped today).
+
+- [ ] **Phase 999.4: SysEx dispatch — route responses by reqId→deferred map** — Refactor `MIDIRepository`'s file-response dispatcher to correlate each incoming response to its exact request via a `reqId → waiter(deferred + op-type)` map, instead of inferring the in-flight op from mutable global flags (`pendingNodeListDeferred`, `metadataJsonInFlight`, `transferInFlight`, single `awaitedFileReqId`, …). **Why:** hardware-proven race — during rapid sequential file ops (e.g. the active-group drill-down), the device answers correctly and the reqId even matches, but the dispatcher reads the global flags at a moment they're momentarily null/stale and drops the response (`inFlightCmd=-1`), so the op times out. Routing by reqId is the reference tool's model (`sendSysExFileRequest`) and is race-proof. **Unblocks active-group sync** (currently disabled in PadsScreen) and hardens every file op. **Risk:** touches the dispatch core the working sample-import/PUT path rides — must keep all PUT/import tests green and re-verify import on hardware after. Then re-enable the Pads active-group poll and confirm group tracking + finish the `/projects/<name>/groups → A–D` mapping (the active-PROJECT lookup already works; only the groups hop was blocked by this race). Captured 2026-06-25.
 
 ## Phase Details
 
@@ -82,26 +93,53 @@ Plans:
 
 ---
 
-### Phase 4: Project Management
-**Goal**: Users on both platforms can browse EP-133 project slots, save individual project backups, manage a backup library, and share backup files.
-**Depends on**: Phase 2, Phase 3
+### Phase 4: Project Management (Android slice)
+**Goal**: Android users can browse the EP-133's 9 project slots, back up a single project to phone storage, manage a backup library, and share backup files via the system share sheet.
+**Scope note**: Narrowed to the **Android slice only** per 04-CONTEXT.md. The iOS half (SwiftUI Projects screen, fileExporter/fileImporter, ShareLink, security-scoped resources, custom UTType) is deferred to a later phase.
+**Depends on**: Phase 2
 **Requirements**: PROJ-01, PROJ-02, PROJ-03, PROJ-04
 
 ### Success Criteria
 1. User can open a Projects screen and see all 9 EP-133 project slots with their names and a content summary.
 2. User can back up a single project (not a full device dump) to a named file on phone storage.
 3. User can open a backup library and see all previously saved backups as a scrollable list with file names and timestamps.
-4. User can share any backup file from the library via the iOS Share Sheet or Android share intent — including to AirDrop, Files, Google Drive, or the desktop Electron app.
+4. User can share any backup file from the library via the Android share intent — including to AirDrop, Files, Google Drive, or the desktop Electron app.
 
-### Plans
-- Research EP-133 project-level SysEx boundary — determine what constitutes one project in the dump format and whether partial restore is supported; document in `.planning/research/SYSEX_PROTOCOL.md`
-- Build project browser on Android — enumerate 9 project slots via SysEx; `ProjectsScreen` Compose UI with slot cards
-- Implement project-level backup/restore on Android — single-project SysEx dump to file; restore with slot targeting
-- Build iOS project management — `ProjectManager.swift`; SwiftUI Projects screen; `fileExporter`/`fileImporter` with custom `UTType` (`com.ep133sampletool.project`); security-scoped resource `defer` pattern
-- Build backup library and share sheet on both platforms — scrollable backup list with timestamps; Android `ShareCompat`; iOS `ShareLink`
+**Plans:** 4 plans (4 waves)
+
+Plans:
+- [x] 04-project-management-01-PLAN.md — Wave 0: six unit-test scaffolds + FileProvider manifest/path config
+- [x] 04-project-management-02-PLAN.md — Wave 1 (gate): real multi-page INIT/DATA FILE_GET/PUT in SysExProtocol + MIDIRepository (replaces Phase 2's broken single-chunk model)
+- [x] 04-project-management-03-PLAN.md — Wave 2: /projects node resolution + 9-slot enumeration + ProjectBackupManager single-project backup/restore (hardware-gated)
+- [ ] 04-project-management-04-PLAN.md — Wave 3: ProjectsScreen browser + backup library + FileProvider/ShareCompat share + nav registration
 
 **UI hint**: yes
-**Dependencies**: Phase 2, Phase 3
+**Dependencies**: Phase 2
+
+---
+
+### Phase 5: Sample Import (Android)
+**Goal**: An Android user can import audio files from phone storage, have them converted to the EP-133's sample format, and loaded onto a connected device — no desktop required.
+**Origin**: Reshaped from "Splice Sample Sync" after research (05-RESEARCH.md) found no ToS-clean programmatic Splice path on Android. The literal Splice-folder *sync* is backlogged to the desktop/Electron target (Phase 999.2). Phase 5 ships the user-driven import that IS buildable on Android.
+**Depends on**: Phase 4 (reuses the file-transfer SysEx stack — `ProjectBackupManager` / multi-page `FILE_PUT`, re-targeted from `/projects` to `/sounds`)
+**Requirements**: SAMPLE-01, SAMPLE-02, SAMPLE-03, SAMPLE-04
+
+### Success Criteria
+1. User can pick one or more audio files from phone storage via the SAF file picker.
+2. Imported audio is converted to 16-bit PCM WAV @ 46875 Hz (mono or stereo), the EP-133's expected format.
+3. Converted samples are loaded onto the connected EP-133 over the existing paged FILE_PUT stack (to `/sounds`).
+4. User sees an import screen with per-file progress and a clear success/failure result for each sample.
+
+**Plans:** 4 plans (4 waves)
+
+Plans:
+- [x] 05-splice-sample-sync-01-PLAN.md — Wave 0: four unit-test scaffolds (WavEncoder/Resampler/SampleImport/SampleImportViewModel)
+- [x] 05-splice-sample-sync-02-PLAN.md — Wave 1: pure conversion core — WavEncoder (16-bit RIFF @ 46875) + Resampler + pass-through
+- [x] 05-splice-sample-sync-03-PLAN.md — Wave 2: AudioDecoder (MediaCodec) + MIDIRepository.putSampleFile (paged /sounds PUT) + SampleImportManager (hardware-gated)
+- [x] 05-splice-sample-sync-04-PLAN.md — Wave 3: SampleImportScreen + ViewModel + SAF multi-pick + Import nav/MainActivity wiring (hardware-gated)
+
+**UI hint**: yes
+**Dependencies**: Phase 4
 
 ---
 
@@ -112,8 +150,9 @@ Plans:
 | 1. MIDI Foundation | 3/1 | Complete   | 2026-03-28 |
 | 2. Android Device Management | 1/1 | Complete   | 2026-03-30 |
 | 3. iOS Native UI | 0/4 | Not started | — |
-| 4. Project Management | 0/5 | Not started | — |
+| 4. Project Management | 4/4 | Complete (Android slice) — hardware UAT pending | 2026-06-20 |
+| 5. Sample Import (Android) | 4/4 | Complete (Android slice) — hardware UAT pending | 2026-06-20 |
 
 ---
 *Roadmap created: 2026-03-28*
-*Last updated: 2026-03-30 — Phase 2 plan created*
+*Last updated: 2026-06-20 — Phase 5 complete (Android slice; SAMPLE-01..04 verified, hardware UAT pending)*

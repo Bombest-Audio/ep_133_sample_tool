@@ -1,0 +1,31 @@
+name: Feature request
+description: An idea for something the tool should do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea? Lay it out. No idea's too small.
+  - type: textarea
+    id: idea
+    attributes:
+      label: What do you want it to do?
+      description: Describe the feature and what you'd use it for.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why does it matter?
+      description: What's the workflow this unlocks, or the pain it removes?
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Which platform(s)?
+      multiple: true
+      options:
+        - Desktop (Electron)
+        - Android
+        - iOS
+        - JUCE plugin
+        - All of them

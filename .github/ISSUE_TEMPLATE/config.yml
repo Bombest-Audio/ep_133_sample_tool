@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue
+    url: https://github.com/Bombest-Audio/ep_133_sample_tool/blob/main/SECURITY.md
+    about: Found a vulnerability? Don't open a public issue — read this first.
+  - name: Teenage Engineering hardware support
+    url: https://teenage.engineering/support
+    about: Questions about the EP-133 device itself go to TE, not here.

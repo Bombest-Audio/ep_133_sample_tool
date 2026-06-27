@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider path config for sharing project backup .tar files.
+     Scoped to the backups/ subdir only (no root-path / external-path wildcard)
+     per the Phase 4 threat register (T-04-01, T-04-02). -->
+<paths>
+    <!-- Primary: getExternalFilesDir("backups") -->
+    <external-files-path
+        name="backups"
+        path="backups/" />
+    <!-- Pitfall 6 fallback: filesDir/backups when external storage is unavailable -->
+    <files-path
+        name="backups_internal"
+        path="backups/" />
+</paths>

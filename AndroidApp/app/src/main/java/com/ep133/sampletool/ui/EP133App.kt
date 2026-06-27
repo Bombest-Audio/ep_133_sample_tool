@@ -10,6 +10,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.platform.LocalContext
 import com.ep133.sampletool.SampleManagerActivity
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MusicNote
@@ -46,9 +48,13 @@ import com.ep133.sampletool.ui.device.DeviceScreen
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsScreen
 import com.ep133.sampletool.ui.pads.PadsViewModel
+import com.ep133.sampletool.ui.projects.ProjectsScreen
+import com.ep133.sampletool.ui.projects.ProjectsViewModel
 import com.ep133.sampletool.ui.sounds.SoundsScreen
 import com.ep133.sampletool.ui.sounds.SoundsViewModel
 import com.ep133.sampletool.ui.theme.EP133Theme
+import com.ep133.sampletool.ui.`import`.SampleImportScreen
+import com.ep133.sampletool.ui.`import`.SampleImportViewModel
 
 private enum class NavRoute(
     val route: String,
@@ -59,7 +65,9 @@ private enum class NavRoute(
     BEATS("beats", "BEATS", Icons.Default.ViewWeek),
     SOUNDS("sounds", "SOUNDS", Icons.Default.LibraryMusic),
     CHORDS("chords", "CHORDS", Icons.Default.MusicNote),
+    PROJECTS("projects", "PROJECTS", Icons.Default.FolderOpen),
     DEVICE("device", "DEVICE", Icons.Default.Usb),
+    IMPORT("import", "IMPORT", Icons.Default.FileUpload),
 }
 
 @Composable
@@ -68,7 +76,9 @@ fun EP133App(
     beatsViewModel: BeatsViewModel,
     soundsViewModel: SoundsViewModel,
     chordsViewModel: ChordsViewModel,
+    projectsViewModel: ProjectsViewModel,
     deviceViewModel: DeviceViewModel,
+    sampleImportViewModel: SampleImportViewModel,
     isConnected: Boolean = false,
 ) {
     EP133Theme {
@@ -152,12 +162,16 @@ fun EP133App(
                 composable(NavRoute.BEATS.route) { BeatsScreen(beatsViewModel) }
                 composable(NavRoute.SOUNDS.route) { SoundsScreen(soundsViewModel) }
                 composable(NavRoute.CHORDS.route) { ChordsScreen(chordsViewModel) }
+                composable(NavRoute.PROJECTS.route) { ProjectsScreen(projectsViewModel) }
                 composable(NavRoute.DEVICE.route) {
                     val context = LocalContext.current
                     DeviceScreen(
                         viewModel = deviceViewModel,
                         onNavigateToWebView = { SampleManagerActivity.launch(context) },
                     )
+                }
+                composable(NavRoute.IMPORT.route) {
+                    SampleImportScreen(sampleImportViewModel)
                 }
             }
         }

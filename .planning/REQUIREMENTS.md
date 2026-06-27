@@ -28,10 +28,19 @@
 
 ### Projects
 
-- [ ] **PROJ-01**: User can browse all 9 EP-133 project slots with project names and content overview
-- [ ] **PROJ-02**: User can backup a single project (not full device) to phone storage as a named file
-- [ ] **PROJ-03**: Backup library shows all saved backups as a scrollable list with timestamps and file names
-- [ ] **PROJ-04**: User can share any backup file via iOS Share Sheet or Android share intent (AirDrop, Files, etc.)
+- [x] **PROJ-01**: User can browse all 9 EP-133 project slots with project names and content overview
+- [x] **PROJ-02**: User can backup a single project (not full device) to phone storage as a named file
+- [x] **PROJ-03**: Backup library shows all saved backups as a scrollable list with timestamps and file names
+- [x] **PROJ-04**: User can share any backup file via iOS Share Sheet or Android share intent (AirDrop, Files, etc.)
+
+### Sample Import (Android)
+
+> Phase 5. Reshaped from "Splice sync": no ToS-clean programmatic Splice path exists on Android (see 05-RESEARCH.md), so Phase 5 is user-driven file import. A true Splice-folder sync is backlogged to the desktop/Electron target.
+
+- [ ] **SAMPLE-01**: User can pick one or more audio files from phone storage via the Android file picker (SAF)
+- [ ] **SAMPLE-02**: Imported audio is converted to the EP-133's sample format (16-bit PCM WAV @ 46875 Hz, mono or stereo)
+- [ ] **SAMPLE-03**: Converted samples are loaded onto the connected EP-133 over the existing paged FILE_PUT stack (to /sounds)
+- [ ] **SAMPLE-04**: User sees an import screen with per-file progress and a clear success/failure result for each sample
 
 ### iOS Native UI
 
@@ -92,10 +101,10 @@ Updated after roadmap creation: 2026-03-28
 | DEV-02 | Phase 2 | Complete |
 | DEV-03 | Phase 2 | Complete |
 | DEV-04 | Phase 2 | Complete |
-| PROJ-01 | Phase 4 | Pending |
-| PROJ-02 | Phase 4 | Pending |
-| PROJ-03 | Phase 4 | Pending |
-| PROJ-04 | Phase 4 | Pending |
+| PROJ-01 | Phase 4 | Complete |
+| PROJ-02 | Phase 4 | Complete |
+| PROJ-03 | Phase 4 | Complete |
+| PROJ-04 | Phase 4 | Complete |
 | IOS-01 | Phase 3 | Pending |
 | IOS-02 | Phase 3 | Pending |
 | IOS-03 | Phase 3 | Pending |

@@ -67,7 +67,10 @@ class PadsViewModel(private val midi: MIDIRepository) : ViewModel() {
     val pressedIndices: StateFlow<Set<Int>> = _pressedIndices.asStateFlow()
 
     init {
-        // Listen for incoming MIDI: auto-switch group + flash the matching pad
+        // Listen for incoming MIDI: auto-switch group + flash the matching pad.
+        // The 0xC0 Program-Change group branch has been removed — the device does not
+        // send Program Change for group changes; real group sync goes through FILE_METADATA.
+        // The 0x90 noteOn auto-switch is retained (confirmed on hardware).
         viewModelScope.launch {
             midi.incomingMidi.collect { event ->
                 when {
@@ -86,25 +89,36 @@ class PadsViewModel(private val midi: MIDIRepository) : ViewModel() {
                             _pressedIndices.value = _pressedIndices.value - index
                         }
                     }
-                    event.status == 0xC0 -> {
-                        // KO-II group button: Program Change 0=A, 1=B, 2=C, 3=D
-                        val group = PadChannel.entries.getOrNull(event.note) ?: return@collect
-                        if (group != _selectedChannel.value) {
-                            _selectedChannel.value = group
-                            _pressedIndices.value = emptySet()
-                        }
-                    }
                 }
             }
         }
     }
 
     fun selectChannel(channel: PadChannel) {
-        if (channel != _selectedChannel.value) {
-            midi.programChange(channel.ordinal)
-        }
+        // Optimistic: update UI immediately so the tap feels instant.
+        val changed = channel != _selectedChannel.value
         _selectedChannel.value = channel
         _pressedIndices.value = emptySet()
+        // Async: propagate to device via FILE_METADATA SET — only when the group
+        // actually changed, so re-tapping the active chip doesn't spam redundant writes.
+        if (changed) viewModelScope.launch { midi.setActiveGroup(channel.ordinal) }
+    }
+
+    /**
+     * Poll the device for the current active group and reconcile with the UI.
+     * Called from the PadsScreen RESUMED lifecycle loop every 1500 ms.
+     * No-op if the device is not connected or returns null.
+     */
+    fun refreshActiveGroupFromDevice() {
+        viewModelScope.launch {
+            android.util.Log.d("EP133APP", "MIDI META: poll tick → refreshActiveGroupFromDevice")
+            val idx = midi.getActiveGroupIndex() ?: return@launch
+            val deviceGroup = PadChannel.entries.getOrNull(idx) ?: return@launch
+            if (deviceGroup != _selectedChannel.value) {
+                _selectedChannel.value = deviceGroup
+                _pressedIndices.value = emptySet()
+            }
+        }
     }
 
     // D-17: scale state delegated from MIDIRepository (single source of truth)
@@ -155,6 +169,14 @@ fun PadsScreen(viewModel: PadsViewModel) {
             if (scale == null) emptySet() else computeInScaleSet(scale, selectedRootNote)
         }
     }
+
+    // Device→app active-group poll intentionally not running yet. It's blocked on the
+    // dispatch-correlation refactor (260623-w5i / backlog 999.4): the drill-down
+    // (resolve /projects → active project → groups) hits an async response-correlation race
+    // where the dispatcher drops the (reqId-matching) LIST(/projects) reply, so the poll
+    // times out 5s/cycle and would stall imports. Re-add a lifecycle-scoped
+    // repeatOnLifecycle(RESUMED) loop calling viewModel.refreshActiveGroupFromDevice() once
+    // responses route by a reqId→deferred map. No idle wake-up loop until then.
 
     Column(
         modifier = Modifier

@@ -1,5 +1,13 @@
 # Contributing
 
+Thanks for pitching in. By participating you agree to the
+[Code of Conduct](CODE_OF_CONDUCT.md). Security issues go to
+[SECURITY.md](SECURITY.md), not the public tracker.
+
+Heads up on licensing: your contributions to **our** code ship under
+[MIT](LICENSE). Don't modify or add to the Teenage Engineering assets under
+`data/` — those aren't ours (see [NOTICE](NOTICE)).
+
 ## Repository Structure
 
 ```

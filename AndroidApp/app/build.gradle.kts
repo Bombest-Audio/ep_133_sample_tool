@@ -61,6 +61,15 @@ android {
     androidResources {
         noCompress += listOf("wasm", "pak", "hmls", "woff", "otf")
     }
+
+    testOptions {
+        unitTests {
+            // Return default values (0 / null / false) for unmocked Android APIs such as
+            // android.util.Log, instead of throwing RuntimeException. Required for unit
+            // tests that call through real MIDIRepository paths that contain Log.d/Log.w.
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {

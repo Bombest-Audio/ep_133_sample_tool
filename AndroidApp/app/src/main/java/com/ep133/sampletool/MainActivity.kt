@@ -19,6 +19,8 @@ import android.media.AudioManager
 import com.ep133.sampletool.domain.midi.ChordPlayer
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.NativeSynth
+import com.ep133.sampletool.domain.midi.ProjectBackupManager
+import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.sequencer.SequencerEngine
 import com.ep133.sampletool.midi.MIDIManager
 import androidx.lifecycle.lifecycleScope
@@ -27,7 +29,9 @@ import com.ep133.sampletool.ui.beats.BeatsViewModel
 import com.ep133.sampletool.ui.chords.ChordsViewModel
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
+import com.ep133.sampletool.ui.projects.ProjectsViewModel
 import com.ep133.sampletool.ui.sounds.SoundsViewModel
+import com.ep133.sampletool.ui.`import`.SampleImportViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import kotlinx.coroutines.flow.collectLatest
@@ -69,9 +73,15 @@ class MainActivity : ComponentActivity() {
         val beatsViewModel = BeatsViewModel(sequencer, midiRepo)
         val soundsViewModel = SoundsViewModel(midiRepo)
         val chordsViewModel = ChordsViewModel(chordPlayer, midiRepo)
+        val projectBackupManager = ProjectBackupManager(midiRepo)
+        val projectsViewModel = ProjectsViewModel(midiRepo, projectBackupManager)
         val deviceViewModel = DeviceViewModel(midiRepo)
+        val sampleImportManager = SampleImportManager(midiRepo)
+        val sampleImportViewModel = SampleImportViewModel(midiRepo, sampleImportManager)
 
-        // SAF launchers for backup/restore — MUST be registered before setContent (Activity lifecycle)
+        // SAF launchers — MUST be registered before setContent (Activity lifecycle constraint).
+        // See STATE.md decision: "SAF launchers must be registered before setContent() in MainActivity"
+
         val backupLauncher = registerForActivityResult(
             ActivityResultContracts.CreateDocument("application/octet-stream"),
         ) { uri: Uri? -> uri?.let { deviceViewModel.onBackupUriSelected(it, this) } }
@@ -80,8 +90,13 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.OpenDocument(),
         ) { uri: Uri? -> uri?.let { deviceViewModel.onRestoreUriSelected(it, this) } }
 
+        val importLauncher = registerForActivityResult(
+            ActivityResultContracts.OpenMultipleDocuments(),
+        ) { uris: List<Uri> -> sampleImportViewModel.onFilesPicked(uris, this) }
+
         deviceViewModel.onRequestBackup = { name -> backupLauncher.launch(name) }
         deviceViewModel.onRequestRestore = { restoreLauncher.launch(arrayOf("*/*")) }
+        sampleImportViewModel.onRequestPick = { importLauncher.launch(arrayOf("audio/*")) }
 
         setContent {
             val deviceState by midiRepo.deviceState.collectAsState()
@@ -90,7 +105,9 @@ class MainActivity : ComponentActivity() {
                 beatsViewModel = beatsViewModel,
                 soundsViewModel = soundsViewModel,
                 chordsViewModel = chordsViewModel,
+                projectsViewModel = projectsViewModel,
                 deviceViewModel = deviceViewModel,
+                sampleImportViewModel = sampleImportViewModel,
                 isConnected = deviceState.connected,
             )
         }

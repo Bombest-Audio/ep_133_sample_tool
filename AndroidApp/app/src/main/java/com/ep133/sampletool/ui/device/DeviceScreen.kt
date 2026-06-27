@@ -3,9 +3,6 @@ package com.ep133.sampletool.ui.device
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.webkit.WebSettings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -53,7 +50,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.viewinterop.AndroidView
 import com.ep133.sampletool.webview.EP133WebViewSetup
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -141,14 +137,19 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
                         }
                     }
                     is BackupProgress.Done -> {
-                        withContext(Dispatchers.IO) {
-                            context.contentResolver.openOutputStream(uri)?.use { out ->
-                                out.write(progress.pakBytes)
+                        val wrote = withContext(Dispatchers.IO) {
+                            val stream = context.contentResolver.openOutputStream(uri)
+                            if (stream == null) {
+                                false
+                            } else {
+                                stream.use { it.write(progress.pakBytes) }
+                                true
                             }
                         }
                         _isBackupInProgress.value = false
                         _backupProgress.value = 0f
-                        _snackbarMessage.value = "Backup complete"
+                        _snackbarMessage.value =
+                            if (wrote) "Backup complete" else "Backup failed: could not write file"
                     }
                     is BackupProgress.Error -> {
                         _isBackupInProgress.value = false
@@ -241,8 +242,6 @@ fun DeviceScreen(
     val restoreProgress by viewModel.restoreProgress.collectAsState()
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val showRestoreConfirm by viewModel.showRestoreConfirm.collectAsState()
-    var showSampleManager by remember { mutableStateOf(false) }
-
     val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
 
     // Show snackbar when message appears
@@ -251,11 +250,6 @@ fun DeviceScreen(
             snackbarHostState.showSnackbar(msg)
             viewModel.dismissSnackbar()
         }
-    }
-
-    if (showSampleManager) {
-        SampleManagerPanel(onDismiss = { showSampleManager = false })
-        return
     }
 
     // Restore confirmation dialog
@@ -323,8 +317,8 @@ fun DeviceScreen(
                 onBackup = { viewModel.triggerBackup() },
                 onRestore = { viewModel.triggerRestore() },
             )
-            RestoreFactoryButton(onOpen = { showSampleManager = true })
-            FormatDeviceButton(onOpen = { showSampleManager = true })
+            RestoreFactoryButton(onOpen = onNavigateToWebView)
+            FormatDeviceButton(onOpen = onNavigateToWebView)
         }
     }
 }
@@ -845,42 +839,3 @@ private fun FormatDeviceButton(onOpen: () -> Unit) {
     }
 }
 
-@Composable
-private fun SampleManagerPanel(onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = "Back",
-                modifier = Modifier
-                    .size(32.dp)
-                    .clickable(onClick = onDismiss),
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("SAMPLE MANAGER", style = MaterialTheme.typography.titleMedium)
-        }
-        AndroidView(
-            factory = { ctx ->
-                WebView(ctx).apply {
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                    @Suppress("DEPRECATION")
-                    settings.allowFileAccessFromFileURLs = true
-                    webViewClient = WebViewClient()
-                    setBackgroundColor(android.graphics.Color.BLACK)
-                    loadUrl("https://appassets.androidplatform.net/assets/data/index.html")
-                }
-            },
-            modifier = Modifier
-                .fillMaxSize()
-                .weight(1f),
-        )
-    }
-}

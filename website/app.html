@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light" data-sku="ep133">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EP-133 Sample Tool — App UI redesign concept</title>
+<meta name="description" content="A hardware-faithful redesign concept for the EP-133 K.O. II sample manager, in the Teenage Engineering industrial idiom.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-in">
+    <a class="brand" href="index.html">
+      <span class="badge">EP·133</span>
+      <span>Sample Tool <small>// by Bombest Audio</small></span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="protocol.html">SysEx Protocol</a>
+      <a href="app.html" aria-current="page">App Concept</a>
+      <a href="https://github.com/Bombest-Audio/ep_133_sample_tool" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <div class="toggles">
+      <button class="tog" data-toggle-sku><span class="sw"></span><span class="lab">EP-133</span></button>
+      <button class="tog" data-toggle-theme><span class="sw teal"></span><span class="lab">LIGHT</span></button>
+    </div>
+  </div>
+</nav>
+
+<header class="app-intro wrap">
+  <span class="eyebrow">Redesign concept · not shipped</span>
+  <h1 style="margin-top:16px">What it could look like.</h1>
+  <p class="lede">Same seven screens as the Android app, reimagined in the EP-133's own industrial language: rubber pads, mono labels, one loud accent. Hardware on screen, not a SaaS dashboard. Built to drop straight into Compose.</p>
+</header>
+
+<section class="section wrap" style="padding-top:30px">
+  <div class="screens">
+
+    <!-- PADS -->
+    <div>
+      <div class="screen-label"><span class="n">01</span> PADS</div>
+      <div class="phone">
+        <div class="phone-screen">
+          <div class="app-bar">
+            <div class="title">Pads <span class="badge">A</span></div>
+            <div class="sys"><span class="dot ok"></span>USB</div>
+          </div>
+          <div class="app-body">
+            <div class="groupsel">
+              <div class="g on">A</div><div class="g">B</div><div class="g">C</div><div class="g">D</div>
+            </div>
+            <div class="app-pads">
+              <div class="app-pad lit"><span class="id">A1</span><span class="nm">KICK</span></div>
+              <div class="app-pad"><span class="id">A2</span><span class="nm">SNARE</span></div>
+              <div class="app-pad"><span class="id">A3</span><span class="nm">HAT</span></div>
+              <div class="app-pad teal"><span class="id">A4</span><span class="nm">CLAP</span></div>
+              <div class="app-pad"><span class="id">A5</span><span class="nm">RIM</span></div>
+              <div class="app-pad lit"><span class="id">A6</span><span class="nm">TOM</span></div>
+              <div class="app-pad"><span class="id">A7</span><span class="nm">PERC</span></div>
+              <div class="app-pad"><span class="id">A8</span><span class="nm">FX</span></div>
+              <div class="app-pad"><span class="id">A9</span><span class="nm">—</span></div>
+              <div class="app-pad lit"><span class="id">A10</span><span class="nm">BASS</span></div>
+              <div class="app-pad"><span class="id">A11</span><span class="nm">STAB</span></div>
+              <div class="app-pad"><span class="id">A12</span><span class="nm">VOX</span></div>
+            </div>
+            <div class="wave" aria-hidden="true">
+              <i style="height:20%"></i><i style="height:55%"></i><i class="a" style="height:90%"></i><i class="a" style="height:70%"></i><i style="height:40%"></i><i style="height:62%"></i><i style="height:30%"></i><i style="height:48%"></i><i style="height:80%"></i><i style="height:35%"></i><i style="height:55%"></i><i style="height:22%"></i><i style="height:44%"></i><i style="height:66%"></i><i style="height:28%"></i><i style="height:50%"></i><i style="height:18%"></i><i style="height:38%"></i>
+            </div>
+            <div class="transport">
+              <div class="bpm">120 <small>BPM</small></div>
+              <div class="tbtns">
+                <button>■</button><button class="play">▶</button>
+              </div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div class="t on">Pads</div><div class="t">Beats</div><div class="t">Snds</div><div class="t">Chord</div><div class="t">Dev</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BEATS -->
+    <div>
+      <div class="screen-label"><span class="n">02</span> BEATS</div>
+      <div class="phone">
+        <div class="phone-screen">
+          <div class="app-bar">
+            <div class="title">Beats</div>
+            <div class="sys"><span class="dot act"></span>REC</div>
+          </div>
+          <div class="app-body">
+            <div class="transport">
+              <div class="bpm">120 <small>BPM · 4/4</small></div>
+              <div class="tbtns"><button>■</button><button class="play">▶</button></div>
+            </div>
+            <div class="seq-rows">
+              <div class="seq-row"><span class="rl">KICK</span>
+                <div class="seq">
+                  <div class="st on play">1</div><div class="st">2</div><div class="st">3</div><div class="st">4</div><div class="st on beat">5</div><div class="st">6</div><div class="st">7</div><div class="st">8</div>
+                </div></div>
+              <div class="seq-row"><span class="rl">SNARE</span>
+                <div class="seq">
+                  <div class="st">1</div><div class="st">2</div><div class="st">3</div><div class="st">4</div><div class="st on">5</div><div class="st">6</div><div class="st">7</div><div class="st">8</div>
+                </div></div>
+              <div class="seq-row"><span class="rl">HAT</span>
+                <div class="seq">
+                  <div class="st on">1</div><div class="st">2</div><div class="st on">3</div><div class="st">4</div><div class="st on">5</div><div class="st">6</div><div class="st on">7</div><div class="st">8</div>
+                </div></div>
+              <div class="seq-row"><span class="rl">CLAP</span>
+                <div class="seq">
+                  <div class="st">1</div><div class="st">2</div><div class="st">3</div><div class="st on">4</div><div class="st">5</div><div class="st">6</div><div class="st">7</div><div class="st on">8</div>
+                </div></div>
+              <div class="seq-row"><span class="rl">PERC</span>
+                <div class="seq">
+                  <div class="st">1</div><div class="st on">2</div><div class="st">3</div><div class="st">4</div><div class="st">5</div><div class="st on">6</div><div class="st">7</div><div class="st">8</div>
+                </div></div>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:auto">
+              <span class="chip">PAGE 1/2</span><span class="chip">16 STEPS</span><span class="chip solid">A · KICK</span>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div class="t">Pads</div><div class="t on">Beats</div><div class="t">Snds</div><div class="t">Chord</div><div class="t">Dev</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SOUNDS -->
+    <div>
+      <div class="screen-label"><span class="n">03</span> SOUNDS</div>
+      <div class="phone">
+        <div class="phone-screen">
+          <div class="app-bar">
+            <div class="title">Sounds</div>
+            <div class="sys">128 / 10 BANKS</div>
+          </div>
+          <div class="app-body">
+            <div class="banks">
+              <span class="chip solid">KICK</span><span class="chip">SNARE</span><span class="chip">CYMB</span><span class="chip">PERC</span><span class="chip">BASS</span><span class="chip">MELOD</span><span class="chip">LOOP</span><span class="chip">USER1</span><span class="chip">USER2</span><span class="chip">SFX</span>
+            </div>
+            <div class="snd-list">
+              <div class="snd on"><span class="si">01</span><div><div class="snm">kick_909</div><div class="ssub">MONO · 0.21s · 46875Hz</div></div><div class="play">▶</div></div>
+              <div class="snd"><span class="si">02</span><div><div class="snm">kick_house</div><div class="ssub">MONO · 0.34s</div></div><div class="play">▶</div></div>
+              <div class="snd"><span class="si">03</span><div><div class="snm">kick_sub</div><div class="ssub">MONO · 0.48s</div></div><div class="play">▶</div></div>
+              <div class="snd"><span class="si">04</span><div><div class="snm">kick_dist</div><div class="ssub">MONO · 0.29s</div></div><div class="play">▶</div></div>
+              <div class="snd"><span class="si">05</span><div><div class="snm">kick_tape</div><div class="ssub">STEREO · 0.40s</div></div><div class="play">▶</div></div>
+              <div class="snd"><span class="si">06</span><div><div class="snm">kick_punch</div><div class="ssub">MONO · 0.18s</div></div><div class="play">▶</div></div>
+            </div>
+            <div style="display:flex;gap:6px;margin-top:auto">
+              <span class="chip" style="flex:1;justify-content:center">FILTER</span>
+              <span class="chip" style="flex:1;justify-content:center"><span class="dot ok"></span>PREVIEW ON</span>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div class="t">Pads</div><div class="t">Beats</div><div class="t on">Snds</div><div class="t">Chord</div><div class="t">Dev</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CHORDS -->
+    <div>
+      <div class="screen-label"><span class="n">04</span> CHORDS</div>
+      <div class="phone">
+        <div class="phone-screen">
+          <div class="app-bar">
+            <div class="title">Chords</div>
+            <div class="sys">8 SLOTS</div>
+          </div>
+          <div class="app-body">
+            <div class="chords">
+              <div class="chord"><span class="ci">C1</span><span class="cn">Cm7</span><span class="cnotes">C·Eb·G·Bb</span></div>
+              <div class="chord"><span class="ci">C2</span><span class="cn">Fm9</span><span class="cnotes">F·Ab·C·Eb·G</span></div>
+              <div class="chord"><span class="ci">C3</span><span class="cn">Gm7</span><span class="cnotes">G·Bb·D·F</span></div>
+              <div class="chord"><span class="ci">C4</span><span class="cn">Ab△7</span><span class="cnotes">Ab·C·Eb·G</span></div>
+              <div class="chord"><span class="ci">C5</span><span class="cn">Bb6</span><span class="cnotes">Bb·D·F·G</span></div>
+              <div class="chord empty"><span class="ci">C6</span><span class="cn">+ add</span><span class="cnotes">empty</span></div>
+              <div class="chord empty"><span class="ci">C7</span><span class="cn">+ add</span><span class="cnotes">empty</span></div>
+              <div class="chord empty"><span class="ci">C8</span><span class="cn">+ add</span><span class="cnotes">empty</span></div>
+            </div>
+            <div class="panel" style="padding:13px;background:var(--panel-2);margin-top:4px">
+              <div class="screen-label" style="margin-bottom:10px"><span class="n">●</span> CHORD BUILDER · C3</div>
+              <div style="display:flex;gap:5px;flex-wrap:wrap">
+                <span class="chip-sq">G</span><span class="chip-sq" style="background:var(--accent);color:var(--on-accent)">Bb</span><span class="chip-sq">D</span><span class="chip-sq">F</span>
+                <span class="chip" style="margin-left:auto">ROOT G · MIN7</span>
+              </div>
+              <div class="slider" style="margin-top:12px"><div class="track"><div class="fill"></div><div class="knob"></div></div></div>
+              <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-3);margin-top:4px;letter-spacing:.04em">VOICING · SPREAD 62%</div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div class="t">Pads</div><div class="t">Beats</div><div class="t">Snds</div><div class="t on">Chord</div><div class="t">Dev</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DEVICE -->
+    <div>
+      <div class="screen-label"><span class="n">05</span> DEVICE</div>
+      <div class="phone">
+        <div class="phone-screen">
+          <div class="app-bar">
+            <div class="title">Device</div>
+            <div class="sys"><span class="dot ok"></span>CONNECTED</div>
+          </div>
+          <div class="app-body">
+            <div class="panel" style="padding:15px;background:var(--pad-face);border-color:var(--pad-edge)">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div>
+                  <div style="font-family:var(--font-mono);color:#9a9b9c;font-size:10px;letter-spacing:.1em">CONNECTED OVER</div>
+                  <div style="color:#fff;font-weight:700;font-size:18px;margin-top:3px">USB-MIDI · EP-133</div>
+                </div>
+                <span class="dot ok" style="width:11px;height:11px;box-shadow:0 0 0 4px rgba(0,166,156,.18)"></span>
+              </div>
+              <div style="display:flex;gap:18px;margin-top:14px;font-family:var(--font-mono);font-size:10px;color:#76777a;letter-spacing:.04em">
+                <span>FW <b style="color:var(--live)">2.0.5</b></span><span>ID <b style="color:#fff">0x33</b></span><span>CHUNK <b style="color:#fff">512B</b></span>
+              </div>
+            </div>
+            <div class="statrow"><div class="l"><span class="ic">↺</span> Backup project</div><div class="v">SERIAL STRIPPED ✓</div></div>
+            <div class="statrow"><div class="l"><span class="ic">↻</span> Restore project</div><div class="v">.ep133pkg</div></div>
+            <div class="statrow"><div class="l"><span class="ic">⟳</span> Sync sounds</div><div class="v live"><span class="dot ok"></span>IN SYNC</div></div>
+            <div class="statrow"><div class="l"><span class="ic">⌫</span> Format device</div><div class="v" style="color:var(--accent)">DANGER</div></div>
+            <div style="display:flex;gap:7px;margin-top:auto">
+              <span class="chip" style="flex:1;justify-content:center;border-left:3px solid var(--live)">NO TELEMETRY</span>
+              <span class="chip" style="flex:1;justify-content:center">OFFLINE</span>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div class="t">Pads</div><div class="t">Beats</div><div class="t">Snds</div><div class="t">Chord</div><div class="t on">Dev</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PROJECTS -->
+    <div>
+      <div class="screen-label"><span class="n">06</span> PROJECTS</div>
+      <div class="phone">
+        <div class="phone-screen">
+          <div class="app-bar">
+            <div class="title">Projects</div>
+            <div class="sys">9 SAVED</div>
+          </div>
+          <div class="app-body">
+            <div class="projects">
+              <div class="proj"><div class="pt"><span class="pn">night bus</span><span class="pno">3000</span></div><div class="pmeta">A·B·C·D · 38 SND</div><div class="pbar"><i class="f"></i><i class="f"></i><i class="f"></i><i></i></div></div>
+              <div class="proj"><div class="pt"><span class="pn">tape loops</span><span class="pno">4000</span></div><div class="pmeta">A·B · 16 SND</div><div class="pbar"><i class="f"></i><i class="f"></i><i></i><i></i></div></div>
+              <div class="proj"><div class="pt"><span class="pn">909 drill</span><span class="pno">5000</span></div><div class="pmeta">A·B·C·D · 52 SND</div><div class="pbar"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i></div></div>
+              <div class="proj"><div class="pt"><span class="pn">field rec</span><span class="pno">6000</span></div><div class="pmeta">A · 9 SND</div><div class="pbar"><i class="f"></i><i></i><i></i><i></i></div></div>
+              <div class="proj"><div class="pt"><span class="pn">dub plate</span><span class="pno">7000</span></div><div class="pmeta">A·B·C · 27 SND</div><div class="pbar"><i class="f"></i><i class="f"></i><i class="f"></i><i></i></div></div>
+              <div class="proj" style="border-style:dashed;justify-content:center;align-items:center;text-align:center;color:var(--text-3)"><span class="pn" style="color:var(--text-3)">+ new</span><span class="pmeta">empty slot</span></div>
+            </div>
+            <div style="margin-top:auto"><span class="chip"><span class="dot ok"></span>BACKUPS STRIP SERIAL NUMBERS</span></div>
+          </div>
+          <div class="tabbar">
+            <div class="t">Pads</div><div class="t">Beats</div><div class="t">Snds</div><div class="t">Proj</div><div class="t">Dev</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SAMPLE IMPORT -->
+    <div>
+      <div class="screen-label"><span class="n">07</span> SAMPLE IMPORT <span class="chip solid" style="margin-left:6px">SIGNATURE</span></div>
+      <div class="phone">
+        <div class="phone-screen">
+          <div class="app-bar">
+            <div class="title">Import <span class="badge">WAV</span></div>
+            <div class="sys"><span class="dot act"></span>UPLOADING</div>
+          </div>
+          <div class="app-body">
+            <div class="import-drop">
+              <div class="di">DROP OR PICK · RIFF/PCM · s16 · ≤20s</div>
+              <div class="dt">amen_break.wav</div>
+              <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-3);margin-top:6px">STEREO · 6.0s · 46875Hz · 1.05 MB</div>
+            </div>
+            <div class="upload">
+              <div class="ut"><span class="un">amen_break.wav</span><span class="us">FILE_PUT · 5/12</span></div>
+              <div class="pages" aria-hidden="true">
+                <i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i><i class="now"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              </div>
+              <div class="umeta"><span>fileId 0x1A · ~427B/pg</span><span>await ack…</span></div>
+            </div>
+            <div class="upload" style="opacity:.65">
+              <div class="ut"><span class="un">vox_chop.wav</span><span class="us" style="color:var(--text-3)">QUEUED</span></div>
+              <div class="pages" aria-hidden="true">
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              </div>
+              <div class="umeta"><span>node 1000 · /sounds</span><span>waiting</span></div>
+            </div>
+            <div class="callout teal" style="margin-top:auto;background:var(--panel-2)"><span class="gx" style="font-size:11px">i</span><p style="font-size:12px">Each page waits for its ack. Terminator sent on finish, so it never wedges the device.</p></div>
+          </div>
+          <div class="tabbar">
+            <div class="t">Pads</div><div class="t">Beats</div><div class="t on" style="box-shadow:inset 0 2px 0 var(--accent);color:var(--accent)">Import</div><div class="t">Proj</div><div class="t">Dev</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- COMPONENT SHEET -->
+<section class="section wrap" id="components" style="padding-top:20px">
+  <div class="section-head">
+    <div>
+      <span class="section-idx">08 / COMPONENT SHEET</span>
+      <h2 style="margin-top:10px">Portable to Compose.</h2>
+    </div>
+    <p class="muted" style="max-width:36ch;font-size:14px">The shared kit behind every screen. Same tokens, same metrics. Lift it straight into native.</p>
+  </div>
+
+  <div class="sheet">
+    <div class="cell">
+      <span class="ch">Buttons</span>
+      <div class="crow"><button class="btn btn-primary">Download <span class="k">free</span></button></div>
+      <div class="crow"><button class="btn btn-ghost">Secondary <span class="k">↗</span></button></div>
+      <div class="crow"><button class="btn btn-dark">Dark <span class="k">syx</span></button></div>
+    </div>
+    <div class="cell">
+      <span class="ch">Pads · #222323 rubber</span>
+      <div class="app-pads" style="grid-template-columns:repeat(4,1fr);max-width:200px">
+        <div class="app-pad"><span class="id">A1</span></div>
+        <div class="app-pad lit"><span class="id">A2</span></div>
+        <div class="app-pad teal"><span class="id">A3</span></div>
+        <div class="app-pad"><span class="id">A4</span></div>
+      </div>
+    </div>
+    <div class="cell">
+      <span class="ch">Chips &amp; groups</span>
+      <div class="crow"><span class="chip">DEFAULT</span><span class="chip solid">ACTION</span><span class="chip live">LIVE</span></div>
+      <div class="crow"><span class="chip-sq">A</span><span class="chip-sq">B</span><span class="chip-sq">C</span><span class="chip-sq">D</span></div>
+    </div>
+    <div class="cell">
+      <span class="ch">Status dots</span>
+      <div class="crow"><span class="dot ok"></span><span class="mono" style="font-size:12px">ok · teal</span></div>
+      <div class="crow"><span class="dot act"></span><span class="mono" style="font-size:12px">action · orange</span></div>
+      <div class="crow"><span class="dot off"></span><span class="mono" style="font-size:12px">idle · gray</span></div>
+    </div>
+    <div class="cell">
+      <span class="ch">Sliders</span>
+      <div class="slider"><div class="track"><div class="fill"></div><div class="knob"></div></div></div>
+      <div class="slider"><div class="track"><div class="fill" style="width:34%"></div><div class="knob" style="left:34%"></div></div></div>
+    </div>
+    <div class="cell">
+      <span class="ch">Step sequencer</span>
+      <div class="seq" style="grid-template-columns:repeat(8,1fr)">
+        <div class="st on play">1</div><div class="st">2</div><div class="st on">3</div><div class="st">4</div><div class="st on beat">5</div><div class="st">6</div><div class="st on">7</div><div class="st">8</div>
+      </div>
+    </div>
+    <div class="cell" style="grid-column:1 / -1">
+      <span class="ch">Tables · mono cells</span>
+      <div class="tbl-wrap" style="margin:0">
+        <table class="tbl">
+          <thead><tr><th>Node</th><th>Name</th><th>Type</th><th>Rate</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td class="code">1001</td><td class="m">001.pcm</td><td>sample</td><td class="m">46875</td><td><span class="dot ok"></span> ready</td></tr>
+            <tr><td class="code">1002</td><td class="m">002.pcm</td><td>sample</td><td class="m">46875</td><td><span class="dot ok"></span> ready</td></tr>
+            <tr><td class="code">3000</td><td class="m">project 01</td><td>project</td><td class="m">—</td><td><span class="dot act"></span> active</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="footer wrap">
+  <div class="footer-grid">
+    <div>
+      <a class="brand" href="index.html" style="margin-bottom:14px">
+        <span class="badge">EP·133</span>
+        <span>Sample Tool</span>
+      </a>
+      <p>A concept, freely given. Fork the comps, ship something better. This one's for the community, from Bombest Audio.</p>
+    </div>
+    <div>
+      <h4>Project</h4>
+      <ul>
+        <li><a href="index.html">Overview</a></li>
+        <li><a href="protocol.html">SysEx Protocol</a></li>
+        <li><a href="app.html">App Concept</a></li>
+        <li><a href="https://github.com/Bombest-Audio/ep_133_sample_tool" target="_blank" rel="noopener">Source on GitHub</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>The fine print</h4>
+      <ul>
+        <li>Our code is <a href="https://opensource.org/license/mit" target="_blank" rel="noopener">MIT licensed</a>.</li>
+        <li>TE's bundled assets stay TE's.</li>
+        <li>Built on <a href="https://github.com/garrettjwilke/ep_133_sample_tool" target="_blank" rel="noopener">garrettjwilke's tool</a>.</li>
+        <li>Not affiliated with Teenage Engineering.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-base">
+    <span>© Bombest Audio · MIT · No telemetry</span>
+    <span>EP-133 K.O. II · EP-1320 K.O. II · made by hand</span>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
