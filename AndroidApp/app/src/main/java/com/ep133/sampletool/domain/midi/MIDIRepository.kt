@@ -725,37 +725,37 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * the archive in `MAX_PAGE_BYTES`-sized slices, awaiting a STATUS_OK acknowledgement.
      * Archive bytes are 7-bit packed by the frame builder.
      */
+    /** True if a PUT ack FileResponse signals success (STATUS_OK or a continuation status). */
+    private fun putAckOk(resp: FileResponse?): Boolean =
+        resp != null && (resp.status == SysExProtocol.STATUS_OK ||
+            resp.status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START)
+
     suspend fun putProjectArchive(slotNodeId: Int, tarBytes: ByteArray): Boolean {
         val portId = _deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
         return fileOpMutex.withLock {
-            if (transferInFlight) throw IllegalStateException("transfer already in flight")
-            transferInFlight = true
-            val ack = CompletableDeferred<Boolean>()
-            pendingPutAckDeferred = ack
-            try {
-                val initFrame = SysExProtocol.buildFilePutInitFrame(
-                    currentDeviceId, slotNodeId, tarBytes.size, requestId = 20,
-                )
-                midiManager.sendMidi(portId, initFrame)
-
-                var page = 0
-                var offset = 0
-                while (offset < tarBytes.size) {
-                    val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, tarBytes.size)
-                    val chunk = tarBytes.copyOfRange(offset, end)
-                    val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = 21)
-                    midiManager.sendMidi(portId, dataFrame)
-                    offset = end
-                    page = (page + 1) and 0xFFFF
-                }
-                withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { ack.await() } ?: false
-            } catch (e: CancellationException) {
-                throw e
-            } finally {
-                pendingPutAckDeferred = null
-                transferInFlight = false
+            var nextReqId = PUT_INIT_REQUEST_ID
+            val initReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+            val initFrame = SysExProtocol.buildFilePutInitFrame(currentDeviceId, slotNodeId, tarBytes.size, requestId = initReqId)
+            if (!putAckOk(awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS))) {
+                return@withLock false
             }
+            var page = 0
+            var offset = 0
+            while (offset < tarBytes.size) {
+                val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, tarBytes.size)
+                val chunk = tarBytes.copyOfRange(offset, end)
+                val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = dataReqId)
+                if (!putAckOk(awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS))) {
+                    return@withLock false
+                }
+                offset = end
+                page = (page + 1) and 0xFFFF
+            }
+            val termReqId = nextReqId
+            val termFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = termReqId)
+            putAckOk(awaitFileOp(termReqId, FileOpKind.PUT_DATA, portId, termFrame, PUT_ACK_TIMEOUT_MS))
         }
     }
 
@@ -797,119 +797,78 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             ?: throw IllegalStateException("no output port")
 
         return fileOpMutex.withLock {
-        // Ensure the FILE_INIT handshake (once per connection) before resolving any node IDs.
-        // Uses the NoLock core — we already hold fileOpMutex.
-        ensureFileSessionInitNoLock()
+            // Ensure the FILE_INIT handshake (once per connection) before resolving node IDs.
+            ensureFileSessionInitNoLock()
 
-        // Resolve /sounds inside the lock so its FILE_LIST round-trips don't interleave with
-        // concurrent ops.  Delegates to resolveSoundsNodeId() so subclasses can override for tests.
-        val parent = resolveSoundsNodeId()
-        if (parent == null) {
-            Log.e("EP133APP", "putSampleFile: cannot resolve /sounds node — aborting upload of $name")
-            return@withLock false
-        }
-
-        // Compute the raw chunk size from the negotiated chunkSize. The device rejected 4096-byte
-        // chunks (STATUS=1 "unexpected page") because a 4096-byte DATA payload 7-bit-packs to
-        // ~4.7 KB — well over the device's per-message budget (512 bytes negotiated at INIT).
-        // Hardware-confirmed: ~420-byte raw chunks (within the 512-byte budget) get STATUS_OK.
-        val rawChunkSize = computeSampleChunkSize(deviceChunkSize)
-        val pageCount = if (pcmBytes.isEmpty()) 0 else (pcmBytes.size + rawChunkSize - 1) / rawChunkSize
-        Log.d("EP133APP", "putSampleFile: chunkSize=$rawChunkSize pages=$pageCount for $name (${pcmBytes.size} bytes, ch=$channels sr=$sampleRate, deviceChunkSize=$deviceChunkSize)")
-
-        // Build metadata JSON matching data/index.js prepareTeenageMeta key names.
-        val metadataJson = """{"channels":$channels,"samplerate":$sampleRate}"""
-
-        if (transferInFlight) throw IllegalStateException("transfer already in flight")
-        transferInFlight = true
-        // Hardware-verified (2026-06-24): device sends "unexpected page" if DATA frames arrive
-        // before the INIT response. Create the init deferred BEFORE sending the INIT frame so
-        // the dispatcher can complete it the moment the response arrives.
-        val initAck = CompletableDeferred<Boolean>()
-        pendingPutInitDeferred = initAck
-        // Transfer-local reqId counter. INIT uses reqId 30; each DATA page and the terminator
-        // get the next value. reqId is 14-bit (encoded as (reqId >> 7) in frame[6] low nibble
-        // and (reqId & 0x7F) in frame[7]; buildFrame encodes this correctly).
-        var nextReqId = PUT_INIT_REQUEST_ID  // 30
-        // Flag: set to true once the INIT ack is received. Used by the failure path to decide
-        // whether to send a force-close terminator (only needed after INIT is acked, so the
-        // device has an open transfer it must close to accept new PUTs).
-        var initAcked = false
-        return try {
-            // INIT: announce parent dir, fileId=0 (new file), size, filename, and metadata.
-            val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
-                currentDeviceId,
-                parentNodeId = parent,
-                fileSize = pcmBytes.size,
-                filename = name,
-                requestId = nextReqId,
-                metadataJson = metadataJson,
-            )
-            Log.d("EP133MIDI", "MIDI META: outbound PUT INIT reqId=$nextReqId name=$name size=${pcmBytes.size}")
-            awaitedFileReqId = nextReqId
-            midiManager.sendMidi(portId, initFrame)
-            nextReqId = (nextReqId + 1) and 0x3FFF
-
-            // Await the device's INIT ack before sending any DATA pages.
-            // Reference tool (data/index.js): awaits the PUT INIT response before looping DATA.
-            val initOk = withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { initAck.await() } ?: false
-            if (!initOk) {
-                Log.e("EP133APP", "putSampleFile: PUT INIT ack failed or timed out — aborting $name")
-                return false
+            val parent = resolveSoundsNodeId()
+            if (parent == null) {
+                Log.e("EP133APP", "putSampleFile: cannot resolve /sounds node — aborting upload of $name")
+                return@withLock false
             }
-            initAcked = true
-            Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name")
 
-            // DATA pages: slice pcmBytes into rawChunkSize chunks, awaiting each page's ack
-            // before sending the next. The device rejects out-of-order or rapid-fire pages
-            // (USB-MIDI has no flow control — the reference tool sends serially with await).
-            var page = 0
-            var offset = 0
-            while (offset < pcmBytes.size) {
-                val end = minOf(offset + rawChunkSize, pcmBytes.size)
-                val chunk = pcmBytes.copyOfRange(offset, end)
-                val pageAck = CompletableDeferred<Boolean>()
-                pendingPutAckDeferred = pageAck
-                awaitedPutReqId = nextReqId
-                awaitedFileReqId = nextReqId
-                val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = nextReqId)
-                Log.d("EP133MIDI", "MIDI META: outbound PUT DATA page=$page reqId=$nextReqId chunkSize=${chunk.size}")
-                midiManager.sendMidi(portId, dataFrame)
-                nextReqId = (nextReqId + 1) and 0x3FFF
-                val pageOk = withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { pageAck.await() } ?: false
-                if (!pageOk) {
-                    Log.e("EP133APP", "putSampleFile: DATA page $page ack failed or timed out — aborting $name")
-                    forceCloseTransfer(portId, page + 1, nextReqId)
-                    nextReqId = (nextReqId + 1) and 0x3FFF
-                    return false
+            // ~420-byte raw chunks (within the device's 512-byte budget) get STATUS_OK; 4096 was
+            // rejected ("unexpected page") because it 7-bit-packs past the budget.
+            val rawChunkSize = computeSampleChunkSize(deviceChunkSize)
+            val pageCount = if (pcmBytes.isEmpty()) 0 else (pcmBytes.size + rawChunkSize - 1) / rawChunkSize
+            Log.d("EP133APP", "putSampleFile: chunkSize=$rawChunkSize pages=$pageCount for $name (${pcmBytes.size} bytes, ch=$channels sr=$sampleRate, deviceChunkSize=$deviceChunkSize)")
+
+            // Metadata JSON key names match data/index.js prepareTeenageMeta.
+            val metadataJson = """{"channels":$channels,"samplerate":$sampleRate}"""
+
+            // Transfer-local reqId counter (INIT=30, then each DATA page + terminator). Each frame
+            // registers its own OneShot waiter under its reqId via awaitFileOp; only one is ever
+            // live at a time (await-then-remove), so a stale/duplicate ack can't mis-route.
+            var nextReqId = PUT_INIT_REQUEST_ID  // 30
+            var initAcked = false
+            try {
+                // INIT: announce parent dir, fileId=0 (new file), size, filename, metadata.
+                val initReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
+                    currentDeviceId,
+                    parentNodeId = parent,
+                    fileSize = pcmBytes.size,
+                    filename = name,
+                    requestId = initReqId,
+                    metadataJson = metadataJson,
+                )
+                Log.d("EP133MIDI", "MIDI META: outbound PUT INIT reqId=$initReqId name=$name size=${pcmBytes.size}")
+                if (!putAckOk(awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS))) {
+                    Log.e("EP133APP", "putSampleFile: PUT INIT ack failed or timed out — aborting $name")
+                    return@withLock false
                 }
-                offset = end
-                page = (page + 1) and 0xFFFF
-            }
+                initAcked = true
+                Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name")
 
-            // Zero-length DATA terminator (required by reference tool). Await its final ack.
-            val termAck = CompletableDeferred<Boolean>()
-            pendingPutAckDeferred = termAck
-            awaitedPutReqId = nextReqId
-            awaitedFileReqId = nextReqId
-            val terminatorFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = nextReqId)
-            Log.d("EP133MIDI", "MIDI META: outbound PUT terminator page=$page reqId=$nextReqId")
-            midiManager.sendMidi(portId, terminatorFrame)
-            nextReqId = (nextReqId + 1) and 0x3FFF
-            withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { termAck.await() } ?: false
-        } catch (e: CancellationException) {
-            if (initAcked) {
-                // Best-effort close so the device doesn't stay wedged.
-                forceCloseTransfer(portId, 0, nextReqId)
+                // DATA pages: serial, awaiting each page's ack before sending the next (USB-MIDI
+                // has no flow control; the reference tool sends serially with await).
+                var page = 0
+                var offset = 0
+                while (offset < pcmBytes.size) {
+                    val end = minOf(offset + rawChunkSize, pcmBytes.size)
+                    val chunk = pcmBytes.copyOfRange(offset, end)
+                    val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                    val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = dataReqId)
+                    Log.d("EP133MIDI", "MIDI META: outbound PUT DATA page=$page reqId=$dataReqId chunkSize=${chunk.size}")
+                    if (!putAckOk(awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS))) {
+                        Log.e("EP133APP", "putSampleFile: DATA page $page ack failed or timed out — aborting $name")
+                        val closeReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                        forceCloseTransfer(portId, page + 1, closeReqId)
+                        return@withLock false
+                    }
+                    offset = end
+                    page = (page + 1) and 0xFFFF
+                }
+
+                // Zero-length DATA terminator (required by the reference tool). Await its final ack.
+                val termReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                val terminatorFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = termReqId)
+                Log.d("EP133MIDI", "MIDI META: outbound PUT terminator page=$page reqId=$termReqId")
+                putAckOk(awaitFileOp(termReqId, FileOpKind.PUT_DATA, portId, terminatorFrame, PUT_ACK_TIMEOUT_MS))
+            } catch (e: CancellationException) {
+                // A dangling incomplete PUT wedges the device — best-effort close if INIT was acked.
+                if (initAcked) forceCloseTransfer(portId, 0, nextReqId)
+                throw e
             }
-            throw e
-        } finally {
-            pendingPutInitDeferred = null
-            pendingPutAckDeferred = null
-            awaitedPutReqId = -1
-            awaitedFileReqId = -1
-            transferInFlight = false
-        }
         } // end fileOpMutex.withLock
     }
 
@@ -925,20 +884,11 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      */
     private suspend fun forceCloseTransfer(portId: String, terminatorPage: Int, reqId: Int) {
         try {
-            val termAck = CompletableDeferred<Boolean>()
-            pendingPutAckDeferred = termAck
-            awaitedPutReqId = reqId
-            awaitedFileReqId = reqId
             val frame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, terminatorPage, ByteArray(0), requestId = reqId)
-            Log.w("EP133MIDI", "MIDI META: force-closed incomplete transfer page=$terminatorPage reqId=$reqId")
-            midiManager.sendMidi(portId, frame)
-            withTimeoutOrNull(FORCE_CLOSE_TIMEOUT_MS) { termAck.await() }
+            Log.w("EP133MIDI", "MIDI META: force-closing incomplete transfer page=$terminatorPage reqId=$reqId")
+            awaitFileOp(reqId, FileOpKind.PUT_DATA, portId, frame, FORCE_CLOSE_TIMEOUT_MS)
         } catch (_: Exception) {
-            // Best-effort — ignore all errors, just clean up state
-        } finally {
-            pendingPutAckDeferred = null
-            awaitedPutReqId = -1
-            awaitedFileReqId = -1
+            // Best-effort — ignore all errors.
         }
     }
 
