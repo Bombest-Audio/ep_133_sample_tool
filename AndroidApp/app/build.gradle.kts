@@ -23,13 +23,45 @@ android {
         }
     }
 
+    // Release signing material is supplied at build time via environment variables
+    // (CI) or -P gradle properties (local) — nothing secret lives in the repo:
+    //   EP133_KEYSTORE_FILE, EP133_KEYSTORE_PASSWORD, EP133_KEY_ALIAS, EP133_KEY_PASSWORD
+    // When the keystore is absent/missing the "release" signingConfig is never created,
+    // the release build is produced UNSIGNED, and local/dev + debug builds never fail.
+    val releaseStoreFile = (System.getenv("EP133_KEYSTORE_FILE")
+        ?: project.findProperty("EP133_KEYSTORE_FILE") as String?)
+        ?.let { file(it) }
+        ?.takeIf { it.exists() }
+
+    signingConfigs {
+        if (releaseStoreFile != null) {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = System.getenv("EP133_KEYSTORE_PASSWORD")
+                    ?: project.findProperty("EP133_KEYSTORE_PASSWORD") as String?
+                keyAlias = System.getenv("EP133_KEY_ALIAS")
+                    ?: project.findProperty("EP133_KEY_ALIAS") as String?
+                keyPassword = System.getenv("EP133_KEY_PASSWORD")
+                    ?: project.findProperty("EP133_KEY_PASSWORD") as String?
+                enableV1Signing = true   // jar signature — older sideload readers
+                enableV2Signing = true   // primary, required
+                enableV3Signing = true   // key-rotation capable
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = true
+            // First signed release ships with minify OFF to decouple signing from R8 risk.
+            // proguard-rules.pro is committed and ready; flip this to true in a follow-up
+            // release once the keep-rules are proven on real hardware.
+            isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // null when no keystore is configured (local/dev) → unsigned release, not a failure
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
