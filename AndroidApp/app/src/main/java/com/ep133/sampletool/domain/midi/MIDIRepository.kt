@@ -175,8 +175,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     // and resolves on STATUS_OK. Unlike a single CompletableDeferred, intermediate DATA
     // responses keep arriving, so pages flow through a Channel (RESEARCH Pitfall 3).
     @Volatile private var transferInFlight = false
-    private var pendingGetInitDeferred: CompletableDeferred<SysExProtocol.GetInitResponse>? = null
-    private var pendingGetPages: Channel<SysExProtocol.GetDataResponse>? = null
+    // (pendingGetInitDeferred / pendingGetPages removed — paged GET correlates by reqId)
     // Hardware-verified (2026-06-24): device returns "unexpected page" if DATA frames are sent
     // before the INIT response arrives. pendingPutInitDeferred is completed by the dispatcher
     // on the first PUT response; putSampleFile awaits it before sending any DATA pages.
@@ -399,7 +398,6 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 // in-flight op from state and pass the WHOLE unpacked body to the handler.
                 val inFlightCmd = when {
                     transferInFlight                             -> SysExProtocol.TE_SYSEX_FILE_PUT
-                    pendingGetInitDeferred != null || pendingGetPages != null -> SysExProtocol.TE_SYSEX_FILE_GET
                     else                                         -> -1
                 }
                 // Extract the response reqId from the raw frame.
@@ -487,15 +485,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 }
             }
             SysExProtocol.TE_SYSEX_FILE_GET -> {
-                if (transferInFlight) {
-                    dispatchPagedGetResponse(payload)
-                } else {
-                    // Legacy Phase 2 single-chunk path — emit (echoed reqId, payload) so
-                    // BackupManager can correlate the chunk to the FILE_GET it sent.
-                    repositoryScope.launch {
-                        _fileChunks.emit(responseReqId to payload)
-                    }
-                }
+                // Paged GET (getProjectArchive / getFileBytes) is reqId-routed via fileWaiters.
+                // The legacy single-chunk emit remains only for the not-yet-rebuilt BackupManager.
+                repositoryScope.launch { _fileChunks.emit(responseReqId to payload) }
             }
             SysExProtocol.TE_SYSEX_FILE_PUT -> {
                 if (transferInFlight) dispatchPagedPutResponse(payload, responseReqId, fileStatus)
@@ -505,50 +497,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         }
     }
 
-    /**
-     * Route a paged FILE_GET response. [payload] is the body after [FILE, GET] is stripped:
-     * `[status][...INIT-or-DATA body]`. The INIT response resolves [pendingGetInitDeferred];
-     * subsequent DATA responses stream through [pendingGetPages]. The request stays registered
-     * while status >= STATUS_SPECIFIC_SUCCESS_START and completes (channel closes) on STATUS_OK.
-     */
-    private fun dispatchPagedGetResponse(payload: ByteArray) {
-        val status = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
-        val body = if (payload.size > 1) payload.copyOfRange(1, payload.size) else ByteArray(0)
-
-        val initDeferred = pendingGetInitDeferred
-        if (initDeferred != null && !initDeferred.isCompleted) {
-            // First response after GET_INIT carries fileSize/fileName.
-            // body is already unpacked — use directly.
-            try {
-                initDeferred.complete(SysExProtocol.parseGetInitResponse(body))
-            } catch (e: IllegalArgumentException) {
-                Log.e("EP133APP", "GET INIT parse failed", e)
-                initDeferred.completeExceptionally(e)
-            }
-            return
-        }
-
-        val pages = pendingGetPages ?: return
-        if (status != SysExProtocol.STATUS_OK && status < SysExProtocol.STATUS_SPECIFIC_SUCCESS_START) {
-            // Error status (< SUCCESS_START, non-OK) — abort the transfer.
-            Log.e("EP133APP", "Paged GET aborted: status=$status")
-            pages.close(IllegalStateException("device error status $status"))
-            return
-        }
-        val data = try {
-            // body is already unpacked — parse directly.
-            SysExProtocol.parseGetDataResponse(body)
-        } catch (e: IllegalArgumentException) {
-            Log.e("EP133APP", "GET DATA parse failed", e)
-            pages.close(e)
-            return
-        }
-        pages.trySend(data)
-        if (status == SysExProtocol.STATUS_OK) {
-            // Terminal response — no more pages will follow.
-            pages.close()
-        }
-    }
+    // (dispatchPagedGetResponse removed — paged FILE_GET correlates per page by reqId via
+    //  fileWaiters; see getProjectArchive.)
 
     /**
      * Route a paged FILE_PUT response.
@@ -733,49 +683,38 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         val portId = _deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
         return fileOpMutex.withLock {
-            if (transferInFlight) throw IllegalStateException("transfer already in flight")
-            transferInFlight = true
-            val initDeferred = CompletableDeferred<SysExProtocol.GetInitResponse>()
-            val pages = Channel<SysExProtocol.GetDataResponse>(Channel.UNLIMITED)
-            pendingGetInitDeferred = initDeferred
-            pendingGetPages = pages
-            try {
-                val getInitReqId = nextFileReqId()
-                val initFrame = SysExProtocol.buildFileGetInitFrame(currentDeviceId, nodeId, requestId = getInitReqId)
-                awaitedFileReqId = getInitReqId
-                midiManager.sendMidi(portId, initFrame)
-                val init = withTimeoutOrNull(GET_INIT_TIMEOUT_MS) { initDeferred.await() }
-                    ?: throw IllegalStateException("GET INIT timed out")
-                Log.d("EP133APP", "Project GET init: ${init.fileName} ${init.fileSize} bytes")
+            // INIT: one request -> one response (OneShot via the registry).
+            val initReqId = nextFileReqId()
+            val initFrame = SysExProtocol.buildFileGetInitFrame(currentDeviceId, nodeId, requestId = initReqId)
+            val initResp = awaitFileOp(initReqId, FileOpKind.GET_INIT, portId, initFrame, GET_INIT_TIMEOUT_MS)
+                ?: throw IllegalStateException("GET INIT timed out")
+            val init = SysExProtocol.parseGetInitResponse(initResp.body)
+            Log.d("EP133APP", "Project GET init: ${init.fileName} ${init.fileSize} bytes")
 
-                val out = java.io.ByteArrayOutputStream(init.fileSize.coerceAtLeast(0))
-                val cap = init.fileSize + SysExProtocol.MAX_PAGE_BYTES
-                var page = 0
-                while (out.size() < init.fileSize) {
-                    val getDataReqId = nextFileReqId()
-                    val dataFrame = SysExProtocol.buildFileGetDataFrame(currentDeviceId, page, requestId = getDataReqId)
-                    awaitedFileReqId = getDataReqId
-                    midiManager.sendMidi(portId, dataFrame)
-                    val resp = withTimeoutOrNull(GET_PAGE_TIMEOUT_MS) { pages.receive() }
-                        ?: throw IllegalStateException("GET DATA page $page timed out")
-                    check(resp.page == page) { "unexpected page ${resp.page}, expected $page" }
-                    if (resp.data.isEmpty()) break
-                    check(out.size() + resp.data.size <= cap) {
-                        "GET overflow: ${out.size() + resp.data.size} bytes exceeds cap $cap"
-                    }
-                    out.write(resp.data)
-                    page = resp.nextPage
+            val out = java.io.ByteArrayOutputStream(init.fileSize.coerceAtLeast(0))
+            val cap = init.fileSize + SysExProtocol.MAX_PAGE_BYTES
+            var page = 0
+            while (out.size() < init.fileSize) {
+                // Each GET_DATA page is its own request -> its own response (OneShot by reqId).
+                val dataReqId = nextFileReqId()
+                val dataFrame = SysExProtocol.buildFileGetDataFrame(currentDeviceId, page, requestId = dataReqId)
+                val resp = awaitFileOp(dataReqId, FileOpKind.GET_DATA, portId, dataFrame, GET_PAGE_TIMEOUT_MS)
+                    ?: throw IllegalStateException("GET DATA page $page timed out")
+                if (resp.status != SysExProtocol.STATUS_OK &&
+                    resp.status < SysExProtocol.STATUS_SPECIFIC_SUCCESS_START
+                ) {
+                    throw IllegalStateException("GET DATA page $page device error status ${resp.status}")
                 }
-                out.toByteArray()
-            } catch (e: CancellationException) {
-                throw e
-            } finally {
-                pages.close()
-                pendingGetInitDeferred = null
-                pendingGetPages = null
-                awaitedFileReqId = -1
-                transferInFlight = false
+                val data = SysExProtocol.parseGetDataResponse(resp.body)
+                check(data.page == page) { "unexpected page ${data.page}, expected $page" }
+                if (data.data.isEmpty()) break
+                check(out.size() + data.data.size <= cap) {
+                    "GET overflow: ${out.size() + data.data.size} bytes exceeds cap $cap"
+                }
+                out.write(data.data)
+                page = data.nextPage
             }
+            out.toByteArray()
         }
     }
 
