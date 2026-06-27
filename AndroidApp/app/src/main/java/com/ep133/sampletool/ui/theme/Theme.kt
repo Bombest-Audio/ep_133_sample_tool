@@ -8,6 +8,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
@@ -60,7 +61,10 @@ private val TEDarkColorScheme = darkColorScheme(
 @Composable
 fun EP133Theme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    sku: Ep133Sku = Ep133Sku.EP133,
+    // Dynamic color OFF by default: Material You would override the precise TE faceplate palette
+    // with the user's wallpaper colors. The redesign wants the exact hardware look.
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = when {
@@ -87,6 +91,9 @@ fun EP133Theme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = EP133Typography,
-        content = content,
-    )
+    ) {
+        CompositionLocalProvider(LocalEP133Tokens provides ep133Tokens(darkTheme, sku)) {
+            content()
+        }
+    }
 }
