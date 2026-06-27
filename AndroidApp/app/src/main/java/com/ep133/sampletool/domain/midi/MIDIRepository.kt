@@ -217,7 +217,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     @Volatile private var metadataSetInFlight = false
     private var pendingMetadataSetAckDeferred: CompletableDeferred<Boolean>? = null
 
-    private var pendingNodeInfoDeferred: CompletableDeferred<SysExProtocol.NodeInfo>? = null
+    // (pendingNodeInfoDeferred removed — FILE_INFO now correlates by reqId via fileWaiters)
 
     // ── File protocol flows (for BackupManager) ──
     data class FileListEntry(val path: String, val nodeId: Int)
@@ -417,7 +417,6 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                     pendingNodeListDeferred != null              -> SysExProtocol.TE_SYSEX_FILE_LIST
                     transferInFlight                             -> SysExProtocol.TE_SYSEX_FILE_PUT
                     pendingGetInitDeferred != null || pendingGetPages != null -> SysExProtocol.TE_SYSEX_FILE_GET
-                    pendingNodeInfoDeferred != null              -> SysExProtocol.TE_SYSEX_FILE_INFO
                     else                                         -> -1
                 }
                 // Extract the response reqId from the raw frame.
@@ -606,22 +605,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             SysExProtocol.TE_SYSEX_FILE_PUT -> {
                 if (transferInFlight) dispatchPagedPutResponse(payload, responseReqId, fileStatus)
             }
-            SysExProtocol.TE_SYSEX_FILE_INFO -> {
-                // payload is already unpacked — use directly.
-                val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133APP", "MIDI META: inbound FILE_INFO payload[${payload.size}] $hexDump")
-
-                val deferred = pendingNodeInfoDeferred ?: return
-                try {
-                    val info = SysExProtocol.parseFileInfo(payload)
-                    Log.d("EP133APP", "MIDI META: FILE_INFO nodeId=${info.nodeId} name='${info.name}' flags=${info.flags}")
-                    deferred.complete(info)
-                } catch (e: Exception) {
-                    Log.e("EP133APP", "MIDI META: FILE_INFO parse failed", e)
-                    deferred.completeExceptionally(e)
-                }
-                pendingNodeInfoDeferred = null
-            }
+            // FILE_INFO is handled by reqId routing via fileWaiters (see getNodeInfo) and no
+            // longer falls through here.
         }
     }
 
@@ -1425,26 +1410,46 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *
      * @return Parsed [NodeInfo] or null on timeout / parse error.
      */
-    suspend fun getNodeInfo(nodeId: Int): SysExProtocol.NodeInfo? {
-        val portId = _deviceState.value.outputPortId ?: return null
-        val deferred = CompletableDeferred<SysExProtocol.NodeInfo>()
-        pendingNodeInfoDeferred = deferred
-        val infoReqId = nextFileReqId()
+    /**
+     * Shared spine for single-response file ops: register a [FileWaiter.OneShot] under [reqId],
+     * send [frame], and await the response the device echoes back under that reqId (routed via
+     * [fileWaiters]) up to [timeoutMs]. Always deregisters in finally. Returns null on timeout;
+     * rethrows CancellationException. The caller parses [FileResponse.body] for its own op.
+     *
+     * Routes by reqId, so it is immune to the interleaving/duplicate-response race that the old
+     * mutable-flag model hit (backlog 999.4). Does NOT acquire [fileOpMutex] — callers that need
+     * device-access serialization hold it already.
+     */
+    private suspend fun awaitFileOp(
+        reqId: Int,
+        kind: FileOpKind,
+        portId: String,
+        frame: ByteArray,
+        timeoutMs: Long,
+    ): FileResponse? {
+        val waiter = FileWaiter.OneShot(reqId, kind)
+        fileWaiters.register(waiter)
         return try {
-            val frame = SysExProtocol.buildFileInfoFrame(currentDeviceId, nodeId, requestId = infoReqId)
-            val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-            Log.d("EP133APP", "MIDI META: outbound FILE_INFO nodeId=$nodeId reqId=$infoReqId frame[${frame.size}] $hexDump")
-            awaitedFileReqId = infoReqId
             midiManager.sendMidi(portId, frame)
-            withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() }
+            withTimeoutOrNull(timeoutMs) { waiter.deferred.await() }
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            Log.e("EP133APP", "MIDI META: getNodeInfo failed for nodeId=$nodeId", e)
-            null
         } finally {
-            if (pendingNodeInfoDeferred === deferred) pendingNodeInfoDeferred = null
-            if (awaitedFileReqId == infoReqId) awaitedFileReqId = -1
+            fileWaiters.remove(reqId)
+        }
+    }
+
+    suspend fun getNodeInfo(nodeId: Int): SysExProtocol.NodeInfo? {
+        val portId = _deviceState.value.outputPortId ?: return null
+        val reqId = nextFileReqId()
+        val frame = SysExProtocol.buildFileInfoFrame(currentDeviceId, nodeId, requestId = reqId)
+        Log.d("EP133APP", "MIDI META: outbound FILE_INFO nodeId=$nodeId reqId=$reqId")
+        val resp = awaitFileOp(reqId, FileOpKind.INFO, portId, frame, METADATA_TIMEOUT_MS) ?: return null
+        return try {
+            SysExProtocol.parseFileInfo(resp.body)
+        } catch (e: Exception) {
+            Log.e("EP133APP", "MIDI META: FILE_INFO parse failed for nodeId=$nodeId", e)
+            null
         }
     }
 
