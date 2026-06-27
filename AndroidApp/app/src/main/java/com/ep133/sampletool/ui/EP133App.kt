@@ -16,8 +16,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.ep133.sampletool.ui.theme.Ep133Sku
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -79,7 +87,15 @@ fun EP133App(
     sampleImportViewModel: SampleImportViewModel,
     isConnected: Boolean = false,
 ) {
-    EP133Theme {
+    // Theme state lives above EP133Theme so the header controls can re-theme the whole app.
+    var themeMode by remember { mutableIntStateOf(0) } // 0 = follow system, 1 = light, 2 = dark
+    var sku by remember { mutableStateOf(Ep133Sku.EP133) }
+    val dark = when (themeMode) {
+        1 -> false
+        2 -> true
+        else -> isSystemInDarkTheme()
+    }
+    EP133Theme(darkTheme = dark, sku = sku) {
         val t = LocalEP133Tokens.current
         val navController = rememberNavController()
         val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -102,11 +118,13 @@ fun EP133App(
                     .padding(horizontal = 15.dp, vertical = 13.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // Tap the badge to switch SKU theme (EP-133 orange ↔ EP-1320 rust).
                 Text(
-                    "EP·133",
+                    if (sku == Ep133Sku.EP133) "EP·133" else "EP·1320",
                     Modifier
                         .clip(BadgeShape)
                         .background(t.accent, BadgeShape)
+                        .clickable { sku = if (sku == Ep133Sku.EP133) Ep133Sku.EP1320 else Ep133Sku.EP133 }
                         .padding(horizontal = 7.dp, vertical = 4.dp),
                     color = t.onAccent,
                     fontFamily = MonoFont,
@@ -122,6 +140,17 @@ fun EP133App(
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 1.1.sp,
                 )
+                // Tap to cycle theme: follow system → light → dark.
+                Text(
+                    when (themeMode) { 1 -> "☀"; 2 -> "☾"; else -> "◐" },
+                    Modifier
+                        .clip(BadgeShape)
+                        .clickable { themeMode = (themeMode + 1) % 3 }
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                    color = t.text2,
+                    fontSize = 14.sp,
+                )
+                Spacer(Modifier.width(8.dp))
                 val dot = if (isConnected) t.live else t.text3
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
