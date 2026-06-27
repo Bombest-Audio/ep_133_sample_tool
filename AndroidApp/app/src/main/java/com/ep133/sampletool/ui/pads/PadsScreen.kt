@@ -307,9 +307,6 @@ fun PadsScreen(viewModel: PadsViewModel) {
             LegendItem(dotColor = t.live, label = "IN SCALE = TEAL HAIRLINE")
             LegendItem(dotColor = t.accent, label = "PRESSED = GLOW")
         }
-
-        // ── Waveform + transport readout strip ────────────────────────────────
-        WaveformStrip()
     }
 }
 
@@ -331,71 +328,3 @@ private fun LegendItem(dotColor: Color, label: String) {
     }
 }
 
-/**
- * Decorative waveform + BPM readout strip, mirroring the design's bottom transport panel.
- * Visual only — the Pads screen has no sequencer/transport behavior to drive.
- */
-@Composable
-private fun WaveformStrip() {
-    val t = LocalEP133Tokens.current
-    val radius = RoundedCornerShape(3.dp)
-    // Static bar heights (fractions of the strip), matching the design's calm scope readout.
-    val bars = remember {
-        listOf(
-            0.20f, 0.55f, 0.90f, 0.70f, 0.40f, 0.62f, 0.30f, 0.48f, 0.80f, 0.35f, 0.55f, 0.22f,
-            0.44f, 0.66f, 0.28f, 0.50f, 0.18f, 0.38f, 0.72f, 0.30f, 0.52f, 0.24f, 0.60f, 0.33f,
-            0.46f, 0.70f,
-        )
-    }
-    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-        // Scope
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp)
-                .clip(radius)
-                .background(t.inset, radius)
-                .border(1.dp, t.rule, radius)
-                .padding(horizontal = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            bars.forEachIndexed { i, h ->
-                val barColor = if (i in 2..3) t.accent else t.text3
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(h)
-                        .clip(RoundedCornerShape(1.dp))
-                        .background(barColor),
-                )
-            }
-        }
-        // BPM readout
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(radius)
-                .background(t.panel2, radius)
-                .border(1.dp, t.rule, radius)
-                .padding(horizontal = 13.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                M3Text("120", color = t.text, fontFamily = FontFamily.Monospace, fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                M3Text(
-                    "BPM",
-                    color = t.text3,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 9.sp,
-                    letterSpacing = 1.0.sp,
-                    modifier = Modifier.padding(bottom = 3.dp),
-                )
-            }
-        }
-    }
-}
