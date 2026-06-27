@@ -149,6 +149,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private val channelBuffer = java.io.ByteArrayOutputStream(3)
 
     // ── SysEx response deferreds (D-12) ──
+    // reqId→waiter correlation registry (backlog 999.4). Migrated file ops register a waiter
+    // under their unique reqId and the dispatcher routes responses by reqId via [fileWaiters].
+    // Ops not yet migrated still use the pending*Deferred fields below + the legacy fallback in
+    // dispatchFileResponse. As each op moves onto the registry its legacy branch is deleted.
+    private val fileWaiters = FileWaiterRegistry()
+
     private var pendingGreetDeferred: CompletableDeferred<Map<String, String>>? = null
     private var pendingMetadataDeferred: CompletableDeferred<Map<String, String>>? = null
     private var pendingFileListCountDeferred: CompletableDeferred<Int>? = null
@@ -367,6 +373,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 groupsNodeCache.clear()
                 groupNodeNameCache.clear()
                 Log.d("EP133MIDI", "GREET: cleared structure caches (new connection)")
+                // A greet means a (re)connection — fail any file ops still awaiting on the
+                // registry so they don't hang to timeout against a device that just reset.
+                fileWaiters.failAll(IllegalStateException("device greet/reconnect"))
 
                 val parsed = SysExProtocol.parseGreetResponse(payload)
                 Log.d("EP133APP", "GREET response: $parsed")
@@ -417,6 +426,15 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 // reqId high bits = message[6] & 0x0F; low 7 bits = message[7] & 0x7F.
                 // This is the SAME extraction used by the existing awaitedPutReqId path (commit ba62b55).
                 val responseReqId = ((message[6].toInt() and 0x0F) shl 7) or (message[7].toInt() and 0x7F)
+                // reqId-first routing (backlog 999.4): if a migrated op registered a waiter for
+                // this reqId, the registry delivers the response and we are done. Ops not yet
+                // migrated register no waiter, so route() returns Unmatched and we fall through
+                // to the legacy in-flight-flag handling below.
+                val routed = fileWaiters.route(FileResponse(responseReqId, fileStatus, body))
+                if (routed != FileWaiterRegistry.RouteResult.Unmatched) {
+                    Log.d("EP133MIDI", "MIDI META: routed FILE response reqId=$responseReqId -> $routed")
+                    return
+                }
                 val bodyHex = body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
                 Log.d("EP133MIDI", "MIDI META: FILE cmd=5 inFlightCmd=$inFlightCmd responseReqId=$responseReqId awaitedFileReqId=$awaitedFileReqId body[${body.size}] $bodyHex")
                 if (inFlightCmd == -1) {
