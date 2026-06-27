@@ -6,6 +6,8 @@ All notable changes to this project are tracked here. Format follows
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-06-26
+
 The big one: this release turns a desktop-only tool into a real cross-platform app
 and opens the whole thing up as a community project.
 
@@ -49,6 +51,7 @@ and opens the whole thing up as a community project.
 - First fully offline build of the EP-133 sample tool — factory pack and all
   WebAssembly audio libraries bundled, no internet required.
 
-[Unreleased]: https://github.com/Bombest-Audio/ep_133_sample_tool/compare/1.2.0...HEAD
+[Unreleased]: https://github.com/Bombest-Audio/ep_133_sample_tool/compare/2.0.0...HEAD
+[2.0.0]: https://github.com/Bombest-Audio/ep_133_sample_tool/compare/1.2.0...2.0.0
 [1.2.0]: https://github.com/Bombest-Audio/ep_133_sample_tool/compare/1.1.0...1.2.0
 [1.1.0]: https://github.com/Bombest-Audio/ep_133_sample_tool/releases/tag/1.1.0
