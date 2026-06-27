@@ -34,3 +34,10 @@ AndroidApp/app/src/main/assets/data/
 
 # GSD planning artifacts (internal; contain local paths)
 .planning/
+
+# Signing credentials — NEVER commit (release keystore + secrets)
+*.jks
+*.keystore
+*.p12
+keystore.properties
+.secrets/
