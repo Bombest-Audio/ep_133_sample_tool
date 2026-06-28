@@ -111,6 +111,11 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
     private val _showRestoreConfirm = MutableStateFlow(false)
     val showRestoreConfirm: StateFlow<Boolean> = _showRestoreConfirm.asStateFlow()
 
+    // True while querying firmware/storage/sample-count, so the storage card shows a spinner
+    // only while loading (not forever when a value comes back empty).
+    private val _statsLoading = MutableStateFlow(false)
+    val statsLoading: StateFlow<Boolean> = _statsLoading.asStateFlow()
+
     // SAF callbacks — set by MainActivity.onCreate() (cannot register ActivityResult inside ViewModel)
     var onRequestBackup: ((suggestedName: String) -> Unit)? = null
     var onRequestRestore: (() -> Unit)? = null
@@ -227,6 +232,19 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
     fun refreshDevices() {
         midi.refreshDeviceState()
     }
+
+    /** Query firmware / storage / sample count. Called when the Device screen opens connected. */
+    fun loadStats() {
+        if (_statsLoading.value) return
+        viewModelScope.launch {
+            _statsLoading.value = true
+            try {
+                midi.queryDeviceStats()
+            } finally {
+                _statsLoading.value = false
+            }
+        }
+    }
 }
 
 /** Hard ~2–3dp faceplate corner (mirrors the design's `border-radius:2px/3px`). */
@@ -249,7 +267,13 @@ fun DeviceScreen(
     val restoreProgress by viewModel.restoreProgress.collectAsState()
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val showRestoreConfirm by viewModel.showRestoreConfirm.collectAsState()
+    val statsLoading by viewModel.statsLoading.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // Query firmware / storage / samples whenever we're connected and the screen is shown.
+    LaunchedEffect(deviceState.connected) {
+        if (deviceState.connected) viewModel.loadStats()
+    }
 
     // Show snackbar when message appears
     LaunchedEffect(snackbarMessage) {
@@ -292,7 +316,7 @@ fun DeviceScreen(
                 verticalArrangement = Arrangement.spacedBy(11.dp),
             ) {
                 ConnectionCard(deviceState)
-                StorageBar(deviceState)
+                StorageBar(deviceState, loading = statsLoading)
                 StatsGrid(deviceState, selectedChannel)
                 ChannelSelector(
                     selected = selectedChannel,
@@ -382,7 +406,7 @@ private fun MonoFact(label: String, value: String, valueColor: Color) {
 
 // ── Storage progress (M3 LinearProgressIndicator, accent track, mono readout) ──
 @Composable
-private fun StorageBar(state: DeviceState) {
+private fun StorageBar(state: DeviceState, loading: Boolean) {
     val t = LocalEP133Tokens.current
     val storageProgress = if (state.storageUsedBytes != null && state.storageTotalBytes != null && state.storageTotalBytes > 0) {
         (state.storageUsedBytes.toFloat() / state.storageTotalBytes.toFloat()).coerceIn(0f, 1f)
@@ -409,10 +433,13 @@ private fun StorageBar(state: DeviceState) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("STORAGE", color = t.text2, fontFamily = Mono, fontSize = 9.5.sp, letterSpacing = 0.6.sp)
-            if (readout != null) {
-                Text(readout, color = t.text, fontFamily = Mono, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.4.sp)
-            } else {
-                CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp, color = t.text3)
+            when {
+                readout != null ->
+                    Text(readout, color = t.text, fontFamily = Mono, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.4.sp)
+                loading ->
+                    CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp, color = t.text3)
+                else ->
+                    Text("—", color = t.text3, fontFamily = Mono, fontSize = 9.5.sp, fontWeight = FontWeight.Bold)
             }
         }
         LinearProgressIndicator(
