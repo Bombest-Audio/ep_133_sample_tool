@@ -23,21 +23,10 @@
     @android.webkit.JavascriptInterface <methods>;
 }
 
-# ── JNI / Oboe native synth ───────────────────────────────────────────────────
-# native_synth.cpp exports JNI functions by mangled name:
-#   Java_com_ep133_sampletool_domain_midi_NativeSynth_nativeCreate, etc.
-# Resolved by dynamic name lookup after System.loadLibrary("nativesynth"). If R8
-# renames the NativeSynth class or its native methods the runtime lookup fails
-# with UnsatisfiedLinkError. Keep the class name and its native methods.
--keep class com.ep133.sampletool.domain.midi.NativeSynth {
-    native <methods>;
-    long nativeCreate(int);
-    void nativeNoteOn(long, int, int);
-    void nativeNoteOff(long, int);
-    void nativeAllNotesOff(long);
-    void nativeClose(long);
-}
-# Generic safety net: any native method anywhere keeps its declaring class name.
+# ── JNI native methods ────────────────────────────────────────────────────────
+# (The NativeSynth offline synth was removed with the Chords screen.) Any
+# remaining JNI native method must keep its declaring class name so the
+# System.loadLibrary lookup resolves it.
 -keepclasseswithmembernames class * {
     native <methods>;
 }
@@ -55,5 +44,4 @@
 -dontwarn org.jetbrains.annotations.**
 
 # ── Notes suppression for the JNI-referenced classes we already -keep above ────
--dontnote com.ep133.sampletool.domain.midi.NativeSynth
 -dontnote com.ep133.sampletool.webview.MIDIBridge
