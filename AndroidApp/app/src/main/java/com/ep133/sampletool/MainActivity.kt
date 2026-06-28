@@ -34,6 +34,10 @@ class MainActivity : ComponentActivity() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // Tracks whether onStart has run before, so we only re-acquire MIDI when *returning* to the
+    // foreground (the first launch's connect flow is driven by onCreate + the USB-attach intent).
+    private var startedOnce = false
+
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
@@ -100,6 +104,32 @@ class MainActivity : ComponentActivity() {
 
         // Enumerate MIDI devices after USB permission grant delay
         mainHandler.postDelayed({ midiRepo.refreshDeviceState() }, 2000)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // USB-MIDI ports are exclusive, and the WebView (SampleManagerActivity) owns a second
+        // MIDIManager. Re-claim the port when we come back to the foreground. Skip the very first
+        // onStart — onCreate + the USB-attach intent handle the initial connect.
+        if (startedOnce) reacquireMidi(attempt = 0)
+        startedOnce = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Release the exclusive USB-MIDI port so the foreground owner can claim it. Re-acquired
+        // in onStart. (See SampleManagerActivity for the matching half.)
+        midiManager.releasePorts()
+    }
+
+    /**
+     * Re-open the device + receive port after returning to the foreground. Retried twice because
+     * our onStart fires *before* the outgoing activity's onStop releases the port (the launch-order
+     * race); by the second retry it has released. refreshDevices() is idempotent (dedups ports).
+     */
+    private fun reacquireMidi(attempt: Int) {
+        midiManager.refreshDevices()
+        if (attempt < 2) mainHandler.postDelayed({ reacquireMidi(attempt + 1) }, 500)
     }
 
     override fun onDestroy() {
