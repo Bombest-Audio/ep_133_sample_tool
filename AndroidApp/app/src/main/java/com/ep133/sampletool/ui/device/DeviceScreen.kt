@@ -249,6 +249,11 @@ class DeviceViewModel(
         _snackbarMessage.value = null
     }
 
+    /** Surface a snackbar message from outside the ViewModel (e.g. MainActivity). */
+    fun showSnackbar(message: String) {
+        _snackbarMessage.value = message
+    }
+
     fun selectChannel(channel: PadChannel) {
         _selectedChannel.value = channel
         // EP-133 uses MIDI ch 1 (index 0) for all groups by default
@@ -344,6 +349,7 @@ fun DeviceScreen(
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val showRestoreConfirm by viewModel.showRestoreConfirm.collectAsState()
     val statsLoading by viewModel.statsLoading.collectAsState()
+    val firmwareUpdate by viewModel.firmwareUpdate.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
     // Query firmware / storage / samples whenever we're connected and the screen is shown.
@@ -394,6 +400,10 @@ fun DeviceScreen(
                 ConnectionCard(deviceState)
                 StorageBar(deviceState, loading = statsLoading)
                 StatsGrid(deviceState, selectedChannel)
+                FirmwareUpdateBanner(
+                    state = firmwareUpdate,
+                    onOpenUpdater = { viewModel.openFirmwareUpdater() },
+                )
                 ChannelSelector(
                     selected = selectedChannel,
                     onSelect = viewModel::selectChannel,
@@ -419,6 +429,77 @@ fun DeviceScreen(
             hostState = snackbarHostState,
             modifier = Modifier.align(Alignment.BottomCenter),
         )
+    }
+}
+
+// ── Firmware update banner — shows above ChannelSelector when UpdateAvailable; spinner on Checking ──
+@Composable
+private fun FirmwareUpdateBanner(
+    state: FirmwareUpdateState,
+    onOpenUpdater: () -> Unit,
+) {
+    val t = LocalEP133Tokens.current
+    when (state) {
+        is FirmwareUpdateState.UpdateAvailable -> {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(PanelRadius)
+                    .background(t.accent.copy(alpha = 0.12f), PanelRadius)
+                    .border(1.dp, t.accent.copy(alpha = 0.35f), PanelRadius)
+                    .padding(horizontal = 13.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Firmware ${state.latest} available",
+                    color = t.text,
+                    fontFamily = Mono,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.3.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                TextButton(
+                    onClick = onOpenUpdater,
+                    colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
+                ) {
+                    Text(
+                        text = "Open updater",
+                        fontFamily = Mono,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.4.sp,
+                    )
+                }
+            }
+        }
+        is FirmwareUpdateState.Checking -> {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 2.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 1.5.dp,
+                    color = t.live,
+                )
+                Text(
+                    text = "CHECKING FIRMWARE…",
+                    color = t.text3,
+                    fontFamily = Mono,
+                    fontSize = 9.sp,
+                    letterSpacing = 0.8.sp,
+                )
+            }
+        }
+        else -> {
+            // Idle, UpToDate, Unknown — render nothing
+        }
     }
 }
 

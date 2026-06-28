@@ -8,6 +8,7 @@ import android.hardware.usb.UsbManager
 import android.media.midi.MidiManager
 import android.net.Uri
 import android.os.Bundle
+import androidx.browser.customtabs.CustomTabsIntent
 import android.os.Handler
 import android.os.Looper
 import android.view.WindowManager
@@ -84,6 +85,14 @@ class MainActivity : ComponentActivity() {
         deviceViewModel.onRequestBackup = { name -> backupLauncher.launch(name) }
         deviceViewModel.onRequestRestore = { restoreLauncher.launch(arrayOf("*/*")) }
         sampleImportViewModel.onRequestPick = { importLauncher.launch(arrayOf("audio/*")) }
+        deviceViewModel.onOpenFirmwareUpdater = {
+            try {
+                val customTabsIntent = CustomTabsIntent.Builder().build()
+                customTabsIntent.launchUrl(this, Uri.parse("https://teenage.engineering/apps/update"))
+            } catch (e: Exception) {
+                deviceViewModel.showSnackbar("No browser available to open the updater")
+            }
+        }
 
         setContent {
             val deviceState by midiRepo.deviceState.collectAsState()
