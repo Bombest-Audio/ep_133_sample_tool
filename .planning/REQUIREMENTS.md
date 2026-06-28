@@ -55,7 +55,7 @@
 
 - [x] **FW-01**: User sees an "update available" prompt on the Device screen when the connected EP-133's firmware (`sw_version` from GREET) is older than the latest TE-published version
 - [x] **FW-02**: The latest firmware version is resolved by scraping the Teenage Engineering downloads page, excluding release-date tokens, falling back to a bundled known-latest constant on any network or parse failure
-- [ ] **FW-03**: User can launch TE's official WebUSB firmware updater from within the app via a Chrome Custom Tab to flash the device (in-app handoff; the app does not flash firmware itself)
+- [x] **FW-03**: User can launch TE's official WebUSB firmware updater from within the app via a Chrome Custom Tab to flash the device (in-app handoff; the app does not flash firmware itself)
 
 ## v2 Requirements
 
@@ -119,7 +119,7 @@ Updated after roadmap creation: 2026-03-28
 | IOS-04 | Phase 3 | Pending |
 | FW-01 | Phase 999.3 | Complete |
 | FW-02 | Phase 999.3 | Complete |
-| FW-03 | Phase 999.3 | Pending |
+| FW-03 | Phase 999.3 | Complete |
 
 **Coverage:**
 - v1 requirements: 20 total
