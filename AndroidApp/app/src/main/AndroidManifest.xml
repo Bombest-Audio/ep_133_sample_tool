@@ -11,6 +11,9 @@
         android:name="android.software.midi"
         android:required="true" />
 
+    <!-- HTTPS GET to teenage.engineering for firmware version check + Chrome Custom Tab handoff -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:allowBackup="false"
         android:hardwareAccelerated="true"
