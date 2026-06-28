@@ -254,7 +254,6 @@ private val Mono = FontFamily.Monospace
 @Composable
 fun DeviceScreen(
     viewModel: DeviceViewModel,
-    onNavigateToWebView: () -> Unit = {},
 ) {
     val t = LocalEP133Tokens.current
     val deviceState by viewModel.deviceState.collectAsState()
@@ -336,7 +335,6 @@ fun DeviceScreen(
                     onBackup = { viewModel.triggerBackup() },
                     onRestore = { viewModel.triggerRestore() },
                 )
-                FactoryAndFormatSection(onOpen = onNavigateToWebView)
             }
         }
 
@@ -671,64 +669,6 @@ private fun BackupRestoreSection(
                 trackColor = t.inset,
             )
         }
-    }
-}
-
-// ── Factory restore + format (ghost action rows; format is destructive) ──
-@Composable
-private fun FactoryAndFormatSection(onOpen: () -> Unit) {
-    val t = LocalEP133Tokens.current
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Ep133SectionLabel("FACTORY RESET")
-        DeviceActionRow(
-            label = "Restore Factory Sounds",
-            tag = "559 SOUNDS",
-            tagColor = t.text3,
-            labelColor = t.text,
-            onClick = onOpen,
-        )
-        Text(
-            text = "Opens Sample Manager to restore the 559 factory sounds bundled with the EP-133.",
-            color = t.text3,
-            fontFamily = Mono,
-            fontSize = 9.5.sp,
-            letterSpacing = 0.3.sp,
-        )
-        DeviceActionRow(
-            label = "Format Device",
-            tag = "ERASES ALL",
-            tagColor = t.accent,
-            labelColor = t.accent,
-            borderColor = t.accent,
-            onClick = onOpen,
-        )
-    }
-}
-
-/** A faceplate action row: label on the left, mono tag on the right (design lines 292–297). */
-@Composable
-private fun DeviceActionRow(
-    label: String,
-    tag: String,
-    tagColor: Color,
-    labelColor: Color,
-    borderColor: Color? = null,
-    onClick: () -> Unit,
-) {
-    val t = LocalEP133Tokens.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(PanelRadius)
-            .background(t.panel2, PanelRadius)
-            .border(1.dp, borderColor ?: t.rule, PanelRadius)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 13.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(label, color = labelColor, fontSize = 13.sp)
-        Text(tag, color = tagColor, fontFamily = Mono, fontSize = 9.5.sp, letterSpacing = 0.4.sp)
     }
 }
 
