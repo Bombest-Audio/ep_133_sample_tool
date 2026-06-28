@@ -49,6 +49,14 @@
 - [ ] **IOS-03**: iOS app has a native SwiftUI Sounds screen with factory sound browser and pad assignment
 - [ ] **IOS-04**: iOS app has a native SwiftUI Device screen with connection status, real device stats, and settings configuration
 
+### Firmware Update (Android)
+
+> Phase 999.3. Reshaped from "detect, download, flash" after design (see `docs/superpowers/specs/2026-06-27-firmware-update-detection-design.md`). Native SysEx-bootloader flashing is de-risked out — the flash path is unmapped and bricking-risky, and TE gates flashing behind their own WebUSB updater. This ships detection + an in-app Custom Tab handoff to TE's official flasher.
+
+- [ ] **FW-01**: User sees an "update available" prompt on the Device screen when the connected EP-133's firmware (`sw_version` from GREET) is older than the latest TE-published version
+- [x] **FW-02**: The latest firmware version is resolved by scraping the Teenage Engineering downloads page, excluding release-date tokens, falling back to a bundled known-latest constant on any network or parse failure
+- [ ] **FW-03**: User can launch TE's official WebUSB firmware updater from within the app via a Chrome Custom Tab to flash the device (in-app handoff; the app does not flash firmware itself)
+
 ## v2 Requirements
 
 Deferred to next milestone once core native UI is validated with real hardware.
@@ -109,6 +117,9 @@ Updated after roadmap creation: 2026-03-28
 | IOS-02 | Phase 3 | Pending |
 | IOS-03 | Phase 3 | Pending |
 | IOS-04 | Phase 3 | Pending |
+| FW-01 | Phase 999.3 | Pending |
+| FW-02 | Phase 999.3 | Complete |
+| FW-03 | Phase 999.3 | Pending |
 
 **Coverage:**
 - v1 requirements: 20 total
