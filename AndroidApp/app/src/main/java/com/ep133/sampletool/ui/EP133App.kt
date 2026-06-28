@@ -41,18 +41,12 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.ep133.sampletool.SampleManagerActivity
-import com.ep133.sampletool.ui.beats.BeatsScreen
-import com.ep133.sampletool.ui.beats.BeatsViewModel
-import com.ep133.sampletool.ui.chords.ChordsScreen
-import com.ep133.sampletool.ui.chords.ChordsViewModel
 import com.ep133.sampletool.ui.device.DeviceScreen
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsScreen
 import com.ep133.sampletool.ui.pads.PadsViewModel
 import com.ep133.sampletool.ui.projects.ProjectsScreen
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
-import com.ep133.sampletool.ui.sounds.SoundsScreen
-import com.ep133.sampletool.ui.sounds.SoundsViewModel
 import com.ep133.sampletool.ui.theme.EP133Theme
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
 import com.ep133.sampletool.ui.`import`.SampleImportScreen
@@ -63,9 +57,6 @@ private val BadgeShape = RoundedCornerShape(3.dp)
 
 private enum class NavRoute(val route: String, val label: String) {
     PADS("pads", "PADS"),
-    BEATS("beats", "BEATS"),
-    SOUNDS("sounds", "SOUNDS"),
-    CHORDS("chords", "CHORDS"),
     PROJECTS("projects", "PROJ"),
     DEVICE("device", "DEVICE"),
     IMPORT("import", "IMPORT"),
@@ -79,9 +70,6 @@ private enum class NavRoute(val route: String, val label: String) {
 @Composable
 fun EP133App(
     padsViewModel: PadsViewModel,
-    beatsViewModel: BeatsViewModel,
-    soundsViewModel: SoundsViewModel,
-    chordsViewModel: ChordsViewModel,
     projectsViewModel: ProjectsViewModel,
     deviceViewModel: DeviceViewModel,
     sampleImportViewModel: SampleImportViewModel,
@@ -175,9 +163,6 @@ fun EP133App(
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     composable(NavRoute.PADS.route) { PadsScreen(padsViewModel) }
-                    composable(NavRoute.BEATS.route) { BeatsScreen(beatsViewModel) }
-                    composable(NavRoute.SOUNDS.route) { SoundsScreen(soundsViewModel) }
-                    composable(NavRoute.CHORDS.route) { ChordsScreen(chordsViewModel) }
                     composable(NavRoute.PROJECTS.route) { ProjectsScreen(projectsViewModel) }
                     composable(NavRoute.DEVICE.route) {
                         val context = LocalContext.current

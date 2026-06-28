@@ -296,8 +296,6 @@ fun PadsScreen(viewModel: PadsViewModel) {
             }
         }
 
-        Spacer(modifier = Modifier.weight(1f))
-
         // ── Legend ────────────────────────────────────────────────────────────
         Row(
             modifier = Modifier.fillMaxWidth(),
