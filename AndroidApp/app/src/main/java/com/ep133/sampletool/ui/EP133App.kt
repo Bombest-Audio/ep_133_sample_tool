@@ -29,7 +29,6 @@ import com.ep133.sampletool.ui.theme.Ep133Sku
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -40,7 +39,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.ep133.sampletool.SampleManagerActivity
 import com.ep133.sampletool.ui.device.DeviceScreen
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsScreen
@@ -165,11 +163,7 @@ fun EP133App(
                     composable(NavRoute.PADS.route) { PadsScreen(padsViewModel) }
                     composable(NavRoute.PROJECTS.route) { ProjectsScreen(projectsViewModel) }
                     composable(NavRoute.DEVICE.route) {
-                        val context = LocalContext.current
-                        DeviceScreen(
-                            viewModel = deviceViewModel,
-                            onNavigateToWebView = { SampleManagerActivity.launch(context) },
-                        )
+                        DeviceScreen(viewModel = deviceViewModel)
                     }
                     composable(NavRoute.IMPORT.route) {
                         SampleImportScreen(sampleImportViewModel)
