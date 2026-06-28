@@ -37,7 +37,9 @@ class SysExProtocolTest {
     @Test
     fun greetResponse_parsedFirmwareVersion() {
         val response = "sw_version:1.3.2;serial:ABC"
-        val payload = SysExProtocol.pack7bit(response.toByteArray(Charsets.US_ASCII))
+        // Hardware-verified: the device prefixes the greet body with a 1-byte status byte
+        // before the 7-bit-packed key:value;… payload.
+        val payload = byteArrayOf(0x00) + SysExProtocol.pack7bit(response.toByteArray(Charsets.US_ASCII))
         val parsed = SysExProtocol.parseGreetResponse(payload)
         assertEquals("1.3.2", parsed["sw_version"])
         assertEquals("ABC", parsed["serial"])

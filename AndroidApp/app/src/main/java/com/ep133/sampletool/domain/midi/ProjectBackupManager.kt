@@ -184,9 +184,13 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
         (context.getExternalFilesDir(BACKUPS_DIR)
             ?: context.filesDir.resolve(BACKUPS_DIR)).also { it.mkdirs() }
 
-    /** Extract the numeric slot index from a name like "P03" → 3; -1 if not a P{NN} name. */
+    /**
+     * Extract the numeric slot index from a project name. The device names slots "01".."09"
+     * (no "P" prefix — confirmed from the /projects/NN device paths), so match digits anywhere;
+     * "P03" still yields 3. Fall back to 0 so a backup never ends up named "P-1".
+     */
     private fun slotIndexOf(name: String): Int =
-        Regex("""P(\d{2})""").find(name)?.groupValues?.get(1)?.toIntOrNull() ?: -1
+        Regex("""(\d{1,2})""").find(name)?.groupValues?.get(1)?.toIntOrNull() ?: 0
 
     companion object {
         /**
