@@ -19,7 +19,7 @@ Unscheduled ideas (999.x). Promote into a milestone via `/gsd:review-backlog`.
 
 - [ ] **Phase 999.2: Desktop Splice-folder sync (Electron)** — On the desktop/Electron target, watch the user's local Splice folder (`~/Splice` macOS, `C:\Documents\Splice` Windows) and sync new samples onto the EP-133. Desktop-only and ToS-clean (reads the user's own local files — no Splice API). This is where a true "Splice sync" belongs; Android can't reach Splice without violating ToS (see 05-RESEARCH.md). Captured 2026-06-20.
 
-- [ ] **Phase 999.3: Firmware update — detect, download, flash** — Let the app check for newer EP-133/EP-1320 firmware, download it, and flash the device. The greet response already reports the installed versions (`sw_version`, `bl_version` — see `docs/ep133-sysex-protocol.md`), so the app can compare the device's `sw_version` against the latest published release and surface an "update available" prompt. Flashing rides the same TE SysEx stack we reverse-engineered: the reference web tool (`data/index.js`) has an `ensureDeviceInBootloader` routine plus a bootloader/firmware-write path — research that to map the bootloader-enter + image-transfer protocol (likely a variant of the paged FILE_PUT already implemented). **Open questions for research:** where firmware images are hosted and how to detect "latest" (TE has no public API — may need to observe what the web tool fetches), the exact bootloader-entry + flash sequence, image format/signing, and recovery/bricking safety. Highest-risk feature — a bad flash can brick the device, so it needs strong guards, post-flash verification, and a documented recovery path. Cross-platform wherever USB-MIDI works (desktop/Android; iOS if USB-MIDI permits). Captured 2026-06-25 (new firmware dropped today).
+- [ ] **Phase 999.3: Firmware update detection + in-app flash handoff (Android)** — Detect when the connected EP-133's firmware (`sw_version` from GREET — see `docs/ep133-sysex-protocol.md`) is older than the latest TE-published version, show an "update available" prompt on the Device screen, and let the user flash from within the app by opening TE's official WebUSB updater in a Chrome Custom Tab. **De-risked from the original "detect, download, flash" scope:** native SysEx-bootloader flashing is dropped — the flash path is unmapped and a bad flash bricks the device, and TE gates flashing behind their own WebUSB updater anyway. A plain embedded WebView can't run that updater (no `navigator.usb`); a Chrome Custom Tab can. Android only for v1 (the native Device screen exists only there). Design: `docs/superpowers/specs/2026-06-27-firmware-update-detection-design.md`. Native flashing remains future work if ever revisited. Captured 2026-06-25, reshaped 2026-06-27.
 
 - [ ] **Phase 999.4: SysEx dispatch — route responses by reqId→deferred map** — Refactor `MIDIRepository`'s file-response dispatcher to correlate each incoming response to its exact request via a `reqId → waiter(deferred + op-type)` map, instead of inferring the in-flight op from mutable global flags (`pendingNodeListDeferred`, `metadataJsonInFlight`, `transferInFlight`, single `awaitedFileReqId`, …). **Why:** hardware-proven race — during rapid sequential file ops (e.g. the active-group drill-down), the device answers correctly and the reqId even matches, but the dispatcher reads the global flags at a moment they're momentarily null/stale and drops the response (`inFlightCmd=-1`), so the op times out. Routing by reqId is the reference tool's model (`sendSysExFileRequest`) and is race-proof. **Unblocks active-group sync** (currently disabled in PadsScreen) and hardens every file op. **Risk:** touches the dispatch core the working sample-import/PUT path rides — must keep all PUT/import tests green and re-verify import on hardware after. Then re-enable the Pads active-group poll and confirm group tracking + finish the `/projects/<name>/groups → A–D` mapping (the active-PROJECT lookup already works; only the groups hop was blocked by this race). Captured 2026-06-25.
 
@@ -143,6 +143,30 @@ Plans:
 
 ---
 
+### Phase 999.3: Firmware update detection + in-app flash handoff (Android)
+**Goal**: An Android user with a connected EP-133 sees when newer firmware exists and can launch TE's official flasher from inside the app — without the app ever writing firmware to the device itself.
+**Origin**: Reshaped from "Firmware update — detect, download, flash" after design (`docs/superpowers/specs/2026-06-27-firmware-update-detection-design.md`). Native SysEx-bootloader flashing is de-risked out: the flash path is unmapped and bricking-risky, and TE gates flashing behind their own WebUSB updater. A plain embedded `WebView` can't run that updater (no `navigator.usb`); a Chrome Custom Tab can. This phase ships detection + an in-app Custom Tab handoff. Android only (the native Device screen exists only there).
+**Depends on**: Phase 2 (GREET `sw_version` parse, Device screen stats), Phase 5 (ViewModel + SAF-callback patterns reused for the open-updater handoff)
+**Requirements**: FW-01, FW-02, FW-03
+
+### Success Criteria
+1. The Device screen shows "Firmware <latest> available" when the connected EP-133's `sw_version` is older than the latest TE-published version; nothing when up to date.
+2. Latest version is resolved by scraping `teenage.engineering/downloads/ep-133`, excluding release-date tokens (e.g. `2026.06.24`), with a bundled `2.5` fallback on any network or parse failure (failure logged, never crashes).
+3. Tapping "Open updater" launches TE's WebUSB updater in a Chrome Custom Tab (WebUSB-capable, unlike an embedded WebView); the app never writes firmware itself.
+4. `FirmwareVersion` comparison, the TE-page parser (incl. date-exclusion), and `DeviceViewModel` firmware-update states are covered by unit tests.
+
+**Plans:** 3 plans
+
+Plans:
+- [ ] 999.3-firmware-update-detection-01-PLAN.md — Wave 1: FirmwareVersion value type + TeFirmwareCatalog parser + unit tests (FW-02 pure core)
+- [ ] 999.3-firmware-update-detection-02-PLAN.md — Wave 2: FirmwareUpdateState + DeviceViewModel firmware state machine + INTERNET permission + androidx.browser + ViewModel tests (FW-01, FW-02)
+- [ ] 999.3-firmware-update-detection-03-PLAN.md — Wave 3: FirmwareUpdateBanner composable + MainActivity CustomTabsIntent wiring (FW-01, FW-03)
+
+**UI hint**: yes
+**Dependencies**: Phase 2, Phase 5
+
+---
+
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
@@ -152,7 +176,8 @@ Plans:
 | 3. iOS Native UI | 0/4 | Not started | — |
 | 4. Project Management | 4/4 | Complete (Android slice) — hardware UAT pending | 2026-06-20 |
 | 5. Sample Import (Android) | 4/4 | Complete (Android slice) — hardware UAT pending | 2026-06-20 |
+| 999.3. Firmware Update Detection | 0/3 | Planned | — |
 
 ---
 *Roadmap created: 2026-03-28*
-*Last updated: 2026-06-20 — Phase 5 complete (Android slice; SAMPLE-01..04 verified, hardware UAT pending)*
+*Last updated: 2026-06-27 — Phase 999.3 planned (FW-01..03; 3 plans / 3 waves)*
