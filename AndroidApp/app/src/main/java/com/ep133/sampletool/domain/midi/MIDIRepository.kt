@@ -463,11 +463,13 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 val count = SysExProtocol.parseFileListEntries(body).count { it.name.isNotBlank() }
                 _deviceState.value = _deviceState.value.copy(sampleCount = count)
             }
-            // Storage bytes from the /sounds node metadata, if the firmware reports them.
+            // Storage from the /sounds node metadata. The device reports max_capacity +
+            // free_space_in_bytes (hardware-verified 2026-06-27), so used = max − free.
             val meta = getMetadataJson(soundsNode)
-            val used = meta.optLong("used_space_in_bytes", -1L).takeIf { it >= 0 }
             val total = meta.optLong("max_capacity", -1L).takeIf { it >= 0 }
-            if (used != null || total != null) {
+            val free = meta.optLong("free_space_in_bytes", -1L).takeIf { it >= 0 }
+            if (total != null) {
+                val used = if (free != null) (total - free).coerceAtLeast(0) else null
                 _deviceState.value = _deviceState.value.copy(storageUsedBytes = used, storageTotalBytes = total)
             }
         }
