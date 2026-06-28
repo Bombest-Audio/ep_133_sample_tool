@@ -450,34 +450,27 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         val firmware = greetResult["sw_version"] ?: ""
         _deviceState.value = _deviceState.value.copy(firmwareVersion = firmware)
 
-        // Step 2: FILE_METADATA on /sounds (storage bytes). Use nextFileReqId() so this
-        // path-form METADATA GET never aliases with concurrent nodeId-form ops.
-        val metaReqId = nextFileReqId()
-        val metaDeferred = CompletableDeferred<Map<String, String>>()
-        pendingMetadataDeferred = metaDeferred
-        val metaFrame = SysExProtocol.buildFileMetadataFrame(currentDeviceId, "/sounds", requestId = metaReqId)
-        midiManager.sendMidi(portId, metaFrame)
-        val metaResult = withTimeoutOrNull(3_000) { metaDeferred.await() }
-        if (metaResult != null) {
-            val used = metaResult["used_space_in_bytes"]?.toLongOrNull()
-            val total = metaResult["max_capacity"]?.toLongOrNull()
-            _deviceState.value = _deviceState.value.copy(
-                storageUsedBytes = used,
-                storageTotalBytes = total,
-            )
+        // Steps 2–3: sample count + storage from /sounds, over the reqId-correlated file ops
+        // (the same primitives the active-group walk and backup ride). The old path-form
+        // pending*Deferred fields are never completed under the inverted dispatcher, so they
+        // always timed out — that's why the Device screen showed "—" for both.
+        ensureFileSessionInitNoLock()
+        val soundsNode = resolveNodeIdInternal("/sounds")
+        if (soundsNode != null) {
+            // Sample count = entries in /sounds (named files only).
+            val body = listNodeBody(soundsNode, requestId = nextFileReqId())
+            if (body != null) {
+                val count = SysExProtocol.parseFileListEntries(body).count { it.name.isNotBlank() }
+                _deviceState.value = _deviceState.value.copy(sampleCount = count)
+            }
+            // Storage bytes from the /sounds node metadata, if the firmware reports them.
+            val meta = getMetadataJson(soundsNode)
+            val used = meta.optLong("used_space_in_bytes", -1L).takeIf { it >= 0 }
+            val total = meta.optLong("max_capacity", -1L).takeIf { it >= 0 }
+            if (used != null || total != null) {
+                _deviceState.value = _deviceState.value.copy(storageUsedBytes = used, storageTotalBytes = total)
+            }
         }
-
-        // Step 3: FILE_LIST on /sounds (count samples). Use nextFileReqId().
-        // Reset the running count first: if a prior run timed out before STATUS_OK, the
-        // count was never cleared and would inflate this run's sampleCount.
-        val listReqId = nextFileReqId()
-        fileListEntryCount = 0
-        val fileListDeferred = CompletableDeferred<Int>()
-        pendingFileListCountDeferred = fileListDeferred
-        val listFrame = SysExProtocol.buildFileListFrame(currentDeviceId, "/sounds", requestId = listReqId)
-        midiManager.sendMidi(portId, listFrame)
-        val sampleCount = withTimeoutOrNull(5_000) { fileListDeferred.await() } ?: 0
-        _deviceState.value = _deviceState.value.copy(sampleCount = sampleCount)
 
         return true
     }
