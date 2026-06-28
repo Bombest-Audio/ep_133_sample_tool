@@ -159,7 +159,7 @@ Plans:
 
 Plans:
 - [x] 999.3-firmware-update-detection-01-PLAN.md — Wave 1: FirmwareVersion value type + TeFirmwareCatalog parser + unit tests (FW-02 pure core)
-- [ ] 999.3-firmware-update-detection-02-PLAN.md — Wave 2: FirmwareUpdateState + DeviceViewModel firmware state machine + INTERNET permission + androidx.browser + ViewModel tests (FW-01, FW-02)
+- [x] 999.3-firmware-update-detection-02-PLAN.md — Wave 2: FirmwareUpdateState + DeviceViewModel firmware state machine + INTERNET permission + androidx.browser + ViewModel tests (FW-01, FW-02)
 - [ ] 999.3-firmware-update-detection-03-PLAN.md — Wave 3: FirmwareUpdateBanner composable + MainActivity CustomTabsIntent wiring (FW-01, FW-03)
 
 **UI hint**: yes
@@ -176,7 +176,7 @@ Plans:
 | 3. iOS Native UI | 0/4 | Not started | — |
 | 4. Project Management | 4/4 | Complete (Android slice) — hardware UAT pending | 2026-06-20 |
 | 5. Sample Import (Android) | 4/4 | Complete (Android slice) — hardware UAT pending | 2026-06-20 |
-| 999.3. Firmware Update Detection | 1/3 | In Progress|  |
+| 999.3. Firmware Update Detection | 2/3 | In Progress|  |
 
 ---
 *Roadmap created: 2026-03-28*
