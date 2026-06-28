@@ -130,6 +130,9 @@ dependencies {
     // WebView (kept for sample management fallback)
     implementation("androidx.webkit:webkit:1.9.0")
 
+    // Custom Tabs — opens TE firmware updater in-app via Chrome (Wave 3 wires the intent)
+    implementation("androidx.browser:browser:1.8.0")
+
     // JSON parsing for EP-133 data
     implementation("org.json:json:20231013")
 

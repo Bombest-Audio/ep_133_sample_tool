@@ -3,6 +3,7 @@ package com.ep133.sampletool.ui.device
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -54,6 +55,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ep133.sampletool.domain.firmware.FirmwareCatalog
+import com.ep133.sampletool.domain.firmware.FirmwareVersion
+import com.ep133.sampletool.domain.firmware.TeFirmwareCatalog
 import com.ep133.sampletool.domain.midi.BackupManager
 import com.ep133.sampletool.domain.midi.BackupProgress
 import com.ep133.sampletool.domain.midi.MIDIRepository
@@ -77,7 +81,30 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
+/**
+ * State machine for the firmware update check on the Device screen.
+ *
+ * Idle     — initial state; no check has been requested yet
+ * Checking — check in progress (catalog.latestVersion() in flight)
+ * UpToDate — device firmware >= latest known version
+ * UpdateAvailable — device firmware < latest; holds both versions for the banner
+ * Unknown  — device firmware string unparseable, or catalog returned null
+ */
+sealed class FirmwareUpdateState {
+    object Idle : FirmwareUpdateState()
+    object Checking : FirmwareUpdateState()
+    object UpToDate : FirmwareUpdateState()
+    data class UpdateAvailable(
+        val current: FirmwareVersion,
+        val latest: FirmwareVersion,
+    ) : FirmwareUpdateState()
+    object Unknown : FirmwareUpdateState()
+}
+
+class DeviceViewModel(
+    private val midi: MIDIRepository,
+    private val catalog: FirmwareCatalog = TeFirmwareCatalog(),
+) : ViewModel() {
 
     val deviceState: StateFlow<DeviceState> = midi.deviceState
 
@@ -116,9 +143,16 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
     private val _statsLoading = MutableStateFlow(false)
     val statsLoading: StateFlow<Boolean> = _statsLoading.asStateFlow()
 
+    // Firmware update detection state (FW-01 / FW-02)
+    private val _firmwareUpdate = MutableStateFlow<FirmwareUpdateState>(FirmwareUpdateState.Idle)
+    val firmwareUpdate: StateFlow<FirmwareUpdateState> = _firmwareUpdate.asStateFlow()
+
     // SAF callbacks — set by MainActivity.onCreate() (cannot register ActivityResult inside ViewModel)
     var onRequestBackup: ((suggestedName: String) -> Unit)? = null
     var onRequestRestore: (() -> Unit)? = null
+
+    // Firmware updater callback — set by MainActivity (mirrors SAF pattern); Wave 3 wires the Custom Tab
+    var onOpenFirmwareUpdater: (() -> Unit)? = null
 
     fun triggerBackup() {
         if (_isBackupInProgress.value || _isRestoreInProgress.value) return
@@ -233,6 +267,11 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
         midi.refreshDeviceState()
     }
 
+    /** Invokes the firmware updater callback wired by MainActivity (Wave 3). */
+    fun openFirmwareUpdater() {
+        onOpenFirmwareUpdater?.invoke()
+    }
+
     /** Query firmware / storage / sample count. Called when the Device screen opens connected. */
     fun loadStats() {
         if (_statsLoading.value) return
@@ -242,6 +281,44 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
                 midi.queryDeviceStats()
             } finally {
                 _statsLoading.value = false
+            }
+            if (deviceState.value.firmwareVersion != null) {
+                checkFirmwareUpdate()
+            }
+        }
+    }
+
+    /**
+     * Checks whether the device firmware is up to date by asking the catalog for the latest version.
+     * Emits Checking → UpdateAvailable / UpToDate / Unknown.
+     *
+     * Only called from loadStats() after a successful stats query with a non-null firmwareVersion.
+     * The _statsLoading guard on loadStats() prevents concurrent invocations.
+     */
+    private fun checkFirmwareUpdate() {
+        viewModelScope.launch {
+            _firmwareUpdate.value = FirmwareUpdateState.Checking
+            val rawFw = deviceState.value.firmwareVersion
+            val current = FirmwareVersion.parse(rawFw)
+            if (current == null) {
+                Log.w("EP133APP", "FW check: unparseable firmware '$rawFw'")
+                _firmwareUpdate.value = FirmwareUpdateState.Unknown
+                return@launch
+            }
+            val latest = try {
+                catalog.latestVersion()
+            } catch (e: Exception) {
+                Log.w("EP133APP", "FW check failed: $e")
+                null
+            }
+            if (latest == null) {
+                _firmwareUpdate.value = FirmwareUpdateState.Unknown
+                return@launch
+            }
+            _firmwareUpdate.value = if (current >= latest) {
+                FirmwareUpdateState.UpToDate
+            } else {
+                FirmwareUpdateState.UpdateAvailable(current, latest)
             }
         }
     }
