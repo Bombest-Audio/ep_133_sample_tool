@@ -13,7 +13,7 @@ data class FirmwareVersion(val parts: List<Int>) : Comparable<FirmwareVersion> {
         for (i in 0 until maxLen) {
             val a = parts.getOrElse(i) { 0 }
             val b = other.parts.getOrElse(i) { 0 }
-            if (a != b) return a - b
+            if (a != b) return a.compareTo(b)
         }
         return 0
     }

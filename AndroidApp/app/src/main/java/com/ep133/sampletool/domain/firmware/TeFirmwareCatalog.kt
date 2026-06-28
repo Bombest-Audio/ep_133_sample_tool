@@ -10,6 +10,11 @@ import java.net.URL
 /**
  * Abstraction over "what is the latest published firmware version?"
  * Implemented by [TeFirmwareCatalog]; tests inject a fake.
+ *
+ * The return is nullable on purpose: it is the seam the [DeviceViewModel] check treats
+ * defensively (a null latest → Unknown, no banner), and it lets a fake return null to
+ * exercise that path. The production [TeFirmwareCatalog] floors to [LATEST_KNOWN_FIRMWARE]
+ * and so never returns null — its override narrows the type accordingly.
  */
 interface FirmwareCatalog {
     suspend fun latestVersion(): FirmwareVersion?
@@ -54,22 +59,24 @@ internal fun parseVersions(html: String): FirmwareVersion? {
  */
 class TeFirmwareCatalog : FirmwareCatalog {
 
-    override suspend fun latestVersion(): FirmwareVersion? = withContext(Dispatchers.IO) {
+    override suspend fun latestVersion(): FirmwareVersion = withContext(Dispatchers.IO) {
         val scraped = try {
             val conn = URL("https://teenage.engineering/downloads/ep-133")
                 .openConnection() as HttpURLConnection
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
+            try {
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
 
-            val responseCode = conn.responseCode
-            if (responseCode != HttpURLConnection.HTTP_OK) {
-                Log.w("EP133APP", "FW check: HTTP $responseCode")
+                val responseCode = conn.responseCode
+                if (responseCode != HttpURLConnection.HTTP_OK) {
+                    Log.w("EP133APP", "FW check: HTTP $responseCode")
+                    null
+                } else {
+                    val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    parseVersions(body)
+                }
+            } finally {
                 conn.disconnect()
-                null
-            } else {
-                val body = conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
-                conn.disconnect()
-                parseVersions(body)
             }
         } catch (e: IOException) {
             Log.w("EP133APP", "FW check failed: $e")
