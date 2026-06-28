@@ -12,9 +12,10 @@ The big one: this release turns a desktop-only tool into a real cross-platform a
 and opens the whole thing up as a community project.
 
 ### Added
-- Native **Android** app — Kotlin + Jetpack Compose. Pads, Beats, Sounds, Chords,
-  Device, Projects, and Sample Import screens talking straight to the MIDI layer,
-  with the original web app kept as a WebView fallback for backup/restore/sync.
+- Native **Android** app — Kotlin + Jetpack Compose. Pads, Device, Projects, and
+  Sample Import screens talking straight to the MIDI layer, with the original web
+  app kept as a WebView fallback for backup/restore/sync. (Beats, Sounds, and
+  Chords are sitting out this first release until their hardware behavior is solid.)
 - A **Teenage-Engineering-grade redesign** of the whole Android UI — every screen
   rebuilt on a hardware-faithful design system (faceplate grays, rubberized pads,
   mono labels, hairline rules). Light and dark themes, plus an EP-133 ↔ EP-1320
