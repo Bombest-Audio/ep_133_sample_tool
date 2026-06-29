@@ -31,52 +31,66 @@ val LATEST_KNOWN_FIRMWARE: FirmwareVersion = FirmwareVersion.parse("2.5")!!
 internal fun floorToBundled(fetched: FirmwareVersion?): FirmwareVersion =
     if (fetched != null && fetched > LATEST_KNOWN_FIRMWARE) fetched else LATEST_KNOWN_FIRMWARE
 
+/** EP-133 / EP-133 K.O. II SKU in TE's release manifest. */
+private const val EP133_SKU = "TE032AS001"
+
 /**
- * Parses the firmware manifest body — a tiny JSON document like `{"latest":"2.5"}` — into a
- * [FirmwareVersion]. Returns null if the `latest` field is absent, blank, or not a version.
+ * Parses TE's firmware release manifest (see [TeFirmwareCatalog.RELEASES_URL]) and returns the
+ * latest published EP-133 firmware version. The manifest is `{ "devices": [ { "sku", "version",
+ * "fw_url", … }, … ] }`; we pick the EP-133 record by its [EP133_SKU] and read `version`. Returns
+ * null if the EP-133 record or its version is absent or unparseable.
  *
- * A hand-rolled extractor (rather than org.json) keeps this a pure function that unit-tests without
- * an Android runtime, and the manifest is trivial enough not to warrant a JSON dependency.
+ * Hand-rolled (rather than org.json) so it stays a pure function that unit-tests on the JVM without
+ * an Android runtime. Each device object is flat (no nested braces), so matching brace-delimited
+ * objects isolates them; the sku/version lookup within an object is order-independent.
  */
-internal fun parseManifest(json: String): FirmwareVersion? {
-    val match = Regex(""""latest"\s*:\s*"([^"]*)"""").find(json) ?: return null
-    return FirmwareVersion.parse(match.groupValues[1])
+internal fun parseReleases(json: String): FirmwareVersion? {
+    val skuPresent = Regex(""""sku"\s*:\s*"$EP133_SKU"""")
+    val version = Regex(""""version"\s*:\s*"([^"]+)"""")
+    for (obj in Regex("""\{[^{}]*}""").findAll(json)) {
+        if (skuPresent.containsMatchIn(obj.value)) {
+            val v = version.find(obj.value) ?: return null
+            return FirmwareVersion.parse(v.groupValues[1])
+        }
+    }
+    return null
 }
 
 /**
- * Resolves the latest published EP-133 firmware version from a small JSON manifest hosted on the
- * Bombest releases bucket. The manifest is updated when TE ships new firmware — no app release
- * required — and falls back to [LATEST_KNOWN_FIRMWARE] whenever it can't be fetched or parsed.
+ * Resolves the latest published EP-133 firmware version from TE's own release manifest, keyed by the
+ * EP-133 SKU. This is TE's authoritative source (the same JSON their update utility reads), so it
+ * tracks new firmware the moment TE ships it — no app release and nothing for us to host or maintain.
  *
- * Replaces the earlier approach of scraping the TE downloads page, which pulled garbage tokens out
- * of inline SVG path data (e.g. "50.9332"). Uses a plain [HttpURLConnection] on [Dispatchers.IO] —
- * no HTTP library dependency. Any failure is logged via [Log.w] and resolved by the floor.
+ * Supersedes both the earlier TE-downloads-page scrape (which pulled garbage tokens out of inline
+ * SVG path data, e.g. "50.9332") and the interim Bombest-hosted manifest. Uses a plain
+ * [HttpURLConnection] on [Dispatchers.IO] — no HTTP library dependency. Any failure is logged via
+ * [Log.w] and resolved to [LATEST_KNOWN_FIRMWARE] by the floor.
  */
 class TeFirmwareCatalog : FirmwareCatalog {
 
     override suspend fun latestVersion(): FirmwareVersion = withContext(Dispatchers.IO) {
         val fetched = try {
-            val conn = URL(MANIFEST_URL).openConnection() as HttpURLConnection
+            val conn = URL(RELEASES_URL).openConnection() as HttpURLConnection
             try {
                 conn.connectTimeout = 5000
                 conn.readTimeout = 5000
 
                 val responseCode = conn.responseCode
                 if (responseCode != HttpURLConnection.HTTP_OK) {
-                    Log.w("EP133APP", "FW manifest: HTTP $responseCode")
+                    Log.w("EP133APP", "FW releases: HTTP $responseCode")
                     null
                 } else {
                     val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                    parseManifest(body)
+                    parseReleases(body)
                 }
             } finally {
                 conn.disconnect()
             }
         } catch (e: IOException) {
-            Log.w("EP133APP", "FW manifest fetch failed: $e")
+            Log.w("EP133APP", "FW releases fetch failed: $e")
             null
         } catch (e: Exception) {
-            Log.w("EP133APP", "FW manifest fetch failed: $e")
+            Log.w("EP133APP", "FW releases fetch failed: $e")
             null
         }
 
@@ -84,7 +98,7 @@ class TeFirmwareCatalog : FirmwareCatalog {
     }
 
     companion object {
-        /** Bombest releases bucket; update this object when TE ships firmware. */
-        const val MANIFEST_URL = "https://bombest-releases.s3.amazonaws.com/ep133/firmware.json"
+        /** TE's authoritative firmware manifest — a `devices` array keyed by SKU. */
+        const val RELEASES_URL = "https://teenage.engineering/_software/releases.json"
     }
 }
