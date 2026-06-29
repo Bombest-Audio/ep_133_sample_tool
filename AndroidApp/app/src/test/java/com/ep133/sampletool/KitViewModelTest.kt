@@ -273,37 +273,67 @@ class KitViewModelTest {
         }
     }
 
-    // ── 20 s guard: no device writes when any slice exceeds 20 s ──────────────
+    // ── Byte-budget guard: STEREO slice over 20 s → rejected, no device writes ──
 
     @Test
-    fun chop_20sGuard_errorAllRows_noDeviceWrites() = runTest {
+    fun chop_byteBudgetGuard_stereoOver20s_rejected() = runTest {
         val (repo, vm) = makeVm(connected = true)
 
-        val sliceCount = 2
+        // MAX_SAMPLE_BYTES = 3_750_000 = 20s stereo @ 46875 (937500 frames * 2ch * 2bytes).
+        // One slice, stereo, just over the byte budget: 937501 frames * 2ch * 2bytes = 3_750_004 bytes.
+        val sliceCount = 1
         vm.onSliceCountChange(sliceCount.toString())
 
-        // sampleRate = 46875; 20 s cap = 20 * 46875 = 937500 frames.
-        // With 2 slices, each slice gets 937501 / 2 ~ 468751 frames → still ≤20 s, passes.
-        // To exceed 20 s per slice: use > 20*sampleRate frames in ONE slice.
-        // Easiest: total frames = 20*46875*2 + 2 = 1875002 frames, split into 2 slices
-        // → each slice = 937501 frames > 937500 → guard fires.
         val sampleRate = 46875
-        val framesPerSlicePlusOne = 20 * sampleRate + 1
-        val totalFrames = framesPerSlicePlusOne * sliceCount  // both slices exceed 20 s
+        val channels = 2
+        val frames = 20 * sampleRate + 1   // 937501 frames → 3_750_004 bytes stereo
 
-        vm.chopFromPcm("longloop.wav", pcm(totalFrames), sampleRate = sampleRate)
+        vm.chopFromPcm("bigstereo.wav", pcm(frames, channels), channels, sampleRate)
 
         advanceUntilIdle()
 
-        // No device writes.
-        assertEquals("putSampleFile must NOT be called when 20s guard fires", 0, repo.putCalls.size)
-        assertEquals("assignSampleToPad must NOT be called when 20s guard fires", 0, repo.assignCalls.size)
+        // No device writes — the byte-budget guard must fire before any upload.
+        assertEquals("putSampleFile must NOT be called when byte-budget guard fires", 0, repo.putCalls.size)
+        assertEquals("assignSampleToPad must NOT be called when byte-budget guard fires", 0, repo.assignCalls.size)
 
         // All rows must be in Error state.
         val items = vm.items.value
         assertEquals("items list must have $sliceCount rows", sliceCount, items.size)
         items.forEach { item ->
             assertEquals("Item '${item.label}' must be Error; got ${item.state}", KitItemState.Error, item.state)
+        }
+    }
+
+    // ── Byte-budget guard: MONO slice 20–40 s → allowed (upload proceeds) ──────
+
+    @Test
+    fun chop_byteBudgetGuard_mono20to40s_allowed() = runTest {
+        val (repo, vm) = makeVm(connected = true)
+
+        // A flat "frames > 20*sampleRate" guard would WRONGLY reject this mono slice.
+        // 20s mono = 937500 frames = 1_875_000 bytes; 40s mono = 1_875_000 frames = 3_750_000 bytes.
+        // Pick ~30s mono: 1_400_000 frames * 1ch * 2bytes = 2_800_000 bytes < MAX_SAMPLE_BYTES (3_750_000).
+        val sliceCount = 1
+        vm.onSliceCountChange(sliceCount.toString())
+
+        val sampleRate = 46875
+        val channels = 1
+        val frames = 1_400_000   // ~29.9s mono → 2_800_000 bytes, under the byte budget
+
+        vm.chopFromPcm("longmono.wav", pcm(frames, channels), channels, sampleRate)
+
+        advanceUntilIdle()
+
+        // Upload must proceed — the mono slice is under the byte budget despite being >20 s.
+        assertEquals("putSampleFile must be called once (mono 20–40s is allowed)", sliceCount, repo.putCalls.size)
+        assertEquals("assignSampleToPad must be called once", sliceCount, repo.assignCalls.size)
+        assertEquals("slice byte size", frames * channels * 2, repo.putCalls[0].pcmBytes.size)
+
+        // Row must reach Done.
+        val items = vm.items.value
+        assertEquals(sliceCount, items.size)
+        items.forEach { item ->
+            assertEquals("Item '${item.label}' should be Done; got ${item.state}", KitItemState.Done, item.state)
         }
     }
 

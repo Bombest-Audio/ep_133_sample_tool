@@ -73,6 +73,16 @@ const val MAX_SLICES = 12
 /** Default slice count for the loop-chopper mode. */
 const val DEFAULT_SLICE_COUNT = 16
 
+/**
+ * EP-133 per-sample cap: 20s stereo OR 40s mono @ 46875 (firmware 2.5).
+ * Byte budget = 20 * 46875 * 2ch * 2bytes.
+ *
+ * The cap is a BYTE budget, not a flat duration — firmware 2.5 explicitly allows mono
+ * samples up to 40s (and lower sample rates allow even longer). Guard on slice byte size,
+ * never on a flat `frames > 20*sampleRate`, which would wrongly reject valid 20–40s mono.
+ */
+const val MAX_SAMPLE_BYTES = 3_750_000
+
 // ── UI state model ────────────────────────────────────────────────────────────
 
 /** Which mode the KitScreen is in. */
@@ -102,16 +112,17 @@ fun KitResultItem.isError(): Boolean = state == KitItemState.Error
  *
  * **Chop mode:** one SAF file → slice PCM into N equal byte arrays → for each slice:
  * [putSampleFile] → [assignSampleToPad] with FULL trim (start=0, end=sliceFrameCount).
- * This mirrors kit mode's per-file upload path and respects the EP-133's 20 s single-sample
- * cap: each short slice is well under the limit even when the source loop is not.
+ * This mirrors kit mode's per-file upload path and respects the EP-133's per-sample size cap
+ * ([MAX_SAMPLE_BYTES]): each short slice is well under the limit even when the source loop is not.
  *
- * Before any device write, a 20 s guard fires: if the largest slice exceeds 20 s of frames
- * (`maxSliceFrames > 20 * sampleRate`), all rows are set to Error and no bytes are sent.
+ * Before any device write, a byte-budget guard fires: if the largest slice exceeds the device's
+ * per-sample size cap ([MAX_SAMPLE_BYTES] — 20s stereo / 40s mono @ 46875), all rows are set to
+ * Error and no bytes are sent. The cap is a BYTE budget, not a flat duration.
  *
  * The domain call sequence is:
  *   1. [SampleImportManager.convert] to decode/resample the file to s16/46875.
  *   2. [LoopSlicer.slicePcmBytes] to split PCM into N equal byte arrays.
- *   3. 20 s guard: if any slice > 20 s, error all rows and return.
+ *   3. Byte-budget guard: if any slice > [MAX_SAMPLE_BYTES], error all rows and return.
  *   4. For i in 0 until sliceCount: [MIDIRepository.putSampleFile] with slice bytes → sliceNodeId,
  *      then [MIDIRepository.assignSampleToPad] with full trim (start=0, end=sliceFrameCount).
  *
@@ -183,7 +194,7 @@ class KitViewModel(
      * Steps:
      * 1. [SampleImportManager.convert] to decode/resample (inside picker-callback grant).
      * 2. [LoopSlicer.slicePcmBytes] to split PCM into N equal byte arrays.
-     * 3. 20 s guard: if any slice exceeds 20 s, error all rows and return.
+     * 3. Byte-budget guard: if any slice exceeds [MAX_SAMPLE_BYTES], error all rows and return.
      * 4. For i in 0..sliceCount-1: [MIDIRepository.putSampleFile] with slice bytes →
      *    sliceNodeId, then [MIDIRepository.assignSampleToPad] with full trim (0, sliceFrameCount).
      *
@@ -219,12 +230,13 @@ class KitViewModel(
             val slices = LoopSlicer.slicePcmBytes(converted.pcm, converted.channels, sliceCount)
             val bytesPerFrame = converted.channels * 2
 
-            // 20 s guard: reject before any device write if the largest slice exceeds the cap.
-            val maxSliceFrames = slices.maxOfOrNull { it.size / bytesPerFrame } ?: 0
-            val maxAllowedFrames = 20 * converted.sampleRate
-            if (maxSliceFrames > maxAllowedFrames) {
-                val msg = "loop too long to chop into $sliceCount slices — each slice must be ≤20 s; " +
-                    "add more slices or use a shorter loop"
+            // Byte-budget guard: reject before any device write if the largest slice exceeds the
+            // device's per-sample size cap (a BYTE budget, not a flat duration — see MAX_SAMPLE_BYTES).
+            // The slice ByteArray length IS its byte size (sliceFrames * channels * 2).
+            val maxSliceBytes = slices.maxOfOrNull { it.size } ?: 0
+            if (maxSliceBytes > MAX_SAMPLE_BYTES) {
+                val msg = "slice exceeds the device's per-sample size limit (~20s stereo / 40s mono) — " +
+                    "add more slices or shorten the loop"
                 _items.value = sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) }
                 _snackbarMessage.value = msg
                 return@launch
@@ -366,8 +378,8 @@ class KitViewModel(
      * AudioDecoder. Pre-converted PCM is passed directly to the per-slice upload + assign pipeline.
      *
      * Mirrors [onLoopFilePicked] exactly: slices PCM via [LoopSlicer.slicePcmBytes], applies the
-     * 20 s guard, then for each slice calls [MIDIRepository.putSampleFile] → [MIDIRepository.assignSampleToPad]
-     * with full trim (start=0, end=sliceFrameCount).
+     * byte-budget guard ([MAX_SAMPLE_BYTES]), then for each slice calls [MIDIRepository.putSampleFile]
+     * → [MIDIRepository.assignSampleToPad] with full trim (start=0, end=sliceFrameCount).
      *
      * @param name       Sample name (will be sanitized).
      * @param pcm        Raw s16 LE PCM bytes (no RIFF header).
@@ -387,12 +399,13 @@ class KitViewModel(
             val slices = LoopSlicer.slicePcmBytes(pcm, channels, sliceCount)
             val bytesPerFrame = channels * 2
 
-            // 20 s guard: reject before any device write if the largest slice exceeds the cap.
-            val maxSliceFrames = slices.maxOfOrNull { it.size / bytesPerFrame } ?: 0
-            val maxAllowedFrames = 20 * sampleRate
-            if (maxSliceFrames > maxAllowedFrames) {
-                val msg = "loop too long to chop into $sliceCount slices — each slice must be ≤20 s; " +
-                    "add more slices or use a shorter loop"
+            // Byte-budget guard: reject before any device write if the largest slice exceeds the
+            // device's per-sample size cap (a BYTE budget, not a flat duration — see MAX_SAMPLE_BYTES).
+            // The slice ByteArray length IS its byte size (sliceFrames * channels * 2).
+            val maxSliceBytes = slices.maxOfOrNull { it.size } ?: 0
+            if (maxSliceBytes > MAX_SAMPLE_BYTES) {
+                val msg = "slice exceeds the device's per-sample size limit (~20s stereo / 40s mono) — " +
+                    "add more slices or shorten the loop"
                 _items.value = sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) }
                 _snackbarMessage.value = msg
                 return@launch
