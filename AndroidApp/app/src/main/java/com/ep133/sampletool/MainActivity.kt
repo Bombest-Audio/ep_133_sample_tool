@@ -118,8 +118,7 @@ class MainActivity : ComponentActivity() {
                 }
                 customTabsIntent.launchUrl(this, Uri.parse("https://teenage.engineering/apps/update"))
             } catch (e: Exception) {
-                firmwareUpdaterActive = false
-                setUsbAutoLaunchEnabled(true)
+                endFirmwareUpdaterSession()
                 deviceViewModel.showSnackbar("No browser available to open the updater")
             }
         }
@@ -147,16 +146,39 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        // Returning to the foreground ends any firmware-updater session: resume reacting to the
-        // device, and restore USB auto-launch. The re-enable is unconditional so it also self-heals
-        // if the process was killed while the alias was disabled.
-        firmwareUpdaterActive = false
+        // While the firmware-updater Custom Tab is in front, stay completely passive. The session is
+        // ended in onWindowFocusChanged when we genuinely regain top focus (the tab closed), NOT
+        // here — onStart can fire behind a transient dialog and would re-arm us mid-flash, which is
+        // exactly the bug this guards against.
+        if (firmwareUpdaterActive) {
+            startedOnce = true
+            return
+        }
+        // Restore USB auto-launch on every normal foreground. Also self-heals if the process was
+        // killed while the alias was disabled — firmwareUpdaterActive resets on restart, so we land
+        // here rather than in the early return above.
         setUsbAutoLaunchEnabled(true)
         // USB-MIDI ports are exclusive, and the WebView (SampleManagerActivity) owns a second
         // MIDIManager. Re-claim the port when we come back to the foreground. Skip the very first
         // onStart — onCreate + the USB-attach intent handle the initial connect.
         if (startedOnce) reacquireMidi(attempt = 0)
         startedOnce = true
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // Regaining top window focus means the firmware-updater Custom Tab is no longer in front, so
+        // the flash session is over. A transient dialog (e.g. a USB-permission prompt) over the tab
+        // does NOT give us focus, so this won't fire spuriously during a flash — that's why it's a
+        // safer end signal than onStart.
+        if (hasFocus && firmwareUpdaterActive) endFirmwareUpdaterSession()
+    }
+
+    /** Ends a firmware-updater session: resume reacting to the EP-133 and restore USB auto-launch. */
+    private fun endFirmwareUpdaterSession() {
+        firmwareUpdaterActive = false
+        setUsbAutoLaunchEnabled(true)
+        reacquireMidi(attempt = 0)
     }
 
     /**
