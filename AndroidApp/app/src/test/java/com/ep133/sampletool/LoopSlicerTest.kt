@@ -3,17 +3,26 @@ package com.ep133.sampletool
 import com.ep133.sampletool.domain.audio.LoopSlicer
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Unit tests for [LoopSlicer.equalSlices].
+ * Unit tests for [LoopSlicer.equalSlices] and [LoopSlicer.slicePcmBytes].
  *
- * Covers:
+ * [equalSlices] covers:
  *  - Mono even split
  *  - Stereo: interleave preserved + even frame boundaries
  *  - Remainder folded into the last slice
  *  - count=1 returns the whole array
  *  - count > total frames is clamped to total frames
+ *
+ * [slicePcmBytes] covers:
+ *  - Mono even split produces correct byte arrays
+ *  - Slices tile exactly (concatenated = original)
+ *  - Stereo frame boundaries respected (byte count multiple of channels*2)
+ *  - count=1 returns whole array
+ *  - count > totalFrames clamped
+ *  - Empty input → single empty slice
  */
 class LoopSlicerTest {
 
@@ -122,6 +131,91 @@ class LoopSlicerTest {
     @Test
     fun emptyPcm_returnsSingleEmptySlice() {
         val slices = LoopSlicer.equalSlices(ShortArray(0), channels = 1, count = 4)
+
+        assertEquals("one slice", 1, slices.size)
+        assertEquals("empty slice", 0, slices[0].size)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // slicePcmBytes tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Test G: mono even split produces correct byte arrays ─────────────────
+
+    @Test
+    fun slicePcmBytes_monoEvenSplit_correctBytes() {
+        // 8 mono frames = 16 bytes (2 bytes/frame), split into 4 → each slice = 2 frames = 4 bytes.
+        val pcm = ByteArray(16) { it.toByte() }
+        val slices = LoopSlicer.slicePcmBytes(pcm, channels = 1, count = 4)
+
+        assertEquals("slice count", 4, slices.size)
+        assertArrayEquals("slice 0", byteArrayOf(0, 1, 2, 3), slices[0])
+        assertArrayEquals("slice 1", byteArrayOf(4, 5, 6, 7), slices[1])
+        assertArrayEquals("slice 2", byteArrayOf(8, 9, 10, 11), slices[2])
+        assertArrayEquals("slice 3", byteArrayOf(12, 13, 14, 15), slices[3])
+    }
+
+    // ── Test H: slices tile exactly — concatenation equals original ───────────
+
+    @Test
+    fun slicePcmBytes_tilesExactly_noDroppedBytes() {
+        // 10 mono frames = 20 bytes, split into 3 → stepped: 0..3, 3..6, 6..10 (remainder in last)
+        val pcm = ByteArray(20) { (it * 3).toByte() }
+        val slices = LoopSlicer.slicePcmBytes(pcm, channels = 1, count = 3)
+
+        assertEquals("slice count", 3, slices.size)
+        val reassembled = slices.flatMap { it.toList() }.toByteArray()
+        assertArrayEquals("concatenation must equal original PCM", pcm, reassembled)
+    }
+
+    // ── Test I: stereo frame boundaries respected ─────────────────────────────
+
+    @Test
+    fun slicePcmBytes_stereo_framesBoundariesRespected() {
+        // 6 stereo frames (12 samples = 24 bytes), split into 3 → each slice = 2 frames = 8 bytes.
+        val pcm = ByteArray(24) { it.toByte() }
+        val slices = LoopSlicer.slicePcmBytes(pcm, channels = 2, count = 3)
+
+        assertEquals("slice count", 3, slices.size)
+        val bytesPerFrame = 4  // channels=2, 2 bytes each
+        for ((i, s) in slices.withIndex()) {
+            assertEquals("slice $i byte count is multiple of bytesPerFrame", 0, s.size % bytesPerFrame)
+        }
+        // Total bytes preserved.
+        val total = slices.sumOf { it.size }
+        assertEquals("total bytes", 24, total)
+    }
+
+    // ── Test J: count=1 returns the whole array ───────────────────────────────
+
+    @Test
+    fun slicePcmBytes_countOne_returnsWholeArray() {
+        val pcm = byteArrayOf(1, 2, 3, 4)
+        val slices = LoopSlicer.slicePcmBytes(pcm, channels = 1, count = 1)
+
+        assertEquals("one slice", 1, slices.size)
+        assertArrayEquals("content unchanged", pcm, slices[0])
+    }
+
+    // ── Test K: count > totalFrames is clamped ────────────────────────────────
+
+    @Test
+    fun slicePcmBytes_countExceedsFrames_clampedToFrameCount() {
+        // 3 mono frames = 6 bytes, requesting 100 slices → clamped to 3.
+        val pcm = byteArrayOf(10, 11, 20, 21, 30, 31)
+        val slices = LoopSlicer.slicePcmBytes(pcm, channels = 1, count = 100)
+
+        assertEquals("clamped to 3 slices", 3, slices.size)
+        assertArrayEquals("slice 0", byteArrayOf(10, 11), slices[0])
+        assertArrayEquals("slice 1", byteArrayOf(20, 21), slices[1])
+        assertArrayEquals("slice 2", byteArrayOf(30, 31), slices[2])
+    }
+
+    // ── Test L: empty PCM → single empty slice ────────────────────────────────
+
+    @Test
+    fun slicePcmBytes_emptyPcm_returnsSingleEmptySlice() {
+        val slices = LoopSlicer.slicePcmBytes(ByteArray(0), channels = 1, count = 4)
 
         assertEquals("one slice", 1, slices.size)
         assertEquals("empty slice", 0, slices[0].size)

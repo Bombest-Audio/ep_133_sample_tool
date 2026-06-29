@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ep133.sampletool.domain.audio.LoopSlicer
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.model.PadChannel
@@ -99,12 +100,20 @@ fun KitResultItem.isError(): Boolean = state == KitItemState.Error
  *
  * Co-located with [KitScreen] per project conventions (see CLAUDE.md).
  *
- * **Chop mode:** one SAF file → [putSampleFile] ONCE → N [assignSampleToPad] calls with
- * stepped start/end trim. The domain call sequence is:
+ * **Chop mode:** one SAF file → slice PCM into N equal byte arrays → for each slice:
+ * [putSampleFile] → [assignSampleToPad] with FULL trim (start=0, end=sliceFrameCount).
+ * This mirrors kit mode's per-file upload path and respects the EP-133's 20 s single-sample
+ * cap: each short slice is well under the limit even when the source loop is not.
+ *
+ * Before any device write, a 20 s guard fires: if the largest slice exceeds 20 s of frames
+ * (`maxSliceFrames > 20 * sampleRate`), all rows are set to Error and no bytes are sent.
+ *
+ * The domain call sequence is:
  *   1. [SampleImportManager.convert] to decode/resample the file to s16/46875.
- *   2. [MIDIRepository.putSampleFile] ONCE — returns the device-assigned sample nodeId.
- *   3. For i in 0 until sliceCount: start = (i * frames) / N, end = ((i+1) * frames) / N;
- *      [MIDIRepository.assignSampleToPad] with stepped trim.
+ *   2. [LoopSlicer.slicePcmBytes] to split PCM into N equal byte arrays.
+ *   3. 20 s guard: if any slice > 20 s, error all rows and return.
+ *   4. For i in 0 until sliceCount: [MIDIRepository.putSampleFile] with slice bytes → sliceNodeId,
+ *      then [MIDIRepository.assignSampleToPad] with full trim (start=0, end=sliceFrameCount).
  *
  * **Kit mode:** N SAF files → for each: convert → putSampleFile → assignSampleToPad with
  * full-trim (start=0, end=frames). Device writes are serialized via [deviceMutex]; decode
@@ -173,8 +182,10 @@ class KitViewModel(
      *
      * Steps:
      * 1. [SampleImportManager.convert] to decode/resample (inside picker-callback grant).
-     * 2. [MIDIRepository.putSampleFile] ONCE → sampleNodeId.
-     * 3. For i in 0..sliceCount-1: stepped start/end → [MIDIRepository.assignSampleToPad].
+     * 2. [LoopSlicer.slicePcmBytes] to split PCM into N equal byte arrays.
+     * 3. 20 s guard: if any slice exceeds 20 s, error all rows and return.
+     * 4. For i in 0..sliceCount-1: [MIDIRepository.putSampleFile] with slice bytes →
+     *    sliceNodeId, then [MIDIRepository.assignSampleToPad] with full trim (0, sliceFrameCount).
      *
      * @param uri     Single audio file URI (valid for the picker-callback grant only).
      * @param context Activity context for contentResolver.
@@ -186,13 +197,11 @@ class KitViewModel(
             ?: "loop.wav"
         val safeName = manager.sanitizeName(rawName) ?: rawName
 
-        // Seed rows: one upload row + N slice rows.
+        // Seed N rows — one per slice (no separate upload row; each row covers its own upload+assign).
         val sliceLabels = (0 until sliceCount).map { i -> "slice ${group.name}${i + 1}" }
-        _items.value = listOf(KitResultItem(safeName)) + sliceLabels.map { KitResultItem(it) }
+        _items.value = sliceLabels.map { KitResultItem(it) }
 
         viewModelScope.launch {
-            updateItem(0) { it.copy(state = KitItemState.Working) }
-
             // Decode/convert inside the picker-callback grant (Landmine 7).
             val converted = try {
                 withContext(Dispatchers.IO) { manager.convert(context, uri) }
@@ -200,60 +209,74 @@ class KitViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "KitViewModel chop: convert failed for $safeName", e)
-                updateItem(0) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Convert failed") }
+                val msg = e.message ?: "Convert failed"
+                _items.value = sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) }
                 _snackbarMessage.value = "Convert failed: ${e.message ?: e}"
                 return@launch
             }
 
-            val frames = converted.pcm.size / 2 / converted.channels
+            // Slice the PCM bytes into N equal pieces on frame boundaries.
+            val slices = LoopSlicer.slicePcmBytes(converted.pcm, converted.channels, sliceCount)
+            val bytesPerFrame = converted.channels * 2
 
-            // Upload ONCE — serialized via deviceMutex.
-            val sampleNodeId: Int? = try {
-                deviceMutex.withLock {
-                    midi.putSampleFile(safeName, converted.pcm, converted.channels, converted.sampleRate)
+            // 20 s guard: reject before any device write if the largest slice exceeds the cap.
+            val maxSliceFrames = slices.maxOfOrNull { it.size / bytesPerFrame } ?: 0
+            val maxAllowedFrames = 20 * converted.sampleRate
+            if (maxSliceFrames > maxAllowedFrames) {
+                val msg = "loop too long to chop into $sliceCount slices — each slice must be ≤20 s; " +
+                    "add more slices or use a shorter loop"
+                _items.value = sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) }
+                _snackbarMessage.value = msg
+                return@launch
+            }
+
+            // Per-slice upload + assign — same path as kit mode.
+            for (i in slices.indices) {
+                val slicePcm = slices[i]
+                val sliceFrames = slicePcm.size / bytesPerFrame
+                val sliceName = "${safeName.substringBeforeLast('.')}_${i + 1}.wav"
+                updateItem(i) { it.copy(state = KitItemState.Working) }
+
+                val sliceNodeId: Int? = try {
+                    deviceMutex.withLock {
+                        midi.putSampleFile(sliceName, slicePcm, converted.channels, converted.sampleRate)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "KitViewModel chop: putSampleFile failed for slice $i ($sliceName)", e)
+                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
+                    _snackbarMessage.value = "Slice ${i + 1} upload failed: ${e.message ?: e}"
+                    continue
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "KitViewModel chop: putSampleFile failed for $safeName", e)
-                updateItem(0) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
-                _snackbarMessage.value = "Upload failed: ${e.message ?: e}"
-                return@launch
-            }
 
-            if (sampleNodeId == null) {
-                updateItem(0) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
-                _snackbarMessage.value = "Upload rejected — reconnect and retry"
-                return@launch
-            }
-            updateItem(0) { it.copy(state = KitItemState.Done) }
+                if (sliceNodeId == null) {
+                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
+                    _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
+                    continue
+                }
 
-            // Assign slices: stepped trim per pad.
-            for (i in 0 until sliceCount) {
-                val padIndex = i + 1  // item rows: upload=0, slice[0]=1, …
-                val start = (i.toLong() * frames / sliceCount).toInt()
-                val end   = ((i + 1).toLong() * frames / sliceCount).toInt()
-                updateItem(padIndex) { it.copy(state = KitItemState.Working) }
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, i, sampleNodeId, start, end)
+                        midi.assignSampleToPad(group, i, sliceNodeId, 0, sliceFrames)
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "KitViewModel chop: assignSampleToPad slice $i failed", e)
-                    updateItem(padIndex) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
+                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
                     _snackbarMessage.value = "Slice ${i + 1} assign failed: ${e.message ?: e}"
                     continue
                 }
+
                 if (ok) {
-                    updateItem(padIndex) { it.copy(state = KitItemState.Done) }
+                    updateItem(i) { it.copy(state = KitItemState.Done) }
                 } else {
-                    updateItem(padIndex) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
                 }
             }
 
-            val doneCount = _items.value.drop(1).count { it.isDone() }
+            val doneCount = _items.value.count { it.isDone() }
             _snackbarMessage.value = "Assigned $doneCount / $sliceCount slices to group ${group.name}"
         }
     }
@@ -340,65 +363,82 @@ class KitViewModel(
 
     /**
      * Testability seam for chop mode: exercise the ViewModel state-machine without SAF or
-     * AudioDecoder. Pre-converted PCM is passed directly to the device upload + assign pipeline.
+     * AudioDecoder. Pre-converted PCM is passed directly to the per-slice upload + assign pipeline.
+     *
+     * Mirrors [onLoopFilePicked] exactly: slices PCM via [LoopSlicer.slicePcmBytes], applies the
+     * 20 s guard, then for each slice calls [MIDIRepository.putSampleFile] → [MIDIRepository.assignSampleToPad]
+     * with full trim (start=0, end=sliceFrameCount).
      *
      * @param name       Sample name (will be sanitized).
      * @param pcm        Raw s16 LE PCM bytes (no RIFF header).
      * @param channels   1 or 2.
-     * @param sampleRate 46875.
+     * @param sampleRate Device sample rate (default 46875).
      */
     fun chopFromPcm(name: String, pcm: ByteArray, channels: Int = 1, sampleRate: Int = 46875) {
         val sliceCount = resolvedSliceCount()
         val group = _selectedGroup.value
         val safeName = manager.sanitizeName(name) ?: name
-        val frames = pcm.size / 2 / channels
 
         val sliceLabels = (0 until sliceCount).map { i -> "slice ${group.name}${i + 1}" }
-        _items.value = listOf(KitResultItem(safeName)) + sliceLabels.map { KitResultItem(it) }
+        _items.value = sliceLabels.map { KitResultItem(it) }
 
         viewModelScope.launch {
-            updateItem(0) { it.copy(state = KitItemState.Working) }
+            // Slice the PCM bytes into N equal pieces on frame boundaries.
+            val slices = LoopSlicer.slicePcmBytes(pcm, channels, sliceCount)
+            val bytesPerFrame = channels * 2
 
-            val sampleNodeId: Int? = try {
-                deviceMutex.withLock {
-                    midi.putSampleFile(safeName, pcm, channels, sampleRate)
+            // 20 s guard: reject before any device write if the largest slice exceeds the cap.
+            val maxSliceFrames = slices.maxOfOrNull { it.size / bytesPerFrame } ?: 0
+            val maxAllowedFrames = 20 * sampleRate
+            if (maxSliceFrames > maxAllowedFrames) {
+                val msg = "loop too long to chop into $sliceCount slices — each slice must be ≤20 s; " +
+                    "add more slices or use a shorter loop"
+                _items.value = sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) }
+                _snackbarMessage.value = msg
+                return@launch
+            }
+
+            // Per-slice upload + assign.
+            for (i in slices.indices) {
+                val slicePcm = slices[i]
+                val sliceFrames = slicePcm.size / bytesPerFrame
+                val sliceName = "${safeName.substringBeforeLast('.')}_${i + 1}.wav"
+                updateItem(i) { it.copy(state = KitItemState.Working) }
+
+                val sliceNodeId: Int? = try {
+                    deviceMutex.withLock {
+                        midi.putSampleFile(sliceName, slicePcm, channels, sampleRate)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "KitViewModel chopFromPcm: putSampleFile failed for slice $i ($sliceName)", e)
+                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
+                    _snackbarMessage.value = "Slice ${i + 1} upload failed: ${e.message ?: e}"
+                    continue
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "KitViewModel chopFromPcm: putSampleFile failed for $safeName", e)
-                updateItem(0) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
-                _snackbarMessage.value = "Upload failed: ${e.message ?: e}"
-                return@launch
-            }
 
-            if (sampleNodeId == null) {
-                updateItem(0) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
-                _snackbarMessage.value = "Upload rejected — reconnect and retry"
-                return@launch
-            }
-            updateItem(0) { it.copy(state = KitItemState.Done) }
+                if (sliceNodeId == null) {
+                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
+                    _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
+                    continue
+                }
 
-            for (i in 0 until sliceCount) {
-                val padIndex = i + 1
-                val start = (i.toLong() * frames / sliceCount).toInt()
-                val end   = ((i + 1).toLong() * frames / sliceCount).toInt()
-                updateItem(padIndex) { it.copy(state = KitItemState.Working) }
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, i, sampleNodeId, start, end)
+                        midi.assignSampleToPad(group, i, sliceNodeId, 0, sliceFrames)
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "KitViewModel chopFromPcm: assignSampleToPad slice $i failed", e)
-                    updateItem(padIndex) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
+                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
                     continue
                 }
                 if (ok) {
-                    updateItem(padIndex) { it.copy(state = KitItemState.Done) }
+                    updateItem(i) { it.copy(state = KitItemState.Done) }
                 } else {
-                    updateItem(padIndex) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
                 }
             }
         }

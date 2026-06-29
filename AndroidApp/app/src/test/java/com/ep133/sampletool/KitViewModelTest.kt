@@ -51,9 +51,8 @@ private class KitSpyMIDIPort(private val connected: Boolean = false) : MIDIPort 
 /**
  * Fake MIDIRepository for KitViewModel tests.
  *
- * Records all [assignSampleToPad] calls as [AssignCall] so tests can assert:
- * - how many times it was called
- * - the exact (group, gridIndex, sampleNodeId, sampleStart, sampleEnd) per call
+ * Records all [putSampleFile] calls as [PutCall] and all [assignSampleToPad] calls as [AssignCall]
+ * so tests can assert on count, order, and per-call arguments.
  *
  * [putSampleFile] returns a synthetic nodeId (the call index, 1-based) when connected,
  * null when disconnected — matching the MIDIRepository contract.
@@ -62,6 +61,13 @@ private class KitFakeMIDIRepo(
     spy: KitSpyMIDIPort,
     connected: Boolean = false,
 ) : MIDIRepository(spy) {
+
+    data class PutCall(
+        val name: String,
+        val pcmBytes: ByteArray,
+        val channels: Int,
+        val sampleRate: Int,
+    )
 
     data class AssignCall(
         val group: PadChannel,
@@ -82,7 +88,7 @@ private class KitFakeMIDIRepo(
     }
 
     private var putCallCount = 0
-    val putCalls = mutableListOf<String>()       // recorded names
+    val putCalls = mutableListOf<PutCall>()
     val assignCalls = mutableListOf<AssignCall>()
 
     override suspend fun putSampleFile(
@@ -91,7 +97,7 @@ private class KitFakeMIDIRepo(
         channels: Int,
         sampleRate: Int,
     ): Int? {
-        putCalls.add(name)
+        putCalls.add(PutCall(name, pcmBytes.copyOf(), channels, sampleRate))
         return if (_state.value.connected) {
             ++putCallCount   // returns 1, 2, 3, … (never 0 or null when connected)
         } else {
@@ -144,7 +150,7 @@ class KitViewModelTest {
 
     /**
      * Build `frames` PCM frames as a raw s16 LE ByteArray: 2 bytes per frame × 1 channel.
-     * Total byte count = frames * 2.
+     * Total byte count = frames * channels * 2.
      */
     private fun pcm(frames: Int, channels: Int = 1): ByteArray =
         ByteArray(frames * 2 * channels) { (it % 256).toByte() }
@@ -157,10 +163,14 @@ class KitViewModelTest {
         return repo to vm
     }
 
-    // ── Chop mode: putSampleFile called exactly ONCE ───────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // Chop mode — per-slice upload contract
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── putSampleFile called N times (once per slice, not once total) ─────────
 
     @Test
-    fun chop_putSampleFileCalled_exactlyOnce() = runTest {
+    fun chop_putSampleFileCalled_nTimesPerSlice() = runTest {
         val (repo, vm) = makeVm(connected = true)
 
         val sliceCount = 4
@@ -171,13 +181,17 @@ class KitViewModelTest {
 
         advanceUntilIdle()
 
-        assertEquals("putSampleFile must be called exactly once for chop mode", 1, repo.putCalls.size)
+        assertEquals(
+            "putSampleFile must be called once per slice ($sliceCount times total)",
+            sliceCount,
+            repo.putCalls.size,
+        )
     }
 
-    // ── Chop mode: assignSampleToPad called N times with stepped start/end ────
+    // ── assignSampleToPad called N times with full trim (0, sliceFrameCount) ──
 
     @Test
-    fun chop_assignCalledN_timesWithSteppedTrim() = runTest {
+    fun chop_assignCalledN_timesWithFullTrim() = runTest {
         val (repo, vm) = makeVm(connected = true)
 
         val sliceCount = 4
@@ -190,19 +204,56 @@ class KitViewModelTest {
 
         assertEquals("assignSampleToPad must be called $sliceCount times", sliceCount, repo.assignCalls.size)
 
-        // Verify stepped start/end trim for each slice.
+        // Each slice uses full trim: start=0, end=sliceFrameCount.
+        // Slice i covers frames [ i*frames/N .. (i+1)*frames/N ).
         for (i in 0 until sliceCount) {
             val call = repo.assignCalls[i]
-            val expectedStart = (i.toLong() * frames / sliceCount).toInt()
-            val expectedEnd   = ((i + 1).toLong() * frames / sliceCount).toInt()
+            val sliceFrameCount = ((i + 1).toLong() * frames / sliceCount).toInt() -
+                (i.toLong() * frames / sliceCount).toInt()
             assertEquals("slice $i: gridIndex", i, call.gridIndex)
-            assertEquals("slice $i: sampleNodeId", 1, call.sampleNodeId)  // first putSampleFile returns 1
-            assertEquals("slice $i: sampleStart", expectedStart, call.sampleStart)
-            assertEquals("slice $i: sampleEnd",   expectedEnd,   call.sampleEnd)
+            // nodeId is the call-index (1-based) — slice 0 is the first put call → nodeId 1.
+            assertEquals("slice $i: sampleNodeId", i + 1, call.sampleNodeId)
+            assertEquals("slice $i: sampleStart must be 0 (full trim on slice)", 0, call.sampleStart)
+            assertEquals("slice $i: sampleEnd must equal sliceFrameCount", sliceFrameCount, call.sampleEnd)
         }
     }
 
-    // ── Chop mode: all items reach Done state ─────────────────────────────────
+    // ── Per-slice byte content tiles exactly with no dropped samples ───────────
+
+    @Test
+    fun chop_sliceByteContent_tilesExactly() = runTest {
+        val (repo, vm) = makeVm(connected = true)
+
+        val sliceCount = 3
+        vm.onSliceCountChange(sliceCount.toString())
+
+        val frames = 10          // 10 frames mono → 20 bytes
+        val pcmData = pcm(frames)
+        vm.chopFromPcm("loop.wav", pcmData)
+
+        advanceUntilIdle()
+
+        assertEquals("putSampleFile called $sliceCount times", sliceCount, repo.putCalls.size)
+
+        // Stepped boundaries: i*10/3, (i+1)*10/3 — same formula as LoopSlicer.slicePcmBytes.
+        val bytesPerFrame = 2   // mono, 2 bytes/frame
+        for (i in 0 until sliceCount) {
+            val startFrame = (i.toLong() * frames / sliceCount).toInt()
+            val endFrame   = ((i + 1).toLong() * frames / sliceCount).toInt()
+            val expectedBytes = pcmData.copyOfRange(startFrame * bytesPerFrame, endFrame * bytesPerFrame)
+            assertArrayEquals(
+                "slice $i PCM content must match stepped frame range [$startFrame..$endFrame)",
+                expectedBytes,
+                repo.putCalls[i].pcmBytes,
+            )
+        }
+
+        // Slices must tile exactly — concatenation must equal the original PCM.
+        val reassembled = repo.putCalls.flatMap { it.pcmBytes.toList() }.toByteArray()
+        assertArrayEquals("concatenated slices must equal original PCM", pcmData, reassembled)
+    }
+
+    // ── All N rows reach Done state ───────────────────────────────────────────
 
     @Test
     fun chop_allItemsDone_whenConnected() = runTest {
@@ -215,18 +266,52 @@ class KitViewModelTest {
         advanceUntilIdle()
 
         val items = vm.items.value
-        // items[0] = upload row; items[1..4] = slice rows
-        assertEquals(sliceCount + 1, items.size)
+        // N rows (one per slice) — no separate upload row.
+        assertEquals(sliceCount, items.size)
         items.forEach { item ->
             assertEquals("Item '${item.label}' should be Done; got ${item.state}", KitItemState.Done, item.state)
         }
     }
 
-    // ── Chop mode: upload row reaches Error when disconnected ─────────────────
+    // ── 20 s guard: no device writes when any slice exceeds 20 s ──────────────
+
+    @Test
+    fun chop_20sGuard_errorAllRows_noDeviceWrites() = runTest {
+        val (repo, vm) = makeVm(connected = true)
+
+        val sliceCount = 2
+        vm.onSliceCountChange(sliceCount.toString())
+
+        // sampleRate = 46875; 20 s cap = 20 * 46875 = 937500 frames.
+        // With 2 slices, each slice gets 937501 / 2 ~ 468751 frames → still ≤20 s, passes.
+        // To exceed 20 s per slice: use > 20*sampleRate frames in ONE slice.
+        // Easiest: total frames = 20*46875*2 + 2 = 1875002 frames, split into 2 slices
+        // → each slice = 937501 frames > 937500 → guard fires.
+        val sampleRate = 46875
+        val framesPerSlicePlusOne = 20 * sampleRate + 1
+        val totalFrames = framesPerSlicePlusOne * sliceCount  // both slices exceed 20 s
+
+        vm.chopFromPcm("longloop.wav", pcm(totalFrames), sampleRate = sampleRate)
+
+        advanceUntilIdle()
+
+        // No device writes.
+        assertEquals("putSampleFile must NOT be called when 20s guard fires", 0, repo.putCalls.size)
+        assertEquals("assignSampleToPad must NOT be called when 20s guard fires", 0, repo.assignCalls.size)
+
+        // All rows must be in Error state.
+        val items = vm.items.value
+        assertEquals("items list must have $sliceCount rows", sliceCount, items.size)
+        items.forEach { item ->
+            assertEquals("Item '${item.label}' must be Error; got ${item.state}", KitItemState.Error, item.state)
+        }
+    }
+
+    // ── Disconnected device: first item is Error, no device writes ─────────────
 
     @Test
     fun chop_uploadRowError_whenDisconnected() = runTest {
-        val (_, vm) = makeVm(connected = false)
+        val (repo, vm) = makeVm(connected = false)
 
         vm.onSliceCountChange("4")
         vm.chopFromPcm("loop.wav", pcm(1000))
@@ -234,12 +319,12 @@ class KitViewModelTest {
         advanceUntilIdle()
 
         val items = vm.items.value
-        // First item (upload row) must be Error.
         assertFalse("items must not be empty after chop", items.isEmpty())
-        assertEquals("upload row must be Error when disconnected", KitItemState.Error, items[0].state)
+        // First slice row must be Error (putSampleFile returns null → disconnected path).
+        assertEquals("first slice row must be Error when disconnected", KitItemState.Error, items[0].state)
     }
 
-    // ── Chop mode: group selection is forwarded to assignSampleToPad ──────────
+    // ── Group selection is forwarded to assignSampleToPad ─────────────────────
 
     @Test
     fun chop_groupSelection_forwardedToAssign() = runTest {
@@ -257,7 +342,7 @@ class KitViewModelTest {
         }
     }
 
-    // ── Chop mode: sliceCount clamped to MAX_SLICES ───────────────────────────
+    // ── sliceCount clamped to MAX_SLICES ──────────────────────────────────────
 
     @Test
     fun chop_sliceCountClampedToMaxSlices() = runTest {
@@ -272,8 +357,49 @@ class KitViewModelTest {
 
         advanceUntilIdle()
 
+        assertEquals("Exactly MAX_SLICES put calls", MAX_SLICES, repo.putCalls.size)
         assertEquals("Exactly MAX_SLICES assign calls", MAX_SLICES, repo.assignCalls.size)
     }
+
+    // ── Stereo PCM: frame count derived correctly, slice bytes are stereo ──────
+
+    @Test
+    fun chop_stereoFrameCount_derivedCorrectly() = runTest {
+        val (repo, vm) = makeVm(connected = true)
+
+        val sliceCount = 2
+        vm.onSliceCountChange(sliceCount.toString())
+
+        // 800 frames stereo → 800 * 2 channels * 2 bytes = 3200 bytes.
+        val frames = 800
+        val channels = 2
+        val pcmData = pcm(frames, channels)
+        vm.chopFromPcm("loop.wav", pcmData, channels)
+
+        advanceUntilIdle()
+
+        assertEquals(sliceCount, repo.assignCalls.size)
+        val bytesPerFrame = channels * 2
+
+        val call0 = repo.assignCalls[0]
+        val call1 = repo.assignCalls[1]
+        // Full trim: start=0, end=sliceFrameCount.
+        // slice 0: frames [0..400) → 400 frames
+        assertEquals("stereo chop slice 0 start", 0, call0.sampleStart)
+        assertEquals("stereo chop slice 0 end", frames / sliceCount, call0.sampleEnd)
+        // slice 1: frames [400..800) → 400 frames
+        assertEquals("stereo chop slice 1 start", 0, call1.sampleStart)
+        assertEquals("stereo chop slice 1 end", frames / sliceCount, call1.sampleEnd)
+
+        // Byte lengths: each slice should be sliceFrameCount * channels * 2 bytes.
+        val expectedSliceBytes = (frames / sliceCount) * bytesPerFrame
+        assertEquals("stereo slice 0 byte count", expectedSliceBytes, repo.putCalls[0].pcmBytes.size)
+        assertEquals("stereo slice 1 byte count", expectedSliceBytes, repo.putCalls[1].pcmBytes.size)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Kit mode — unchanged contract
+    // ─────────────────────────────────────────────────────────────────────────
 
     // ── Kit mode: putSampleFile called once per file ──────────────────────────
 
@@ -375,33 +501,5 @@ class KitViewModelTest {
         assertEquals("items list capped at MAX_SLICES", MAX_SLICES, vm.items.value.size)
         assertEquals("putSampleFile capped at MAX_SLICES", MAX_SLICES, repo.putCalls.size)
         assertEquals("assignSampleToPad capped at MAX_SLICES", MAX_SLICES, repo.assignCalls.size)
-    }
-
-    // ── Chop mode: 2-channel (stereo) PCM frame count ────────────────────────
-
-    @Test
-    fun chop_stereoFrameCount_derivedCorrectly() = runTest {
-        val (repo, vm) = makeVm(connected = true)
-
-        val sliceCount = 2
-        vm.onSliceCountChange(sliceCount.toString())
-
-        // 800 frames stereo → 800 * 2 channels * 2 bytes = 3200 bytes.
-        // frames = pcm.size / 2 / channels = 3200 / 2 / 2 = 800.
-        val frames = 800
-        val channels = 2
-        vm.chopFromPcm("loop.wav", pcm(frames, channels), channels)
-
-        advanceUntilIdle()
-
-        assertEquals(sliceCount, repo.assignCalls.size)
-        val call0 = repo.assignCalls[0]
-        val call1 = repo.assignCalls[1]
-        // slice 0: start=0, end=400
-        assertEquals("stereo chop slice 0 start", 0, call0.sampleStart)
-        assertEquals("stereo chop slice 0 end", frames / sliceCount, call0.sampleEnd)
-        // slice 1: start=400, end=800
-        assertEquals("stereo chop slice 1 start", frames / sliceCount, call1.sampleStart)
-        assertEquals("stereo chop slice 1 end", frames, call1.sampleEnd)
     }
 }
