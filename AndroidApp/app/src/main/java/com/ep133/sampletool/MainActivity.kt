@@ -25,6 +25,7 @@ import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
 import com.ep133.sampletool.ui.`import`.SampleImportViewModel
+import com.ep133.sampletool.ui.kit.KitViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 
@@ -66,6 +67,7 @@ class MainActivity : ComponentActivity() {
         val deviceViewModel = DeviceViewModel(midiRepo)
         val sampleImportManager = SampleImportManager(midiRepo)
         val sampleImportViewModel = SampleImportViewModel(midiRepo, sampleImportManager)
+        val kitViewModel = KitViewModel(midiRepo, sampleImportManager)
 
         // SAF launchers — MUST be registered before setContent (Activity lifecycle constraint).
         // See STATE.md decision: "SAF launchers must be registered before setContent() in MainActivity"
@@ -82,6 +84,15 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.OpenMultipleDocuments(),
         ) { uris: List<Uri> -> sampleImportViewModel.onFilesPicked(uris, this) }
 
+        // Kit SAF launchers: single-file picker for chop mode, multi-file picker for kit mode.
+        val kitLoopLauncher = registerForActivityResult(
+            ActivityResultContracts.OpenDocument(),
+        ) { uri: Uri? -> uri?.let { kitViewModel.onLoopFilePicked(it, this) } }
+
+        val kitFilesLauncher = registerForActivityResult(
+            ActivityResultContracts.OpenMultipleDocuments(),
+        ) { uris: List<Uri> -> kitViewModel.onKitFilesPicked(uris, this) }
+
         deviceViewModel.onRequestBackup = { name -> backupLauncher.launch(name) }
         deviceViewModel.onRequestRestore = { restoreLauncher.launch(arrayOf("*/*")) }
         sampleImportViewModel.onRequestPick = { importLauncher.launch(arrayOf("audio/*")) }
@@ -93,6 +104,8 @@ class MainActivity : ComponentActivity() {
                 deviceViewModel.showSnackbar("No browser available to open the updater")
             }
         }
+        kitViewModel.onRequestLoopPick = { kitLoopLauncher.launch(arrayOf("audio/*")) }
+        kitViewModel.onRequestKitPick = { kitFilesLauncher.launch(arrayOf("audio/*")) }
 
         setContent {
             val deviceState by midiRepo.deviceState.collectAsState()
@@ -101,6 +114,7 @@ class MainActivity : ComponentActivity() {
                 projectsViewModel = projectsViewModel,
                 deviceViewModel = deviceViewModel,
                 sampleImportViewModel = sampleImportViewModel,
+                kitViewModel = kitViewModel,
                 isConnected = deviceState.connected,
             )
         }

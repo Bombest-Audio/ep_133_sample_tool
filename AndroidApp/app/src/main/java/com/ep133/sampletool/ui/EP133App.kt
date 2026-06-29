@@ -50,6 +50,8 @@ import com.ep133.sampletool.ui.theme.EP133Theme
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
 import com.ep133.sampletool.ui.`import`.SampleImportScreen
 import com.ep133.sampletool.ui.`import`.SampleImportViewModel
+import com.ep133.sampletool.ui.kit.KitScreen
+import com.ep133.sampletool.ui.kit.KitViewModel
 
 private val MonoFont = FontFamily.Monospace
 private val BadgeShape = RoundedCornerShape(3.dp)
@@ -59,6 +61,7 @@ private enum class NavRoute(val route: String, val label: String) {
     PROJECTS("projects", "PROJ"),
     DEVICE("device", "DEVICE"),
     IMPORT("import", "IMPORT"),
+    KIT("kit", "KIT"),
 }
 
 /**
@@ -72,6 +75,7 @@ fun EP133App(
     projectsViewModel: ProjectsViewModel,
     deviceViewModel: DeviceViewModel,
     sampleImportViewModel: SampleImportViewModel,
+    kitViewModel: KitViewModel,
     isConnected: Boolean = false,
 ) {
     // Theme state lives above EP133Theme so the header controls can re-theme the whole app.
@@ -182,6 +186,9 @@ fun EP133App(
                     }
                     composable(NavRoute.IMPORT.route) {
                         SampleImportScreen(sampleImportViewModel)
+                    }
+                    composable(NavRoute.KIT.route) {
+                        KitScreen(kitViewModel)
                     }
                 }
             }

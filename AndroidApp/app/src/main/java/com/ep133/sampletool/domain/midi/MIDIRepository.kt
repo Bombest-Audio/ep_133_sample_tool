@@ -1216,7 +1216,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * @return              true if the device acknowledged the METADATA SET; false on error or
      *                      if the pad node cannot be resolved (logged with details).
      */
-    suspend fun assignSampleToPad(
+    open suspend fun assignSampleToPad(
         group: PadChannel,
         gridIndex: Int,
         sampleNodeId: Int,
