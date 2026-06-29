@@ -151,9 +151,6 @@ class DeviceViewModel(
     var onRequestBackup: ((suggestedName: String) -> Unit)? = null
     var onRequestRestore: (() -> Unit)? = null
 
-    // Firmware updater callback — set by MainActivity (mirrors SAF pattern); Wave 3 wires the Custom Tab
-    var onOpenFirmwareUpdater: (() -> Unit)? = null
-
     fun triggerBackup() {
         if (_isBackupInProgress.value || _isRestoreInProgress.value) return
         val name = BackupManager(midi).suggestedBackupFilename()
@@ -270,11 +267,6 @@ class DeviceViewModel(
 
     fun refreshDevices() {
         midi.refreshDeviceState()
-    }
-
-    /** Invokes the firmware updater callback wired by MainActivity (Wave 3). */
-    fun openFirmwareUpdater() {
-        onOpenFirmwareUpdater?.invoke()
     }
 
     /** Query firmware / storage / sample count. Called when the Device screen opens connected. */
@@ -400,10 +392,7 @@ fun DeviceScreen(
                 ConnectionCard(deviceState)
                 StorageBar(deviceState, loading = statsLoading)
                 StatsGrid(deviceState, selectedChannel)
-                FirmwareUpdateBanner(
-                    state = firmwareUpdate,
-                    onOpenUpdater = { viewModel.openFirmwareUpdater() },
-                )
+                FirmwareUpdateBanner(state = firmwareUpdate)
                 ChannelSelector(
                     selected = selectedChannel,
                     onSelect = viewModel::selectChannel,
@@ -434,22 +423,18 @@ fun DeviceScreen(
 
 // ── Firmware update banner — shows above ChannelSelector when UpdateAvailable; spinner on Checking ──
 @Composable
-private fun FirmwareUpdateBanner(
-    state: FirmwareUpdateState,
-    onOpenUpdater: () -> Unit,
-) {
+private fun FirmwareUpdateBanner(state: FirmwareUpdateState) {
     val t = LocalEP133Tokens.current
     when (state) {
         is FirmwareUpdateState.UpdateAvailable -> {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(PanelRadius)
                     .background(t.accent.copy(alpha = 0.12f), PanelRadius)
                     .border(1.dp, t.accent.copy(alpha = 0.35f), PanelRadius)
                     .padding(horizontal = 13.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
                     text = "Firmware ${state.latest} available",
@@ -458,21 +443,14 @@ private fun FirmwareUpdateBanner(
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.3.sp,
-                    modifier = Modifier.weight(1f),
                 )
-                Spacer(Modifier.width(8.dp))
-                TextButton(
-                    onClick = onOpenUpdater,
-                    colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
-                ) {
-                    Text(
-                        text = "Open updater",
-                        fontFamily = Mono,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.4.sp,
-                    )
-                }
+                Text(
+                    text = "Update from a computer at teenage.engineering/apps/update",
+                    color = t.text3,
+                    fontFamily = Mono,
+                    fontSize = 9.sp,
+                    letterSpacing = 0.2.sp,
+                )
             }
         }
         is FirmwareUpdateState.Checking -> {

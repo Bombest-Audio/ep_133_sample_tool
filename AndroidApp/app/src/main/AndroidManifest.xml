@@ -11,20 +11,8 @@
         android:name="android.software.midi"
         android:required="true" />
 
-    <!-- HTTPS GET to teenage.engineering for firmware version check + Chrome Custom Tab handoff -->
+    <!-- HTTPS GET to teenage.engineering for firmware version check -->
     <uses-permission android:name="android.permission.INTERNET" />
-
-    <!-- Android 11+ (targetSdk 34) package visibility. Without this, getPackageInfo("com.android.chrome")
-         throws NameNotFoundException even when Chrome is installed, so the firmware-updater Custom Tab
-         can't detect Chrome and falls back to the default browser (which can't do WebUSB). -->
-    <queries>
-        <package android:name="com.android.chrome" />
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <category android:name="android.intent.category.BROWSABLE" />
-            <data android:scheme="https" />
-        </intent>
-    </queries>
 
     <application
         android:allowBackup="false"
@@ -46,25 +34,14 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
 
-        <!-- Auto-launch when the EP-133 USB device is connected. Kept on a separate alias
-             (not MainActivity itself) so it can be toggled at runtime: firmware flashing
-             re-enumerates the device repeatedly, and if this handler is live it relaunches
-             us and steals focus from the browser mid-flash. MainActivity disables this alias
-             while the firmware updater is open and re-enables it on return. -->
-        <activity-alias
-            android:name=".UsbAttachAlias"
-            android:targetActivity=".MainActivity"
-            android:enabled="true"
-            android:exported="true">
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
             <meta-data
                 android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/usb_device_filter" />
-        </activity-alias>
+        </activity>
 
         <activity
             android:name=".SampleManagerActivity"
