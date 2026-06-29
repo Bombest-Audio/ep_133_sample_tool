@@ -44,8 +44,16 @@ class MainActivity : ComponentActivity() {
     // foreground (the first launch's connect flow is driven by onCreate + the USB-attach intent).
     private var startedOnce = false
 
+    // True while the firmware-updater Custom Tab is open. During a flash the browser owns the
+    // EP-133 over WebUSB, so we must stay completely passive — not react to USB attach, not open
+    // the device, not request USB permission — or we steal focus (a USB-permission dialog) and the
+    // device itself, breaking the flash. Set in onOpenFirmwareUpdater, cleared in onStart on return.
+    private var firmwareUpdaterActive = false
+
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            // Stay out of the way while the firmware updater is flashing (see firmwareUpdaterActive).
+            if (firmwareUpdaterActive) return
             when (intent.action) {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
                     mainHandler.postDelayed({ midiRepo.refreshDeviceState() }, 1000)
@@ -91,9 +99,14 @@ class MainActivity : ComponentActivity() {
         deviceViewModel.onRequestRestore = { restoreLauncher.launch(arrayOf("*/*")) }
         sampleImportViewModel.onRequestPick = { importLauncher.launch(arrayOf("audio/*")) }
         deviceViewModel.onOpenFirmwareUpdater = {
-            // The flash re-enumerates the EP-133 on the USB bus several times; if our USB-attach
-            // handler is live it relaunches us and rips focus away from the browser, killing the
-            // flash partway. Suppress it for the duration; onStart re-enables it on return.
+            // The flash re-enumerates the EP-133 on the USB bus several times. Two ways that breaks
+            // the flash, both guarded here and cleared in onStart on return:
+            //   1. Our manifest USB-attach handler relaunching us — disable the alias.
+            //   2. Our running process re-opening the device / triggering a USB-permission dialog on
+            //      each re-enumeration — set firmwareUpdaterActive so the receiver ignores USB events,
+            //      and release the ports now so the browser can claim the device immediately.
+            firmwareUpdaterActive = true
+            midiManager.releasePorts()
             setUsbAutoLaunchEnabled(false)
             try {
                 val customTabsIntent = CustomTabsIntent.Builder().build()
@@ -105,6 +118,7 @@ class MainActivity : ComponentActivity() {
                 }
                 customTabsIntent.launchUrl(this, Uri.parse("https://teenage.engineering/apps/update"))
             } catch (e: Exception) {
+                firmwareUpdaterActive = false
                 setUsbAutoLaunchEnabled(true)
                 deviceViewModel.showSnackbar("No browser available to open the updater")
             }
@@ -133,9 +147,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        // Always restore USB auto-launch on return to the foreground. This is the re-enable half
-        // of the firmware-updater suppression (set in onOpenFirmwareUpdater); doing it
-        // unconditionally also self-heals if the process was killed while the alias was disabled.
+        // Returning to the foreground ends any firmware-updater session: resume reacting to the
+        // device, and restore USB auto-launch. The re-enable is unconditional so it also self-heals
+        // if the process was killed while the alias was disabled.
+        firmwareUpdaterActive = false
         setUsbAutoLaunchEnabled(true)
         // USB-MIDI ports are exclusive, and the WebView (SampleManagerActivity) owns a second
         // MIDIManager. Re-claim the port when we come back to the foreground. Skip the very first
