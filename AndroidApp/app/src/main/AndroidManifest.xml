@@ -14,6 +14,18 @@
     <!-- HTTPS GET to teenage.engineering for firmware version check + Chrome Custom Tab handoff -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Android 11+ (targetSdk 34) package visibility. Without this, getPackageInfo("com.android.chrome")
+         throws NameNotFoundException even when Chrome is installed, so the firmware-updater Custom Tab
+         can't detect Chrome and falls back to the default browser (which can't do WebUSB). -->
+    <queries>
+        <package android:name="com.android.chrome" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:hardwareAccelerated="true"
