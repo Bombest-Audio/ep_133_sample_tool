@@ -353,6 +353,77 @@ sendmidi dev "EP-133" syx 0 32 118 51 64 96 5 5 0 4 0 0 0 0
 > sending. A nodeId like 1000 (`0x03E8`) contains `0xE8` (>127) and **cannot** be sent raw in
 > SysEx, so pack it. (Node 0 worked raw only because it has no high bits.)
 
+## Pad assignment (hardware-verified 2026-06-29)
+
+### Pads are filesystem nodes
+
+For the active project, the node tree is:
+
+```
+active-project node
+  └── groups/        (directory node)
+        ├── A/       (directory node, 12 FILE children)
+        ├── B/
+        ├── C/
+        └── D/
+```
+
+Each group directory contains 12 FILE node children named `"01"` through `"12"` (flags 0x1D =
+READ|WRITE|DELETE). For example, group A pad nodes were 3201..3212 during the verified session.
+
+### Grid-index to pad-node-name mapping
+
+Pad node names follow the device's reading order — top-to-bottom, left-to-right — which is
+identical to `EP133Pads.GRID_ORDER`. Grid display index `i` (0..11) maps to the pad node named
+`"%02d".format(i + 1)`. Verified: grid index 9 (label ".") = node named `"10"`.
+
+To resolve a pad node from code:
+
+1. Resolve the active project (METADATA GET on `/projects` → `active` key).
+2. FILE_INFO the active project node to get its name.
+3. Resolve `/projects/<name>/groups/<letter>` to the group directory node.
+4. FILE_LIST the group directory; pick the entry whose name == `"%02d".format(gridIndex + 1)`.
+
+### Assigning a sample to a pad
+
+A pad's metadata JSON is its sound binding. Empty = `{"sym":0}`. To bind a sample, send a single
+`FILE_METADATA SET` to the pad node ID with the following JSON (all fields required — any
+missing field was silently ignored by the device in tests):
+
+```json
+{
+  "sym": <sampleNodeId>,
+  "sample.start": <startFrame>,
+  "sample.end": <endFrame>,
+  "sound.playmode": "oneshot",
+  "sound.amplitude": 100,
+  "sound.pan": 0,
+  "sound.pitch": 0.00,
+  "envelope.attack": 0,
+  "envelope.release": 255,
+  "sound.mutegroup": false,
+  "time.mode": "off",
+  "midi.channel": 0
+}
+```
+
+- `sym` is the device-assigned node ID of the sample file. This is returned in the FILE_PUT INIT
+  response body[0..1] as a u16 big-endian integer (a 0.3 s test upload returned node ID 193).
+- `sample.start` / `sample.end` are in **frames** (not bytes). To play the full sample: start = 0,
+  end = total frame count (pcmBytes.size / channels / 2 for s16).
+- `sound.pitch` must be serialized as `0.00` (a JSON number, not the integer `0`).
+
+### Device-assigned node ID from FILE_PUT INIT
+
+When uploading a sample with `FILE_PUT INIT` (the create-PUT protocol), the device's response
+body carries the assigned node ID for the new file. Parse it as:
+
+```
+nodeId = (body[0] & 0xFF) << 8 | (body[1] & 0xFF)
+```
+
+(u16 big-endian, first two bytes of the unpacked response body after the status byte is consumed.)
+
 ## Appendix: captured frames (fw 2.5.0)
 
 Raw `receivemidi` output from the spike, so you can check your decoder against real bytes.

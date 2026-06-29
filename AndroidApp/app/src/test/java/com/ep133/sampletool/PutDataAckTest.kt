@@ -138,7 +138,7 @@ class PutDataAckTest {
         // Upload 1 byte so we get exactly one DATA page + one terminator.
         val result = repo.putSampleFile("kick.wav", ByteArray(1) { 0x42 })
 
-        assertTrue("putSampleFile must return true when device sends empty-body STATUS_OK acks", result)
+        assertNotNull("putSampleFile must return a nodeId (non-null) when device sends empty-body STATUS_OK acks", result)
     }
 
     /**
@@ -156,6 +156,6 @@ class PutDataAckTest {
 
         val result = repo.putSampleFile("kick.wav", ByteArray(1) { 0x42 })
 
-        assertFalse("putSampleFile must return false when device sends non-OK status on page ack", result)
+        assertNull("putSampleFile must return null when device sends non-OK status on page ack", result)
     }
 }

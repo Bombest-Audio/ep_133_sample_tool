@@ -85,11 +85,11 @@ private class ConcurrencyFakeRepo(spy: ConcurrencySpyPort) : MIDIRepository(spy)
         pcmBytes: ByteArray,
         channels: Int,
         sampleRate: Int,
-    ): Boolean {
+    ): Int? {
         if (!inFlight.compareAndSet(false, true)) {
             // Another call is in flight — collision detected.
             collisions.incrementAndGet()
-            return false
+            return null
         }
         try {
             // Yield so the test dispatcher can schedule other coroutines while this
@@ -97,7 +97,7 @@ private class ConcurrencyFakeRepo(spy: ConcurrencySpyPort) : MIDIRepository(spy)
             // milliseconds; yield() is sufficient to expose interleaving in unit tests.
             yield()
             successCount.incrementAndGet()
-            return true
+            return 42 // fake node ID
         } finally {
             inFlight.set(false)
         }

@@ -138,7 +138,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
             return@flow
         }
 
-        val ok = try {
+        val nodeId = try {
             uploadMutex.withLock {
                 midi.putSampleFile(safeName, converted.pcm, converted.channels, converted.sampleRate)
             }
@@ -150,7 +150,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
             return@flow
         }
 
-        if (ok) {
+        if (nodeId != null) {
             emit(SampleImportProgress.Progress(1, 1))
             emit(SampleImportProgress.Done(safeName))
         } else {
@@ -201,7 +201,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
             return@flow
         }
 
-        val ok = try {
+        val nodeId = try {
             uploadMutex.withLock {
                 midi.putSampleFile(safeName, converted.pcm, converted.channels, converted.sampleRate)
             }
@@ -213,7 +213,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
             return@flow
         }
 
-        if (ok) {
+        if (nodeId != null) {
             emit(SampleImportProgress.Progress(1, 1))
             emit(SampleImportProgress.Done(safeName))
         } else {

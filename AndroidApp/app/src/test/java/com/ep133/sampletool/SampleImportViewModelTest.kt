@@ -75,14 +75,14 @@ private class SampleImportFakeRepo(
         _deviceState.value = state
     }
 
-    // putSampleFile returns true when connected, false when disconnected — matches
+    // putSampleFile returns a fake node ID when connected, null when disconnected — matches
     // SampleImportManager's corrected fail-closed contract (Codex fix #2).
     override suspend fun putSampleFile(
         name: String,
         pcmBytes: ByteArray,
         channels: Int,
         sampleRate: Int,
-    ): Boolean = _state.value.connected
+    ): Int? = if (_state.value.connected) 42 else null
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
