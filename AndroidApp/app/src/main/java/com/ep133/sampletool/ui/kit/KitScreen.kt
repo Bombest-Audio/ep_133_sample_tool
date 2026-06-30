@@ -215,7 +215,9 @@ class KitViewModel(
         viewModelScope.launch {
             // Decode/convert inside the picker-callback grant (Landmine 7).
             val converted = try {
-                withContext(Dispatchers.IO) { manager.convert(context, uri) }
+                // enforceMaxLength = false: a loop is meant to exceed the single-sample cap; we
+                // slice the full PCM and size-check each slice against the device budget instead.
+                withContext(Dispatchers.IO) { manager.convert(context, uri, enforceMaxLength = false) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
