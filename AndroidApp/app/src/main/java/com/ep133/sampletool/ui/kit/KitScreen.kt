@@ -14,12 +14,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -38,7 +36,6 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -70,8 +67,8 @@ private const val TAG = "EP133APP"
 /** Maximum number of pads per group (12 physical pads). */
 const val MAX_SLICES = 12
 
-/** Default slice count for the loop-chopper mode. */
-const val DEFAULT_SLICE_COUNT = 16
+/** Default slice count for the loop-chopper mode (must be in 1..[MAX_SLICES]). */
+const val DEFAULT_SLICE_COUNT = 8
 
 /**
  * EP-133 per-sample cap: 20s stereo OR 40s mono @ 46875 (firmware 2.5).
@@ -573,6 +570,154 @@ class KitViewModel(
 private val PanelRadius = RoundedCornerShape(3.dp)
 private val Mono = FontFamily.Monospace
 
+/** One pad in the slice selector: its printed label and its 1-based fill-order rank. */
+private data class SlicePad(val label: String, val order: Int)
+
+/**
+ * The EP-133 pad cluster in device layout (top→bottom, left→right), each pad tagged with its
+ * position in the fill order — ranks 1..12 = `. 0 ENT 1 2 3 4 5 6 7 8 9`, matching [PAD_FILL_ORDER].
+ * Tapping a pad sets the slice count to its rank, so the grid previews exactly which pads the
+ * slices land on and in what order.
+ */
+private val SLICE_PAD_GRID = listOf(
+    SlicePad("7", 10), SlicePad("8", 11), SlicePad("9", 12),
+    SlicePad("4", 7),  SlicePad("5", 8),  SlicePad("6", 9),
+    SlicePad("1", 4),  SlicePad("2", 5),  SlicePad("3", 6),
+    SlicePad(".", 1),  SlicePad("0", 2),  SlicePad("ENT", 3),
+)
+
+// Ink on a filled (accent) pad — a warm near-black for contrast, regardless of app theme.
+private val PadFilledInk = Color(0xFF1A1206)
+// Label on an empty (dark) pad — a fixed light, since the pad face is always dark like the device.
+private val PadEmptyInk = Color(0xFFE2E3E4)
+
+/**
+ * Visual slice-count selector (implements the "Slice Pad Selector" design). A big count readout
+ * with ± steppers plus a 4×3 mock of the device pads: pads whose fill-order rank ≤ [count] render
+ * "filled" (accent), the pad at rank == count gets a teal edge ring, and tapping any pad sets the
+ * count to its rank. Range is 1..[MAX_SLICES].
+ */
+@Composable
+private fun SlicePadSelector(
+    count: Int,
+    onCountChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val t = LocalEP133Tokens.current
+    Column(
+        modifier = modifier
+            .clip(PanelRadius)
+            .background(t.panel, PanelRadius)
+            .border(1.dp, t.rule, PanelRadius)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        // Count readout + ± steppers.
+        Text("SLICE COUNT", fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.6.sp, color = t.text3)
+        Row(
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                count.toString().padStart(2, '0'),
+                fontFamily = Mono, fontSize = 54.sp, fontWeight = FontWeight.Bold,
+                letterSpacing = (-1).sp, color = t.accent,
+            )
+            Text(
+                "SLICES", fontFamily = Mono, fontSize = 11.sp, letterSpacing = 1.6.sp,
+                color = t.text, modifier = Modifier.padding(bottom = 10.dp),
+            )
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            SliceStepperButton("−", enabled = count > 1) { onCountChange((count - 1).coerceAtLeast(1)) }
+            SliceStepperButton("+", enabled = count < MAX_SLICES) { onCountChange((count + 1).coerceAtMost(MAX_SLICES)) }
+            Text(
+                "TAP A PAD OR USE ±\nRANGE 1–$MAX_SLICES",
+                fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.sp, color = t.text3,
+            )
+        }
+
+        // 4×3 pad-cluster preview, housed like the device's pad panel.
+        Column(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(t.inset, RoundedCornerShape(8.dp))
+                .border(1.dp, t.ruleSoft, RoundedCornerShape(8.dp))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SLICE_PAD_GRID.chunked(3).forEach { rowPads ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    rowPads.forEach { pad ->
+                        SlicePadCell(pad = pad, count = count, onTap = { onCountChange(pad.order) })
+                    }
+                }
+            }
+        }
+        Text(
+            "PADS FILL ↖ FROM BOTTOM-LEFT",
+            fontFamily = Mono, fontSize = 8.sp, letterSpacing = 1.2.sp, color = t.text3,
+        )
+    }
+}
+
+@Composable
+private fun SlicePadCell(pad: SlicePad, count: Int, onTap: () -> Unit) {
+    val t = LocalEP133Tokens.current
+    val filled = pad.order <= count
+    val isEdge = pad.order == count
+    val shape = RoundedCornerShape(12.dp)
+    Box(
+        modifier = Modifier
+            .size(60.dp)
+            .clip(shape)
+            .background(if (filled) t.accent else t.padFace, shape)
+            .then(if (isEdge) Modifier.border(2.dp, t.live, shape) else Modifier)
+            .clickable(onClick = onTap),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = pad.label,
+            fontFamily = Mono,
+            fontSize = if (pad.label.length > 1) 13.sp else 19.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.5.sp,
+            color = if (filled) PadFilledInk else PadEmptyInk,
+        )
+        if (filled) {
+            Text(
+                text = pad.order.toString(),
+                fontFamily = Mono, fontSize = 8.sp, fontWeight = FontWeight.Bold,
+                color = PadFilledInk.copy(alpha = 0.62f),
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 6.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SliceStepperButton(label: String, enabled: Boolean, onClick: () -> Unit) {
+    val t = LocalEP133Tokens.current
+    val shape = RoundedCornerShape(8.dp)
+    Box(
+        modifier = Modifier
+            .size(width = 46.dp, height = 42.dp)
+            .clip(shape)
+            .background(t.padFace, shape)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            fontFamily = Mono, fontSize = 20.sp,
+            color = if (enabled) PadEmptyInk else PadEmptyInk.copy(alpha = 0.4f),
+        )
+    }
+}
+
 /**
  * Kit screen: loop chopper and drum-kit builder, two modes behind a segmented control.
  *
@@ -680,41 +825,14 @@ fun KitScreen(viewModel: KitViewModel) {
                 }
             }
 
-            // Chop-only: slice count input.
+            // Chop-only: visual slice-count selector — tap a pad (or ±) to set how many slices;
+            // the grid previews which pads they'll load onto, in fill order (. 0 ENT 1–9).
             if (mode == KitMode.CHOP) {
-                val sliceError = sliceCountText.toIntOrNull().let { n ->
-                    when {
-                        n == null -> "enter a number"
-                        n < 1 -> "min 1"
-                        n > MAX_SLICES -> "max $MAX_SLICES (one group has $MAX_SLICES pads)"
-                        else -> null
-                    }
-                }
-                OutlinedTextField(
-                    value = sliceCountText,
-                    onValueChange = { viewModel.onSliceCountChange(it) },
-                    label = {
-                        Text(
-                            "SLICES (1–$MAX_SLICES)",
-                            fontFamily = Mono,
-                            fontSize = 9.sp,
-                            color = t.text3,
-                        )
-                    },
-                    isError = sliceError != null,
-                    supportingText = if (sliceError != null) {
-                        { Text(sliceError, color = t.accent, fontFamily = Mono, fontSize = 9.sp) }
-                    } else null,
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                val count = sliceCountText.toIntOrNull()?.coerceIn(1, MAX_SLICES) ?: DEFAULT_SLICE_COUNT
+                SlicePadSelector(
+                    count = count,
+                    onCountChange = { viewModel.onSliceCountChange(it.toString()) },
                     modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = t.accent,
-                        unfocusedBorderColor = t.rule,
-                        focusedTextColor = t.text,
-                        unfocusedTextColor = t.text,
-                        cursorColor = t.accent,
-                    ),
                 )
             }
 
