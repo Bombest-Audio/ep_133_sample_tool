@@ -7,6 +7,7 @@ import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.midi.MIDIPort
 import com.ep133.sampletool.ui.kit.KitItemState
 import com.ep133.sampletool.ui.kit.KitViewModel
+import com.ep133.sampletool.ui.kit.DEFAULT_SLICE_COUNT
 import com.ep133.sampletool.ui.kit.MAX_SLICES
 import com.ep133.sampletool.ui.kit.PAD_FILL_ORDER
 import kotlinx.coroutines.Dispatchers
@@ -220,6 +221,38 @@ class KitViewModelTest {
             assertEquals("slice $i: sampleStart must be 0 (full trim on slice)", 0, call.sampleStart)
             assertEquals("slice $i: sampleEnd must equal sliceFrameCount", sliceFrameCount, call.sampleEnd)
         }
+    }
+
+    // ── Per-group state is independent and persists across group switches ──────
+
+    @Test
+    fun perGroup_stateIsIndependentAndPersists() = runTest {
+        val (_, vm) = makeVm(connected = true)
+
+        // Group A: chop 3 slices.
+        vm.onGroupChange(PadChannel.A)
+        vm.onSliceCountChange("3")
+        vm.chopFromPcm("a.wav", pcm(600))
+        advanceUntilIdle()
+        assertEquals("A has 3 items", 3, vm.items.value.size)
+
+        // Switch to B — a clean slate with its own defaults.
+        vm.onGroupChange(PadChannel.B)
+        advanceUntilIdle()
+        assertEquals("B starts empty", 0, vm.items.value.size)
+        assertEquals("B keeps its own default slice count", DEFAULT_SLICE_COUNT.toString(), vm.sliceCountText.value)
+
+        // B: chop 5 slices.
+        vm.onSliceCountChange("5")
+        vm.chopFromPcm("b.wav", pcm(1000))
+        advanceUntilIdle()
+        assertEquals("B has 5 items", 5, vm.items.value.size)
+
+        // Back to A — A's state persisted.
+        vm.onGroupChange(PadChannel.A)
+        advanceUntilIdle()
+        assertEquals("A still has its 3 items", 3, vm.items.value.size)
+        assertEquals("A's slice count persisted", "3", vm.sliceCountText.value)
     }
 
     // ── Choke group (sound.mutegroup) reaches assignSampleToPad ────────────────

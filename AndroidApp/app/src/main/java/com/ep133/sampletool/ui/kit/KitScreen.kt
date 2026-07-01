@@ -63,8 +63,12 @@ import com.ep133.sampletool.ui.theme.LocalEP133Tokens
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -122,6 +126,15 @@ data class KitResultItem(
 
 enum class KitItemState { Pending, Working, Done, Error }
 
+/** All per-group working state for one A/B/C/D group (see `KitViewModel._groups`). */
+data class GroupState(
+    val mode: KitMode = KitMode.CHOP,
+    val chokeGroup: Boolean = true,
+    val sliceCountText: String = DEFAULT_SLICE_COUNT.toString(),
+    val stagedLoop: StagedLoop? = null,
+    val items: List<KitResultItem> = emptyList(),
+)
+
 /** Returns true iff the item completed successfully. */
 fun KitResultItem.isDone(): Boolean = state == KitItemState.Done
 
@@ -166,31 +179,35 @@ class KitViewModel(
     private val manager: SampleImportManager,
 ) : ViewModel() {
 
-    private val _mode = MutableStateFlow(KitMode.CHOP)
-    val mode: StateFlow<KitMode> = _mode.asStateFlow()
-
+    // Which group's state the UI is showing/editing. Global (not per-group).
     private val _selectedGroup = MutableStateFlow(PadChannel.A)
     val selectedGroup: StateFlow<PadChannel> = _selectedGroup.asStateFlow()
 
-    // Choke group: when on, every slice/one-shot in the batch is written with sound.mutegroup=true
-    // so the pads in the group cut each other off (monophonic within the group). Default on.
-    private val _chokeGroup = MutableStateFlow(true)
-    val chokeGroup: StateFlow<Boolean> = _chokeGroup.asStateFlow()
+    // Per-group working state: each A/B/C/D keeps its own mode, staged loop, slice count, choke, and
+    // chop/kit progress. Starting a chop on A and switching to B leaves A running and persisted.
+    private val _groups = MutableStateFlow(PadChannel.entries.associateWith { GroupState() })
 
-    // Slice count: stored as String for TextField binding; validated on use.
-    private val _sliceCountText = MutableStateFlow(DEFAULT_SLICE_COUNT.toString())
-    val sliceCountText: StateFlow<String> = _sliceCountText.asStateFlow()
+    private fun groupOf(g: PadChannel): GroupState = _groups.value.getValue(g)
+    private fun updateGroup(g: PadChannel, block: (GroupState) -> GroupState) {
+        _groups.update { it + (g to block(it.getValue(g))) }
+    }
+    private fun updateCurrent(block: (GroupState) -> GroupState) = updateGroup(_selectedGroup.value, block)
 
-    private val _items = MutableStateFlow<List<KitResultItem>>(emptyList())
-    val items: StateFlow<List<KitResultItem>> = _items.asStateFlow()
+    // Exposed state for the currently-selected group; re-emits when the selection or that group's
+    // state changes. The UI collects these exactly as before — they just follow the selected group.
+    private fun <T> derived(sel: (GroupState) -> T): StateFlow<T> =
+        combine(_selectedGroup, _groups) { g, m -> sel(m.getValue(g)) }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, sel(GroupState()))
 
+    val mode: StateFlow<KitMode> = derived { it.mode }
+    val chokeGroup: StateFlow<Boolean> = derived { it.chokeGroup }
+    val sliceCountText: StateFlow<String> = derived { it.sliceCountText }
+    val items: StateFlow<List<KitResultItem>> = derived { it.items }
+    val stagedLoop: StateFlow<StagedLoop?> = derived { it.stagedLoop }
+
+    // Transient toast — global (not per-group).
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
-
-    // The picked-but-not-yet-chopped loop (chop mode). Null until a file is picked; the user
-    // taps CHOP to process it, so they can adjust the slice count after picking.
-    private val _stagedLoop = MutableStateFlow<StagedLoop?>(null)
-    val stagedLoop: StateFlow<StagedLoop?> = _stagedLoop.asStateFlow()
 
     /**
      * Serializes device-upload + pad-assign calls so concurrent kit uploads don't race on the
@@ -210,15 +227,15 @@ class KitViewModel(
      */
     var onRequestKitPick: (() -> Unit)? = null
 
-    fun onModeChange(mode: KitMode) { _mode.value = mode }
+    fun onModeChange(mode: KitMode) = updateCurrent { it.copy(mode = mode) }
     fun onGroupChange(group: PadChannel) { _selectedGroup.value = group }
-    fun onChokeGroupChange(on: Boolean) { _chokeGroup.value = on }
-    fun onSliceCountChange(text: String) { _sliceCountText.value = text }
+    fun onChokeGroupChange(on: Boolean) = updateCurrent { it.copy(chokeGroup = on) }
+    fun onSliceCountChange(text: String) = updateCurrent { it.copy(sliceCountText = text) }
     fun dismissSnackbar() { _snackbarMessage.value = null }
 
-    /** Trigger the appropriate SAF picker based on the current mode. */
+    /** Trigger the appropriate SAF picker based on the current group's mode. */
     fun triggerPick() {
-        when (_mode.value) {
+        when (groupOf(_selectedGroup.value).mode) {
             KitMode.CHOP -> onRequestLoopPick?.invoke()
             KitMode.KIT  -> onRequestKitPick?.invoke()
         }
@@ -232,14 +249,14 @@ class KitViewModel(
     fun onLoopFilePicked(uri: Uri) {
         val rawName = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
             ?: "loop.wav"
-        _stagedLoop.value = StagedLoop(uri, rawName)
-        _items.value = emptyList()
+        updateCurrent { it.copy(stagedLoop = StagedLoop(uri, rawName), items = emptyList()) }
     }
 
-    /** Chop the currently-staged loop into [resolvedSliceCount] slices. No-op if nothing is staged. */
+    /** Chop the selected group's staged loop into its slice count. No-op if nothing is staged. */
     fun chopStagedLoop(context: Context) {
-        val staged = _stagedLoop.value ?: return
-        runChop(staged.uri, staged.name, context)
+        val group = _selectedGroup.value
+        val staged = groupOf(group).stagedLoop ?: return
+        runChop(group, staged.uri, staged.name, context)
     }
 
     /**
@@ -252,14 +269,14 @@ class KitViewModel(
      * 4. For each slice: [MIDIRepository.putSampleFile] → [MIDIRepository.assignSampleToPad]
      *    (fill order via [PAD_FILL_ORDER], full trim).
      */
-    private fun runChop(uri: Uri, rawName: String, context: Context) {
-        val sliceCount = resolvedSliceCount()
-        val group = _selectedGroup.value
+    private fun runChop(group: PadChannel, uri: Uri, rawName: String, context: Context) {
+        val sliceCount = resolvedSliceCountFor(group)
+        val chokeOn = groupOf(group).chokeGroup
         val safeName = manager.sanitizeName(rawName) ?: rawName
 
         // Seed N rows — one per slice (no separate upload row; each row covers its own upload+assign).
         val sliceLabels = (0 until sliceCount).map { i -> "slice ${group.name}${i + 1}" }
-        _items.value = sliceLabels.map { KitResultItem(it) }
+        setItems(group, sliceLabels.map { KitResultItem(it) })
 
         viewModelScope.launch {
             // Decode/convert inside the picker-callback grant (Landmine 7).
@@ -272,7 +289,7 @@ class KitViewModel(
             } catch (e: Exception) {
                 Log.e(TAG, "KitViewModel chop: convert failed for $safeName", e)
                 val msg = e.message ?: "Convert failed"
-                _items.value = sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) }
+                setItems(group, sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) })
                 _snackbarMessage.value = "Convert failed: ${e.message ?: e}"
                 return@launch
             }
@@ -298,7 +315,7 @@ class KitViewModel(
             if (maxSliceBytes > MAX_SAMPLE_BYTES) {
                 val msg = "slice exceeds the device's per-sample size limit (~20s stereo / 40s mono) — " +
                     "add more slices or shorten the loop"
-                _items.value = sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) }
+                setItems(group, sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) })
                 _snackbarMessage.value = msg
                 return@launch
             }
@@ -311,7 +328,7 @@ class KitViewModel(
             if (availBytes != null && totalUploadBytes > availBytes) {
                 val msg = "not enough space on device — chop needs ${totalUploadBytes / 1024} KB, " +
                     "${availBytes / 1024} KB free. Delete samples on the device or use fewer slices."
-                _items.value = sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) }
+                setItems(group, sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) })
                 _snackbarMessage.value = msg
                 return@launch
             }
@@ -321,7 +338,7 @@ class KitViewModel(
                 val slicePcm = slices[i]
                 val sliceFrames = slicePcm.size / bytesPerFrame
                 val sliceName = "${safeName.substringBeforeLast('.')}_${i + 1}.wav"
-                updateItem(i) { it.copy(state = KitItemState.Working) }
+                updateItem(group, i) { it.copy(state = KitItemState.Working) }
 
                 val sliceNodeId: Int? = try {
                     deviceMutex.withLock {
@@ -331,38 +348,38 @@ class KitViewModel(
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "KitViewModel chop: putSampleFile failed for slice $i ($sliceName)", e)
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
                     _snackbarMessage.value = "Slice ${i + 1} upload failed: ${e.message ?: e}"
                     continue
                 }
 
                 if (sliceNodeId == null) {
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
                     _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
                     continue
                 }
 
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames, muteGroup = _chokeGroup.value)
+                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames, muteGroup = chokeOn)
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "KitViewModel chop: assignSampleToPad slice $i failed", e)
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
                     _snackbarMessage.value = "Slice ${i + 1} assign failed: ${e.message ?: e}"
                     continue
                 }
 
                 if (ok) {
-                    updateItem(i) { it.copy(state = KitItemState.Done) }
+                    updateItem(group, i) { it.copy(state = KitItemState.Done) }
                 } else {
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
                 }
             }
 
-            val doneCount = _items.value.count { it.isDone() }
+            val doneCount = groupOf(group).items.count { it.isDone() }
             _snackbarMessage.value = "Assigned $doneCount / $sliceCount slices to group ${group.name}"
         }
     }
@@ -380,15 +397,16 @@ class KitViewModel(
         if (uris.isEmpty()) return
         val capped = uris.take(MAX_SLICES)
         val group = _selectedGroup.value
+        val chokeOn = groupOf(group).chokeGroup
         val names = capped.map { uri ->
             uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "sample.wav"
         }
-        _items.value = names.map { KitResultItem(it) }
+        setItems(group, names.map { KitResultItem(it) })
 
         capped.forEachIndexed { i, uri ->
             val rawName = names[i]
             viewModelScope.launch {
-                updateItem(i) { it.copy(state = KitItemState.Working) }
+                updateItem(group, i) { it.copy(state = KitItemState.Working) }
 
                 // Decode — can overlap with other files' decodes.
                 val converted = try {
@@ -397,7 +415,7 @@ class KitViewModel(
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "KitViewModel kit: convert failed for $rawName", e)
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Convert failed") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Convert failed") }
                     _snackbarMessage.value = "Convert failed for $rawName: ${e.message ?: e}"
                     return@launch
                 }
@@ -414,34 +432,34 @@ class KitViewModel(
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "KitViewModel kit: putSampleFile failed for $safeName", e)
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
                     _snackbarMessage.value = "Upload failed for $safeName: ${e.message ?: e}"
                     return@launch
                 }
 
                 if (sampleNodeId == null) {
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
                     _snackbarMessage.value = "Upload rejected for $safeName — reconnect and retry"
                     return@launch
                 }
 
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames, muteGroup = _chokeGroup.value)
+                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames, muteGroup = chokeOn)
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "KitViewModel kit: assignSampleToPad $i failed", e)
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
                     _snackbarMessage.value = "Assign failed for $safeName: ${e.message ?: e}"
                     return@launch
                 }
 
                 if (ok) {
-                    updateItem(i) { it.copy(state = KitItemState.Done) }
+                    updateItem(group, i) { it.copy(state = KitItemState.Done) }
                 } else {
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
                 }
             }
         }
@@ -461,12 +479,13 @@ class KitViewModel(
      * @param sampleRate Device sample rate (default 46875).
      */
     fun chopFromPcm(name: String, pcm: ByteArray, channels: Int = 1, sampleRate: Int = 46875) {
-        val sliceCount = resolvedSliceCount()
         val group = _selectedGroup.value
+        val sliceCount = resolvedSliceCountFor(group)
+        val chokeOn = groupOf(group).chokeGroup
         val safeName = manager.sanitizeName(name) ?: name
 
         val sliceLabels = (0 until sliceCount).map { i -> "slice ${group.name}${i + 1}" }
-        _items.value = sliceLabels.map { KitResultItem(it) }
+        setItems(group, sliceLabels.map { KitResultItem(it) })
 
         viewModelScope.launch {
             // Slice the PCM bytes into N equal pieces on frame boundaries.
@@ -480,7 +499,7 @@ class KitViewModel(
             if (maxSliceBytes > MAX_SAMPLE_BYTES) {
                 val msg = "slice exceeds the device's per-sample size limit (~20s stereo / 40s mono) — " +
                     "add more slices or shorten the loop"
-                _items.value = sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) }
+                setItems(group, sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) })
                 _snackbarMessage.value = msg
                 return@launch
             }
@@ -490,7 +509,7 @@ class KitViewModel(
                 val slicePcm = slices[i]
                 val sliceFrames = slicePcm.size / bytesPerFrame
                 val sliceName = "${safeName.substringBeforeLast('.')}_${i + 1}.wav"
-                updateItem(i) { it.copy(state = KitItemState.Working) }
+                updateItem(group, i) { it.copy(state = KitItemState.Working) }
 
                 val sliceNodeId: Int? = try {
                     deviceMutex.withLock {
@@ -500,32 +519,32 @@ class KitViewModel(
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "KitViewModel chopFromPcm: putSampleFile failed for slice $i ($sliceName)", e)
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
                     _snackbarMessage.value = "Slice ${i + 1} upload failed: ${e.message ?: e}"
                     continue
                 }
 
                 if (sliceNodeId == null) {
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
                     _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
                     continue
                 }
 
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames, muteGroup = _chokeGroup.value)
+                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames, muteGroup = chokeOn)
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "KitViewModel chopFromPcm: assignSampleToPad slice $i failed", e)
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
                     continue
                 }
                 if (ok) {
-                    updateItem(i) { it.copy(state = KitItemState.Done) }
+                    updateItem(group, i) { it.copy(state = KitItemState.Done) }
                 } else {
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
                 }
             }
         }
@@ -542,14 +561,15 @@ class KitViewModel(
         if (files.isEmpty()) return
         val capped = files.take(MAX_SLICES)
         val group = _selectedGroup.value
-        _items.value = capped.map { (name, _, _) -> KitResultItem(name) }
+        val chokeOn = groupOf(group).chokeGroup
+        setItems(group, capped.map { (name, _, _) -> KitResultItem(name) })
 
         capped.forEachIndexed { i, triple ->
             val (rawName, pcm, channels) = triple
             val safeName = manager.sanitizeName(rawName) ?: rawName
             val frames = pcm.size / 2 / channels
             viewModelScope.launch {
-                updateItem(i) { it.copy(state = KitItemState.Working) }
+                updateItem(group, i) { it.copy(state = KitItemState.Working) }
 
                 val sampleNodeId: Int? = try {
                     deviceMutex.withLock {
@@ -559,46 +579,52 @@ class KitViewModel(
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "KitViewModel kitFromPcm: putSampleFile failed for $safeName", e)
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
                     return@launch
                 }
 
                 if (sampleNodeId == null) {
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
                     return@launch
                 }
 
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames, muteGroup = _chokeGroup.value)
+                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames, muteGroup = chokeOn)
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "KitViewModel kitFromPcm: assignSampleToPad $i failed", e)
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
                     return@launch
                 }
 
                 if (ok) {
-                    updateItem(i) { it.copy(state = KitItemState.Done) }
+                    updateItem(group, i) { it.copy(state = KitItemState.Done) }
                 } else {
-                    updateItem(i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
                 }
             }
         }
     }
 
-    /** Parse [sliceCountText], clamped to [1, MAX_SLICES]. Returns MAX_SLICES on parse failure. */
-    fun resolvedSliceCount(): Int =
-        _sliceCountText.value.toIntOrNull()?.coerceIn(1, MAX_SLICES) ?: MAX_SLICES
+    /** Slice count for [group], clamped to [1, MAX_SLICES]. MAX_SLICES on parse failure. */
+    private fun resolvedSliceCountFor(group: PadChannel): Int =
+        groupOf(group).sliceCountText.toIntOrNull()?.coerceIn(1, MAX_SLICES) ?: MAX_SLICES
 
-    /** Update a single item by index (immutable list swap). */
-    internal fun updateItem(index: Int, transform: (KitResultItem) -> KitResultItem) {
-        val list = _items.value.toMutableList()
-        if (index in list.indices) {
-            list[index] = transform(list[index])
-            _items.value = list
+    /** Slice count for the currently-selected group (used by the UI labels). */
+    fun resolvedSliceCount(): Int = resolvedSliceCountFor(_selectedGroup.value)
+
+    /** Replace [group]'s progress items. */
+    private fun setItems(group: PadChannel, items: List<KitResultItem>) =
+        updateGroup(group) { it.copy(items = items) }
+
+    /** Update a single item of [group] by index (immutable list swap). */
+    internal fun updateItem(group: PadChannel, index: Int, transform: (KitResultItem) -> KitResultItem) {
+        updateGroup(group) { gs ->
+            if (index !in gs.items.indices) gs
+            else gs.copy(items = gs.items.mapIndexed { i, item -> if (i == index) transform(item) else item })
         }
     }
 }
