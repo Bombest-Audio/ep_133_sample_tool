@@ -24,7 +24,6 @@ import com.ep133.sampletool.ui.EP133App
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
-import com.ep133.sampletool.ui.`import`.SampleImportViewModel
 import com.ep133.sampletool.ui.kit.KitViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -66,7 +65,6 @@ class MainActivity : ComponentActivity() {
         val projectsViewModel = ProjectsViewModel(midiRepo, projectBackupManager)
         val deviceViewModel = DeviceViewModel(midiRepo)
         val sampleImportManager = SampleImportManager(midiRepo)
-        val sampleImportViewModel = SampleImportViewModel(midiRepo, sampleImportManager)
         val kitViewModel = KitViewModel(midiRepo, sampleImportManager)
 
         // SAF launchers — MUST be registered before setContent (Activity lifecycle constraint).
@@ -80,10 +78,6 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.OpenDocument(),
         ) { uri: Uri? -> uri?.let { deviceViewModel.onRestoreUriSelected(it, this) } }
 
-        val importLauncher = registerForActivityResult(
-            ActivityResultContracts.OpenMultipleDocuments(),
-        ) { uris: List<Uri> -> sampleImportViewModel.onFilesPicked(uris, this) }
-
         // Kit SAF launchers: single-file picker for chop mode, multi-file picker for kit mode.
         val kitLoopLauncher = registerForActivityResult(
             ActivityResultContracts.OpenDocument(),
@@ -95,7 +89,6 @@ class MainActivity : ComponentActivity() {
 
         deviceViewModel.onRequestBackup = { name -> backupLauncher.launch(name) }
         deviceViewModel.onRequestRestore = { restoreLauncher.launch(arrayOf("*/*")) }
-        sampleImportViewModel.onRequestPick = { importLauncher.launch(arrayOf("audio/*")) }
         deviceViewModel.onOpenFirmwareUpdater = {
             try {
                 val customTabsIntent = CustomTabsIntent.Builder().build()
@@ -113,7 +106,6 @@ class MainActivity : ComponentActivity() {
                 padsViewModel = padsViewModel,
                 projectsViewModel = projectsViewModel,
                 deviceViewModel = deviceViewModel,
-                sampleImportViewModel = sampleImportViewModel,
                 kitViewModel = kitViewModel,
                 isConnected = deviceState.connected,
             )

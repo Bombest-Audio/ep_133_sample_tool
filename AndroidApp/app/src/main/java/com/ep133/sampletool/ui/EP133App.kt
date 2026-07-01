@@ -48,8 +48,6 @@ import com.ep133.sampletool.ui.projects.ProjectsScreen
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
 import com.ep133.sampletool.ui.theme.EP133Theme
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
-import com.ep133.sampletool.ui.`import`.SampleImportScreen
-import com.ep133.sampletool.ui.`import`.SampleImportViewModel
 import com.ep133.sampletool.ui.kit.KitScreen
 import com.ep133.sampletool.ui.kit.KitViewModel
 
@@ -60,7 +58,6 @@ private enum class NavRoute(val route: String, val label: String) {
     PADS("pads", "PADS"),
     PROJECTS("projects", "PROJ"),
     DEVICE("device", "DEVICE"),
-    IMPORT("import", "IMPORT"),
     KIT("kit", "KIT"),
 }
 
@@ -74,7 +71,6 @@ fun EP133App(
     padsViewModel: PadsViewModel,
     projectsViewModel: ProjectsViewModel,
     deviceViewModel: DeviceViewModel,
-    sampleImportViewModel: SampleImportViewModel,
     kitViewModel: KitViewModel,
     isConnected: Boolean = false,
 ) {
@@ -183,9 +179,6 @@ fun EP133App(
                     composable(NavRoute.PROJECTS.route) { ProjectsScreen(projectsViewModel) }
                     composable(NavRoute.DEVICE.route) {
                         DeviceScreen(viewModel = deviceViewModel)
-                    }
-                    composable(NavRoute.IMPORT.route) {
-                        SampleImportScreen(sampleImportViewModel)
                     }
                     composable(NavRoute.KIT.route) {
                         KitScreen(kitViewModel)
