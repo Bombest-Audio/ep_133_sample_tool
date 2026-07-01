@@ -8,6 +8,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,9 +16,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -650,9 +651,17 @@ private fun SlicePadSelector(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             SLICE_PAD_GRID.chunked(3).forEach { rowPads ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     rowPads.forEach { pad ->
-                        SlicePadCell(pad = pad, count = count, onTap = { onCountChange(pad.order) })
+                        SlicePadCell(
+                            pad = pad,
+                            count = count,
+                            modifier = Modifier.weight(1f),
+                            onTap = { onCountChange(pad.order) },
+                        )
                     }
                 }
             }
@@ -665,14 +674,14 @@ private fun SlicePadSelector(
 }
 
 @Composable
-private fun SlicePadCell(pad: SlicePad, count: Int, onTap: () -> Unit) {
+private fun SlicePadCell(pad: SlicePad, count: Int, modifier: Modifier = Modifier, onTap: () -> Unit) {
     val t = LocalEP133Tokens.current
     val filled = pad.order <= count
     val isEdge = pad.order == count
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(14.dp)
     Box(
-        modifier = Modifier
-            .size(60.dp)
+        modifier = modifier
+            .aspectRatio(1f)
             .clip(shape)
             .background(if (filled) t.accent else t.padFace, shape)
             .then(if (isEdge) Modifier.border(2.dp, t.live, shape) else Modifier)
@@ -682,7 +691,7 @@ private fun SlicePadCell(pad: SlicePad, count: Int, onTap: () -> Unit) {
         Text(
             text = pad.label,
             fontFamily = Mono,
-            fontSize = if (pad.label.length > 1) 13.sp else 19.sp,
+            fontSize = if (pad.label.length > 1) 16.sp else 24.sp,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 0.5.sp,
             color = if (filled) PadFilledInk else PadEmptyInk,
@@ -690,9 +699,9 @@ private fun SlicePadCell(pad: SlicePad, count: Int, onTap: () -> Unit) {
         if (filled) {
             Text(
                 text = pad.order.toString(),
-                fontFamily = Mono, fontSize = 8.sp, fontWeight = FontWeight.Bold,
+                fontFamily = Mono, fontSize = 10.sp, fontWeight = FontWeight.Bold,
                 color = PadFilledInk.copy(alpha = 0.62f),
-                modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 6.dp),
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 8.dp),
             )
         }
     }
@@ -732,6 +741,7 @@ fun KitScreen(viewModel: KitViewModel) {
     val items by viewModel.items.collectAsState()
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val scrollState = rememberScrollState()
 
     LaunchedEffect(snackbarMessage) {
         snackbarMessage?.let { msg ->
@@ -759,8 +769,15 @@ fun KitScreen(viewModel: KitViewModel) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(11.dp),
         ) {
+          // Scrollable content; the PICK button below stays pinned so it's always reachable.
+          Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(scrollState),
+            verticalArrangement = Arrangement.spacedBy(11.dp),
+          ) {
             // Section header + batch status.
             Row(
                 modifier = Modifier
@@ -836,13 +853,14 @@ fun KitScreen(viewModel: KitViewModel) {
                 )
             }
 
-            // Drop / pick hint panel.
+            // Drop / pick hint panel — tappable (it reads as a button), triggers the same pick.
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(PanelRadius)
                     .background(t.inset, PanelRadius)
                     .dashedBorder(t.rule)
+                    .clickable { viewModel.triggerPick() }
                     .padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -867,23 +885,15 @@ fun KitScreen(viewModel: KitViewModel) {
                 )
             }
 
-            // Result list.
+            // Result list (plain column inside the scroll — max 12 rows, no nested lazy list).
             if (items.isNotEmpty()) {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(9.dp),
-                ) {
-                    itemsIndexed(items) { _, item ->
-                        KitResultRow(item)
-                    }
+                Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    items.forEach { item -> KitResultRow(item) }
                 }
-            } else {
-                Box(modifier = Modifier.weight(1f))
             }
+          }
 
-            // Pick button.
+            // Pick button — pinned below the scroll so it's always reachable.
             Ep133PrimaryButton(
                 label = when {
                     items.isEmpty() && mode == KitMode.CHOP -> "PICK LOOP"
@@ -893,7 +903,7 @@ fun KitScreen(viewModel: KitViewModel) {
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 14.dp),
+                    .padding(top = 11.dp, bottom = 14.dp),
                 onClick = { viewModel.triggerPick() },
             )
         }
