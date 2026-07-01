@@ -3,6 +3,12 @@ package com.ep133.sampletool.ui.kit
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -32,9 +38,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -758,6 +766,198 @@ private fun SliceStepperButton(label: String, enabled: Boolean, onClick: () -> U
     }
 }
 
+// ── Chop/kit upload progress (the pad grid as a single progress indicator) ──────
+
+/** Upload state of one pad in the progress grid. */
+private enum class PadProgressState { Inactive, Queued, Uploading, Done, Error }
+
+private fun KitItemState.toProgress(): PadProgressState = when (this) {
+    KitItemState.Pending -> PadProgressState.Queued
+    KitItemState.Working -> PadProgressState.Uploading
+    KitItemState.Done    -> PadProgressState.Done
+    KitItemState.Error   -> PadProgressState.Error
+}
+
+// Progress-mode colors from the "Chop Progress" design (device-accurate, theme-independent).
+private val ProgTealCore = Color(0xFF141B1B)
+private val ProgError = Color(0xFFD0021B)
+private val ProgErrorInk = Color(0xFFFFE8E5)
+private val ProgInactiveInk = Color(0xFF4A4B4C)
+
+/**
+ * The pad grid as a single upload-progress indicator (implements the "Chop Progress" design).
+ * Reuses [SLICE_PAD_GRID]: slice i lands on the pad at fill-order rank i+1, so item i's state drives
+ * that pad; pads beyond the slice count are inactive. A status line summarizes the run.
+ */
+@Composable
+private fun ChopProgress(items: List<KitResultItem>, modifier: Modifier = Modifier) {
+    val t = LocalEP133Tokens.current
+    val total = items.size
+    val done = items.count { it.state == KitItemState.Done }
+    val working = items.count { it.state == KitItemState.Working }
+    val errors = items.count { it.state == KitItemState.Error }
+    val inFlight = items.any { it.state == KitItemState.Working || it.state == KitItemState.Pending }
+    fun pad2(n: Int) = n.toString().padStart(2, '0')
+    val statusText: String
+    val statusColor: Color
+    when {
+        inFlight   -> { statusText = "UPLOADING · ${pad2(done + working)} / $total"; statusColor = t.live }
+        errors > 0 -> { statusText = "${pad2(errors)} FAILED · $done OK"; statusColor = ProgError }
+        else       -> { statusText = "DONE · ${pad2(done)} / $total"; statusColor = t.accent }
+    }
+
+    // One infinite transition drives both the live-pad sweep and the status-dot blink.
+    val anim = rememberInfiniteTransition(label = "cp")
+    val sweepAngle by anim.animateFloat(
+        initialValue = 0f, targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing)), label = "sweep",
+    )
+    val dotAlpha by anim.animateFloat(
+        initialValue = 1f, targetValue = 0.35f,
+        animationSpec = infiniteRepeatable(tween(1000), repeatMode = RepeatMode.Reverse), label = "dot",
+    )
+
+    Column(
+        modifier = modifier
+            .clip(PanelRadius)
+            .background(t.panel, PanelRadius)
+            .border(1.dp, t.rule, PanelRadius)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        // Status line.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(5.dp))
+                .background(t.inset, RoundedCornerShape(5.dp))
+                .border(1.dp, t.ruleSoft, RoundedCornerShape(5.dp))
+                .padding(horizontal = 11.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .graphicsLayer { alpha = if (inFlight) dotAlpha else 1f }
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(statusColor),
+            )
+            Text(
+                statusText,
+                fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                letterSpacing = 1.6.sp, color = statusColor,
+            )
+        }
+
+        // Pad grid — each pad's state from its slice (fill-order rank r → item r-1), else inactive.
+        Column(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(t.inset, RoundedCornerShape(8.dp))
+                .border(1.dp, t.ruleSoft, RoundedCornerShape(8.dp))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SLICE_PAD_GRID.chunked(3).forEach { rowPads ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    rowPads.forEach { pad ->
+                        val state = if (pad.order > total) PadProgressState.Inactive
+                            else items[pad.order - 1].state.toProgress()
+                        SliceProgressPadCell(
+                            pad = pad, state = state, sweepAngle = sweepAngle,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SliceProgressPadCell(
+    pad: SlicePad,
+    state: PadProgressState,
+    sweepAngle: Float,
+    modifier: Modifier,
+) {
+    val t = LocalEP133Tokens.current
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        modifier = modifier.aspectRatio(1f).clip(shape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (state == PadProgressState.Uploading) {
+            // Rotating teal sweep (a ~95° arc) behind a dark core — a spinner on the live pad.
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .graphicsLayer { rotationZ = sweepAngle }
+                    .background(
+                        Brush.sweepGradient(
+                            0.00f to t.live,
+                            0.26f to t.live,
+                            0.27f to t.live.copy(alpha = 0.12f),
+                            1.00f to t.live.copy(alpha = 0.12f),
+                        ),
+                        shape,
+                    ),
+            )
+            Box(
+                Modifier.matchParentSize().padding(3.dp)
+                    .clip(RoundedCornerShape(11.dp)).background(ProgTealCore),
+            )
+        } else {
+            val bg = when (state) {
+                PadProgressState.Done  -> t.accent
+                PadProgressState.Error -> ProgError
+                else                   -> t.padFace   // inactive / queued
+            }
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .background(bg, shape)
+                    .then(
+                        if (state == PadProgressState.Queued)
+                            Modifier.border(1.5.dp, t.accent.copy(alpha = 0.5f), shape) else Modifier,
+                    ),
+            )
+        }
+
+        Text(
+            text = pad.label,
+            fontFamily = Mono,
+            fontSize = if (pad.label.length > 1) 16.sp else 24.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.5.sp,
+            color = when (state) {
+                PadProgressState.Done     -> PadFilledInk
+                PadProgressState.Error    -> ProgErrorInk
+                PadProgressState.Inactive -> ProgInactiveInk
+                else                      -> PadEmptyInk
+            },
+        )
+
+        val glyph = when (state) {
+            PadProgressState.Done  -> "✓"
+            PadProgressState.Error -> "✕"
+            else                   -> null
+        }
+        if (glyph != null) {
+            Text(
+                text = glyph,
+                fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                color = if (state == PadProgressState.Error) ProgErrorInk else PadFilledInk.copy(alpha = 0.7f),
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 8.dp),
+            )
+        }
+    }
+}
+
 /**
  * Kit screen: loop chopper and drum-kit builder, two modes behind a segmented control.
  *
@@ -913,15 +1113,20 @@ fun KitScreen(viewModel: KitViewModel) {
                 }
             }
 
-            // Chop-only: visual slice-count selector — tap a pad (or ±) to set how many slices;
-            // the grid previews which pads they'll load onto, in fill order (. 0 ENT 1–9).
-            if (mode == KitMode.CHOP) {
-                val count = sliceCountText.toIntOrNull()?.coerceIn(1, MAX_SLICES) ?: DEFAULT_SLICE_COUNT
-                SlicePadSelector(
-                    count = count,
-                    onCountChange = { viewModel.onSliceCountChange(it.toString()) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+            // The pad grid is both the chop slice-count SELECTOR (idle) and the upload PROGRESS
+            // indicator (once a chop or kit build is running/done). One grid, two modes.
+            when {
+                items.isNotEmpty() -> {
+                    ChopProgress(items = items, modifier = Modifier.fillMaxWidth())
+                }
+                mode == KitMode.CHOP -> {
+                    val count = sliceCountText.toIntOrNull()?.coerceIn(1, MAX_SLICES) ?: DEFAULT_SLICE_COUNT
+                    SlicePadSelector(
+                        count = count,
+                        onCountChange = { viewModel.onSliceCountChange(it.toString()) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
 
             // Drop / pick hint panel — tappable (it reads as a button), triggers the same pick.
@@ -971,12 +1176,6 @@ fun KitScreen(viewModel: KitViewModel) {
                 }
             }
 
-            // Result list (plain column inside the scroll — max 12 rows, no nested lazy list).
-            if (items.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                    items.forEach { item -> KitResultRow(item) }
-                }
-            }
           }
 
             // Pick button — pinned below the scroll so it's always reachable. In chop mode, once a
@@ -1003,116 +1202,6 @@ fun KitScreen(viewModel: KitViewModel) {
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 70.dp),
         )
-    }
-}
-
-// ── Row component ──────────────────────────────────────────────────────────────
-
-private const val STRIP_CELLS = 12
-
-@Composable
-private fun KitResultRow(item: KitResultItem) {
-    val t = LocalEP133Tokens.current
-
-    val stateLabel = when (item.state) {
-        KitItemState.Pending -> "PENDING"
-        KitItemState.Working -> "WORKING"
-        KitItemState.Done    -> "DONE"
-        KitItemState.Error   -> "ERROR"
-    }
-    val stateColor = when (item.state) {
-        KitItemState.Done  -> t.live
-        KitItemState.Error -> t.accent
-        else               -> t.text2
-    }
-    val fillColor = when (item.state) {
-        KitItemState.Done  -> t.live
-        KitItemState.Error -> t.accent
-        else               -> t.accent
-    }
-    val filledCells = when (item.state) {
-        KitItemState.Pending -> 0
-        KitItemState.Working -> 1
-        KitItemState.Done    -> STRIP_CELLS
-        KitItemState.Error   -> 1
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(PanelRadius)
-            .background(t.panel, PanelRadius)
-            .border(1.dp, t.rule, PanelRadius)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(9.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = item.label,
-                modifier = Modifier.weight(1f),
-                color = t.text,
-                fontFamily = Mono,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = stateLabel,
-                color = stateColor,
-                fontFamily = Mono,
-                fontSize = 9.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.4.sp,
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            repeat(STRIP_CELLS) { i ->
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(7.dp)
-                        .clip(RoundedCornerShape(1.dp))
-                        .background(if (i < filledCells) fillColor else t.inset),
-                )
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = "pad assign",
-                color = t.text3,
-                fontFamily = Mono,
-                fontSize = 9.sp,
-                letterSpacing = 0.3.sp,
-            )
-            Text(
-                text = item.errorMessage ?: when (item.state) {
-                    KitItemState.Pending -> "QUEUED"
-                    KitItemState.Working -> "…"
-                    KitItemState.Done    -> "OK"
-                    KitItemState.Error   -> "FAILED"
-                },
-                modifier = Modifier.weight(1f, fill = false),
-                color = if (item.isError()) t.accent else t.text3,
-                fontFamily = Mono,
-                fontSize = 9.sp,
-                letterSpacing = 0.3.sp,
-                textAlign = TextAlign.End,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
     }
 }
 
