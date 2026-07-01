@@ -220,4 +220,33 @@ class LoopSlicerTest {
         assertEquals("one slice", 1, slices.size)
         assertEquals("empty slice", 0, slices[0].size)
     }
+
+    // ── downmixStereoToMono ───────────────────────────────────────────────────
+
+    private fun leShort(v: Int) = byteArrayOf((v and 0xFF).toByte(), ((v shr 8) and 0xFF).toByte())
+
+    private fun stereo(vararg lr: Int): ByteArray {
+        val out = ByteArray(lr.size * 2)
+        lr.forEachIndexed { i, v -> leShort(v).copyInto(out, i * 2) }
+        return out
+    }
+
+    @Test
+    fun downmix_averagesChannels_halvesSize() {
+        // frame0 L=1000 R=2000 → 1500 ; frame1 L=-1000 R=-2000 → -1500
+        val pcm = stereo(1000, 2000, -1000, -2000)
+        val mono = LoopSlicer.downmixStereoToMono(pcm)
+
+        assertEquals("mono is half the byte size", pcm.size / 2, mono.size)
+        assertArrayEquals("frame0 avg 1500", leShort(1500), mono.copyOfRange(0, 2))
+        assertArrayEquals("frame1 avg -1500", leShort(-1500), mono.copyOfRange(2, 4))
+    }
+
+    @Test
+    fun downmix_trailingPartialFrame_ignored() {
+        // 6 bytes = one full stereo frame (4B) + 2 dangling bytes → one mono frame out.
+        val pcm = byteArrayOf(0, 0, 0, 0, 99, 99)
+        val mono = LoopSlicer.downmixStereoToMono(pcm)
+        assertEquals("only the full frame is emitted", 2, mono.size)
+    }
 }

@@ -101,4 +101,35 @@ object LoopSlicer {
         }
         return result
     }
+
+    /**
+     * Downmix interleaved stereo s16 LE PCM bytes to mono by averaging the two channels
+     * per frame. Output is exactly half the input size (mono s16 LE, same sample rate).
+     *
+     * Used by the loop chopper so chopped slices upload as mono — a drum-kit slice rarely
+     * needs stereo, and mono halves the EP-133 sample-memory footprint (the device rejects
+     * uploads with "not enough space" once /sounds fills). The whole-loop import path keeps
+     * the source channel count; only chop downmixes.
+     *
+     * @param pcm Interleaved stereo s16 LE bytes (4 bytes/frame). Any trailing incomplete
+     *            frame (size not a multiple of 4) is ignored.
+     * @return    Mono s16 LE bytes (2 bytes/frame).
+     */
+    fun downmixStereoToMono(pcm: ByteArray): ByteArray {
+        val frames = pcm.size / 4
+        val out = ByteArray(frames * 2)
+        var si = 0
+        var di = 0
+        repeat(frames) {
+            // s16 LE read: low byte unsigned, high byte sign-extended (Byte.toInt() sign-extends).
+            val l = (pcm[si + 1].toInt() shl 8) or (pcm[si].toInt() and 0xFF)
+            val r = (pcm[si + 3].toInt() shl 8) or (pcm[si + 2].toInt() and 0xFF)
+            val m = (l + r) shr 1   // arithmetic average of two signed 16-bit samples; stays in range
+            out[di] = (m and 0xFF).toByte()
+            out[di + 1] = ((m shr 8) and 0xFF).toByte()
+            si += 4
+            di += 2
+        }
+        return out
+    }
 }

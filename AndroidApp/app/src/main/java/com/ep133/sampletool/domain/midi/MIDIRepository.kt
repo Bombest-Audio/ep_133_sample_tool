@@ -543,6 +543,30 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         resp != null && (resp.status == SysExProtocol.STATUS_OK ||
             resp.status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START)
 
+    /**
+     * Printable ASCII text from a device error response body, or null if there is none.
+     * The EP-133 returns a human-readable reason on rejection (e.g. "not enough space");
+     * surfacing it beats a generic "upload rejected" message.
+     */
+    private fun deviceErrorText(resp: FileResponse?): String? {
+        val body = resp?.body ?: return null
+        if (body.isEmpty()) return null
+        val text = String(body, Charsets.US_ASCII).filter { it.code in 32..126 }.trim()
+        return text.ifBlank { null }
+    }
+
+    /**
+     * Free device sample storage in bytes from the latest device stats, or null if unknown.
+     * Callers use this to preflight an upload before writing a partial batch the device would
+     * reject once /sounds fills.
+     */
+    fun availableStorageBytes(): Long? {
+        val s = _deviceState.value
+        val used = s.storageUsedBytes ?: return null
+        val total = s.storageTotalBytes ?: return null
+        return (total - used).coerceAtLeast(0L)
+    }
+
     suspend fun putProjectArchive(slotNodeId: Int, tarBytes: ByteArray): Boolean {
         val portId = _deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
@@ -656,7 +680,11 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 Log.d("EP133MIDI", "MIDI META: outbound PUT INIT reqId=$initReqId name=$name size=${pcmBytes.size}")
                 val initResp = awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS)
                 if (!putAckOk(initResp)) {
-                    Log.e("EP133APP", "putSampleFile: PUT INIT ack failed or timed out — aborting $name")
+                    val devMsg = deviceErrorText(initResp)
+                    Log.e("EP133APP", "putSampleFile: PUT INIT rejected for $name — ${devMsg ?: "no ack (timeout)"}")
+                    // Surface the device's own reason (e.g. "not enough space") to the caller;
+                    // fall back to null only when the device said nothing (genuine timeout).
+                    if (devMsg != null) throw java.io.IOException(devMsg)
                     return@withLock null
                 }
                 // Parse device-assigned node ID from body[0..1] as unsigned 16-bit big-endian.
@@ -682,10 +710,13 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                     val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
                     val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = dataReqId)
                     Log.d("EP133MIDI", "MIDI META: outbound PUT DATA page=$page reqId=$dataReqId chunkSize=${chunk.size}")
-                    if (!putAckOk(awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS))) {
-                        Log.e("EP133APP", "putSampleFile: DATA page $page ack failed or timed out — aborting $name")
+                    val dataResp = awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS)
+                    if (!putAckOk(dataResp)) {
+                        val devMsg = deviceErrorText(dataResp)
+                        Log.e("EP133APP", "putSampleFile: DATA page $page rejected for $name — ${devMsg ?: "no ack (timeout)"}")
                         val closeReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
                         forceCloseTransfer(portId, page + 1, closeReqId)
+                        if (devMsg != null) throw java.io.IOException(devMsg)
                         return@withLock null
                     }
                     offset = end

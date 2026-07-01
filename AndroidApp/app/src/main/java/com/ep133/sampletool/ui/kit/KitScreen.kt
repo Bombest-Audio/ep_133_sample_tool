@@ -240,9 +240,19 @@ class KitViewModel(
                 return@launch
             }
 
+            // Chop uploads MONO to halve the device sample-memory footprint (a drum-kit slice
+            // rarely needs stereo). The whole-loop import path keeps the source channels; only
+            // chop downmixes here.
+            val chopPcm = if (converted.channels == 2) {
+                LoopSlicer.downmixStereoToMono(converted.pcm)
+            } else {
+                converted.pcm
+            }
+            val chopChannels = if (converted.channels == 2) 1 else converted.channels
+
             // Slice the PCM bytes into N equal pieces on frame boundaries.
-            val slices = LoopSlicer.slicePcmBytes(converted.pcm, converted.channels, sliceCount)
-            val bytesPerFrame = converted.channels * 2
+            val slices = LoopSlicer.slicePcmBytes(chopPcm, chopChannels, sliceCount)
+            val bytesPerFrame = chopChannels * 2
 
             // Byte-budget guard: reject before any device write if the largest slice exceeds the
             // device's per-sample size cap (a BYTE budget, not a flat duration — see MAX_SAMPLE_BYTES).
@@ -251,6 +261,19 @@ class KitViewModel(
             if (maxSliceBytes > MAX_SAMPLE_BYTES) {
                 val msg = "slice exceeds the device's per-sample size limit (~20s stereo / 40s mono) — " +
                     "add more slices or shorten the loop"
+                _items.value = sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) }
+                _snackbarMessage.value = msg
+                return@launch
+            }
+
+            // Storage preflight: the device rejects with "not enough space" once /sounds fills.
+            // Sum all slices and fail fast with a clear message rather than uploading a partial
+            // batch (availableStorageBytes() is null when device stats are unknown → skip the check).
+            val totalUploadBytes = slices.sumOf { it.size.toLong() }
+            val availBytes = midi.availableStorageBytes()
+            if (availBytes != null && totalUploadBytes > availBytes) {
+                val msg = "not enough space on device — chop needs ${totalUploadBytes / 1024} KB, " +
+                    "${availBytes / 1024} KB free. Delete samples on the device or use fewer slices."
                 _items.value = sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) }
                 _snackbarMessage.value = msg
                 return@launch
@@ -265,7 +288,7 @@ class KitViewModel(
 
                 val sliceNodeId: Int? = try {
                     deviceMutex.withLock {
-                        midi.putSampleFile(sliceName, slicePcm, converted.channels, converted.sampleRate)
+                        midi.putSampleFile(sliceName, slicePcm, chopChannels, converted.sampleRate)
                     }
                 } catch (e: CancellationException) {
                     throw e
