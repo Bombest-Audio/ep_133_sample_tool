@@ -87,7 +87,7 @@ class MainActivity : ComponentActivity() {
         // Kit SAF launchers: single-file picker for chop mode, multi-file picker for kit mode.
         val kitLoopLauncher = registerForActivityResult(
             ActivityResultContracts.OpenDocument(),
-        ) { uri: Uri? -> uri?.let { kitViewModel.onLoopFilePicked(it, this) } }
+        ) { uri: Uri? -> uri?.let { kitViewModel.onLoopFilePicked(it) } }
 
         val kitFilesLauncher = registerForActivityResult(
             ActivityResultContracts.OpenMultipleDocuments(),

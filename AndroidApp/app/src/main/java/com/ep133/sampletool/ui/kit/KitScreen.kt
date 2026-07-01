@@ -35,6 +35,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -97,6 +98,12 @@ val PAD_FILL_ORDER = listOf(9, 10, 11, 6, 7, 8, 3, 4, 5, 0, 1, 2)
 
 /** Which mode the KitScreen is in. */
 enum class KitMode { CHOP, KIT }
+
+/**
+ * A loop the user picked but hasn't chopped yet (chop mode) — staged so the slice count can be
+ * adjusted before chopping.
+ */
+data class StagedLoop(val uri: Uri, val name: String)
 
 /** State for a single item (one file / one slice assignment) in the result list. */
 data class KitResultItem(
@@ -167,6 +174,11 @@ class KitViewModel(
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
 
+    // The picked-but-not-yet-chopped loop (chop mode). Null until a file is picked; the user
+    // taps CHOP to process it, so they can adjust the slice count after picking.
+    private val _stagedLoop = MutableStateFlow<StagedLoop?>(null)
+    val stagedLoop: StateFlow<StagedLoop?> = _stagedLoop.asStateFlow()
+
     /**
      * Serializes device-upload + pad-assign calls so concurrent kit uploads don't race on the
      * single-in-flight transfer guard inside [MIDIRepository].
@@ -199,23 +211,36 @@ class KitViewModel(
     }
 
     /**
-     * Called by MainActivity when the user completes the single-document SAF picker (chop mode).
-     *
-     * Steps:
-     * 1. [SampleImportManager.convert] to decode/resample (inside picker-callback grant).
-     * 2. [LoopSlicer.slicePcmBytes] to split PCM into N equal byte arrays.
-     * 3. Byte-budget guard: if any slice exceeds [MAX_SAMPLE_BYTES], error all rows and return.
-     * 4. For i in 0..sliceCount-1: [MIDIRepository.putSampleFile] with slice bytes →
-     *    sliceNodeId, then [MIDIRepository.assignSampleToPad] with full trim (0, sliceFrameCount).
-     *
-     * @param uri     Single audio file URI (valid for the picker-callback grant only).
-     * @param context Activity context for contentResolver.
+     * SAF single-document callback (chop mode): stage the picked loop. Chopping is deferred to
+     * [chopStagedLoop] so the user can change the slice count after picking. The OpenDocument read
+     * grant lasts the activity session, so the staged URI stays readable until they tap CHOP.
      */
-    fun onLoopFilePicked(uri: Uri, context: Context) {
-        val sliceCount = resolvedSliceCount()
-        val group = _selectedGroup.value
+    fun onLoopFilePicked(uri: Uri) {
         val rawName = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
             ?: "loop.wav"
+        _stagedLoop.value = StagedLoop(uri, rawName)
+        _items.value = emptyList()
+    }
+
+    /** Chop the currently-staged loop into [resolvedSliceCount] slices. No-op if nothing is staged. */
+    fun chopStagedLoop(context: Context) {
+        val staged = _stagedLoop.value ?: return
+        runChop(staged.uri, staged.name, context)
+    }
+
+    /**
+     * Convert → slice → per-slice upload+assign the staged loop.
+     *
+     * Steps:
+     * 1. [SampleImportManager.convert] to decode/resample.
+     * 2. Downmix to mono, then [LoopSlicer.slicePcmBytes] to split PCM into N equal byte arrays.
+     * 3. Byte-budget + storage preflight guards.
+     * 4. For each slice: [MIDIRepository.putSampleFile] → [MIDIRepository.assignSampleToPad]
+     *    (fill order via [PAD_FILL_ORDER], full trim).
+     */
+    private fun runChop(uri: Uri, rawName: String, context: Context) {
+        val sliceCount = resolvedSliceCount()
+        val group = _selectedGroup.value
         val safeName = manager.sanitizeName(rawName) ?: rawName
 
         // Seed N rows — one per slice (no separate upload row; each row covers its own upload+assign).
@@ -739,9 +764,11 @@ fun KitScreen(viewModel: KitViewModel) {
     val selectedGroup by viewModel.selectedGroup.collectAsState()
     val sliceCountText by viewModel.sliceCountText.collectAsState()
     val items by viewModel.items.collectAsState()
+    val stagedLoop by viewModel.stagedLoop.collectAsState()
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollState = rememberScrollState()
+    val context = LocalContext.current
 
     LaunchedEffect(snackbarMessage) {
         snackbarMessage?.let { msg ->
@@ -866,10 +893,14 @@ fun KitScreen(viewModel: KitViewModel) {
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Text(
-                    text = if (mode == KitMode.CHOP)
-                        "PICK ONE LOOP · CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → GROUP ${selectedGroup.name}"
-                    else
-                        "PICK UP TO $MAX_SLICES ONE-SHOTS → GROUP ${selectedGroup.name}",
+                    text = when {
+                        mode == KitMode.CHOP && stagedLoop != null ->
+                            "READY · CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → GROUP ${selectedGroup.name}"
+                        mode == KitMode.CHOP ->
+                            "PICK ONE LOOP · CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → GROUP ${selectedGroup.name}"
+                        else ->
+                            "PICK UP TO $MAX_SLICES ONE-SHOTS → GROUP ${selectedGroup.name}"
+                    },
                     color = t.text3,
                     fontFamily = Mono,
                     fontSize = 10.sp,
@@ -877,12 +908,23 @@ fun KitScreen(viewModel: KitViewModel) {
                     textAlign = TextAlign.Center,
                 )
                 Text(
-                    text = if (mode == KitMode.CHOP) "pick loop to chop" else "pick one-shots to build kit",
+                    text = when {
+                        mode == KitMode.CHOP && stagedLoop != null -> stagedLoop!!.name
+                        mode == KitMode.CHOP -> "pick loop to chop"
+                        else -> "pick one-shots to build kit"
+                    },
                     color = t.text,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
                 )
+                if (mode == KitMode.CHOP && stagedLoop != null) {
+                    Text(
+                        text = "TAP TO PICK A DIFFERENT LOOP",
+                        color = t.text3, fontFamily = Mono, fontSize = 8.sp,
+                        letterSpacing = 1.sp, textAlign = TextAlign.Center,
+                    )
+                }
             }
 
             // Result list (plain column inside the scroll — max 12 rows, no nested lazy list).
@@ -893,18 +935,21 @@ fun KitScreen(viewModel: KitViewModel) {
             }
           }
 
-            // Pick button — pinned below the scroll so it's always reachable.
+            // Pick button — pinned below the scroll so it's always reachable. In chop mode, once a
+            // loop is staged the primary action becomes CHOP (so the count can be set first);
+            // otherwise it picks files.
+            val chopReady = mode == KitMode.CHOP && stagedLoop != null
             Ep133PrimaryButton(
                 label = when {
-                    items.isEmpty() && mode == KitMode.CHOP -> "PICK LOOP"
-                    items.isEmpty() && mode == KitMode.KIT  -> "PICK FILES"
-                    mode == KitMode.CHOP                    -> "PICK NEW LOOP"
-                    else                                    -> "PICK MORE FILES"
+                    chopReady                              -> "CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → ${selectedGroup.name}"
+                    mode == KitMode.CHOP                   -> "PICK LOOP"
+                    items.isEmpty() && mode == KitMode.KIT -> "PICK FILES"
+                    else                                   -> "PICK MORE FILES"
                 },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 11.dp, bottom = 14.dp),
-                onClick = { viewModel.triggerPick() },
+                onClick = { if (chopReady) viewModel.chopStagedLoop(context) else viewModel.triggerPick() },
             )
         }
 
