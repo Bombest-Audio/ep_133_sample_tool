@@ -31,3 +31,6 @@ AndroidApp/app/src/main/assets/data/
 
 # macOS
 ._*
+
+# GSD planning artifacts (internal; contain local paths)
+.planning/
