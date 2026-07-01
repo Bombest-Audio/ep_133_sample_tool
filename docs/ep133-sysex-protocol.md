@@ -254,7 +254,7 @@ Hardware-verified upload sequence (e.g. a sample to `/sounds`):
    - `flags = READ(4)|FILE(1) = 5`. Metadata is **required** and must be valid JSON; a sample uses `{"channels":N,"samplerate":N}`.
    - Response: `status=0`, body = device-assigned **fileId** (u16). **Await this before sending DATA.**
 4. **PUT DATA**, paged: `[ FILE_PUT(2), TYPE_DATA(1), page u16, …chunk… ]`.
-   - Chunk size must fit the negotiated chunk size: ~**427 raw bytes** for chunkSize 512 (`calculateMaxPayloadLength(chunkSize-6)`); 4096-byte chunks are rejected (`unexpected page`).
+   - Chunk size must fit the negotiated chunk size: **433 raw bytes** for chunkSize 512 (`calculateMaxPayloadLength(chunkSize-6)`); 4096-byte chunks are rejected (`unexpected page`).
    - **Each page is acked** (`status=0`, empty body, the page's reqId echoed). **Use a unique reqId per page and await each ack before sending the next**. USB-MIDI has no flow control.
 5. **Terminator:** one final PUT DATA with a zero-length chunk; await its `status=0` ack.
 

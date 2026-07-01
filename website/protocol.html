@@ -917,8 +917,8 @@ unpacked[k] = (data[k] &amp; <span class="c-num">0x7F</span>) | (((highbits &gt;
         </div>
         <div class="step">
           <div class="sn">4</div>
-          <div class="sb"><h4>Paged DATA</h4><p>Stream the file in <strong>~427-byte chunks</strong>. Each page gets a <strong>unique request id</strong>, and you <strong>wait for that page's ack</strong> before sending the next.</p></div>
-          <div class="sx">~427 B / page<br><span class="await">await each ack</span></div>
+          <div class="sb"><h4>Paged DATA</h4><p>Stream the file in <strong>433-byte chunks</strong>. Each page gets a <strong>unique request id</strong>, and you <strong>wait for that page's ack</strong> before sending the next.</p></div>
+          <div class="sx">433 B / page<br><span class="await">await each ack</span></div>
         </div>
         <div class="step">
           <div class="sn">5</div>
@@ -926,7 +926,7 @@ unpacked[k] = (data[k] &amp; <span class="c-num">0x7F</span>) | (((highbits &gt;
           <div class="sx">len 0<br><span class="await">await OK</span></div>
         </div>
       </div>
-      <p class="muted" style="font-size:13.5px">512 bytes is the wire size; once you take out the high-bits packing overhead, each page carries ~427 bytes of actual file data.</p>
+      <p class="muted" style="font-size:13.5px">512 bytes is the wire size; once you take out the high-bits packing overhead, each page carries 433 bytes of actual file data.</p>
     </section>
 
     <!-- 11 GOTCHAS -->
