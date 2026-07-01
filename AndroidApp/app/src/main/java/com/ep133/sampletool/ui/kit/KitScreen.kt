@@ -83,6 +83,18 @@ const val DEFAULT_SLICE_COUNT = 16
  */
 const val MAX_SAMPLE_BYTES = 3_750_000
 
+/**
+ * Pad fill order: slice/one-shot index `i` → device pad grid index, so pads populate in the
+ * natural EP-133 numeric order **`. 0 ENT 1 2 3 4 5 6 7 8 9`** (bottom row up), not the raw
+ * top-left-to-bottom-right grid order.
+ *
+ * The device pad-node index (0-based) maps to physical labels via `EP133Pads.GRID_ORDER`:
+ * `0→7, 1→8, 2→9, 3→4, 4→5, 5→6, 6→1, 7→2, 8→3, 9→., 10→0, 11→ENT`
+ * (hardware-verified: pad nodes 1–4 = labels 7,8,9,4). Inverting that for the desired label
+ * order `[., 0, ENT, 1,2,3,4,5,6,7,8,9]` gives the grid indices below.
+ */
+val PAD_FILL_ORDER = listOf(9, 10, 11, 6, 7, 8, 3, 4, 5, 0, 1, 2)
+
 // ── UI state model ────────────────────────────────────────────────────────────
 
 /** Which mode the KitScreen is in. */
@@ -272,7 +284,7 @@ class KitViewModel(
 
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, i, sliceNodeId, 0, sliceFrames)
+                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames)
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -355,7 +367,7 @@ class KitViewModel(
 
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, i, sampleNodeId, 0, frames)
+                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames)
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -441,7 +453,7 @@ class KitViewModel(
 
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, i, sliceNodeId, 0, sliceFrames)
+                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames)
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -498,7 +510,7 @@ class KitViewModel(
 
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, i, sampleNodeId, 0, frames)
+                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames)
                     }
                 } catch (e: CancellationException) {
                     throw e

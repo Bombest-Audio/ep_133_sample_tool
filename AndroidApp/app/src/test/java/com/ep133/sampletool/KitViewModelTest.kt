@@ -8,6 +8,7 @@ import com.ep133.sampletool.midi.MIDIPort
 import com.ep133.sampletool.ui.kit.KitItemState
 import com.ep133.sampletool.ui.kit.KitViewModel
 import com.ep133.sampletool.ui.kit.MAX_SLICES
+import com.ep133.sampletool.ui.kit.PAD_FILL_ORDER
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -210,7 +211,8 @@ class KitViewModelTest {
             val call = repo.assignCalls[i]
             val sliceFrameCount = ((i + 1).toLong() * frames / sliceCount).toInt() -
                 (i.toLong() * frames / sliceCount).toInt()
-            assertEquals("slice $i: gridIndex", i, call.gridIndex)
+            // Pads fill in EP-133 numeric order (. 0 ENT 1-9), so slice i lands on PAD_FILL_ORDER[i].
+            assertEquals("slice $i: gridIndex", PAD_FILL_ORDER[i], call.gridIndex)
             // nodeId is the call-index (1-based) — slice 0 is the first put call → nodeId 1.
             assertEquals("slice $i: sampleNodeId", i + 1, call.sampleNodeId)
             assertEquals("slice $i: sampleStart must be 0 (full trim on slice)", 0, call.sampleStart)
@@ -464,11 +466,11 @@ class KitViewModelTest {
         advanceUntilIdle()
 
         assertEquals("One assign call per file", files.size, repo.assignCalls.size)
-        // Sort by gridIndex because concurrent launches may arrive out-of-order.
-        val sorted = repo.assignCalls.sortedBy { it.gridIndex }
-        sorted.forEachIndexed { i, call ->
-            val frames = framesList[i]
-            assertEquals("file $i: gridIndex", i, call.gridIndex)
+        // File i lands on pad PAD_FILL_ORDER[i] (. 0 ENT 1-9 order); concurrent launches may
+        // arrive out-of-order, so correlate each call by its expected gridIndex, not call order.
+        framesList.forEachIndexed { i, frames ->
+            val expectedGrid = PAD_FILL_ORDER[i]
+            val call = repo.assignCalls.first { it.gridIndex == expectedGrid }
             assertEquals("file $i: sampleStart must be 0 (full trim)", 0, call.sampleStart)
             assertEquals("file $i: sampleEnd must be total frames", frames, call.sampleEnd)
         }
