@@ -11,8 +11,7 @@
 <style>
 /* ============================================================
    EP-133 SAMPLE TOOL: design system
-   A gift to the community, from Bombest Audio.
-   One stylesheet, three surfaces. Fork freely (MIT).
+   One stylesheet, three surfaces.
    ============================================================ */
 
 /* ---- 1. DESIGN TOKENS ------------------------------------- */
@@ -663,7 +662,7 @@ table.tbl tr:hover td { background: color-mix(in srgb, var(--panel) 60%, transpa
       <li><a href="#limits">Format &amp; limits</a></li>
       <li><a href="#status">Status codes</a></li>
       <li><a href="#reproduce">Reproduce it</a></li>
-      <li><a href="#credits">Credits</a></li>
+      <li><a href="#credits">Provenance</a></li>
     </ol>
   </aside>
 
@@ -673,7 +672,7 @@ table.tbl tr:hover td { background: color-mix(in srgb, var(--panel) 60%, transpa
     <header class="doc-hero">
       <span class="eyebrow live">Hardware-verified · firmware 2.5.0</span>
       <h1 style="margin-top:16px">The EP-133 K.O. II MIDI &amp; SysEx protocol.</h1>
-      <p class="lede">Everything I figured out talking to the K.O. II: device identity, echo, the whole file subsystem, the events it pushes on its own, and what the pads and sequencer send over plain MIDI. There's no spec sheet for this, so I wrote one, pulled straight off real hardware and cross-checked against TE's own web tool. This one's for the community, from Bombest Audio.</p>
+      <p class="lede">Everything the K.O. II says over USB-MIDI: device identity, echo, the whole file subsystem, the events it pushes on its own, and what the pads and sequencer send over plain MIDI. No official spec sheet exists, so this was pulled straight off real hardware and cross-checked against TE's own web tool.</p>
       <div class="meta">
         <span class="chip"><span class="dot ok"></span>MFR&nbsp; <b class="mono" style="color:var(--live)">00 20 76</b></span>
         <span class="chip">DEVICE&nbsp; <b class="mono">0x33</b></span>
@@ -1038,9 +1037,8 @@ sendmidi dev <span class="c-str">"EP-133"</span> syx <span class="c-num">0 32 11
 
     <!-- 16 CREDITS -->
     <section class="doc-section" id="credits" style="border-bottom:0">
-      <h2><span class="s-no">16</span> Credits</h2>
-      <p>None of this is official. I reverse-engineered the whole thing by cross-referencing TE's own web tool against live MIDI captures off real hardware, sending, watching, and diffing until the bytes lined up. Firmware <strong>2.5.0</strong>, device id <code>0x33</code> on my unit. Other firmware might differ; if you catch something, send a correction on GitHub.</p>
-      <div class="callout teal" style="margin-top:18px"><span class="gx">♥</span><p>Caught a byte I got wrong, or mapped a new firmware? Open a PR. The whole point of this is so the next person doesn't have to start from zero. <b>Bombest Audio</b></p></div>
+      <h2><span class="s-no">16</span> Provenance</h2>
+      <p>None of this is official. Reverse-engineered by cross-referencing TE's own web tool against live MIDI captures off real hardware. Firmware <strong>2.5.0</strong>, device id <code>0x33</code> on my unit; other firmware might differ. Not affiliated with Teenage Engineering.</p>
     </section>
 
   </div>
@@ -1053,7 +1051,7 @@ sendmidi dev <span class="c-str">"EP-133"</span> syx <span class="c-num">0 32 11
         <span class="badge">EP·133</span>
         <span>Sample Tool</span>
       </a>
-      <p>Reverse-engineered with a lot of patience and a logic analyzer. This one's for the community, from Bombest Audio.</p>
+      <p>Reverse-engineered from real hardware and Teenage Engineering's own web tool.</p>
     </div>
     <div>
       <h4>Project</h4>

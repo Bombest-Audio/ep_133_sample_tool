@@ -6,8 +6,7 @@ command space (device identity, echo, and the file subsystem that browses the fi
 reads/writes samples, reads project/group state, and triggers playback), the async events the
 device pushes on its own, and the plain-MIDI control surface the pads and sequencer emit.
 
-There is no official public spec. This is here so the next person building for the K.O. II
-doesn't have to spend nights with a MIDI sniffer.
+There is no official public spec for any of this.
 
 ## Status & confidence
 
@@ -17,7 +16,7 @@ doesn't have to spend nights with a MIDI sniffer.
 - **Cross-checked against** Teenage Engineering's own EP-133 web tool (its minified JS bundle),
   which uses the same protocol. Command and status constants below are taken verbatim from that
   bundle, then confirmed on the wire where a non-destructive test exists.
-- Items still marked _(unconfirmed)_ or _(from reference)_ are noted inline. Corrections welcome via PR.
+- Items still marked _(unconfirmed)_ or _(from reference)_ are noted inline.
 
 Nothing here is from Teenage Engineering. **Use at your own risk.** Writing to or deleting from
 the device filesystem can modify or destroy your samples and projects, and the firmware-update
@@ -384,9 +383,7 @@ note-on  channel 1  C1 (36)  velocity 100
   → {"active":3300}
 ```
 
-## Credits
+## Provenance
 
-I reverse-engineered this while building an open-source offline sample tool for the EP-133.
-Opcode/field layouts came from Teenage Engineering's own web tool; all wire behavior was confirmed
-on a real K.O. II (fw 2.5.0). Shout to the EP-133 / K.O. II community, and to the indomitable hacker
-spirit. PRs and corrections welcome.
+Opcode and field layouts came from Teenage Engineering's own web tool; all wire behavior was
+confirmed on a real K.O. II (firmware 2.5.0). Not affiliated with Teenage Engineering.
