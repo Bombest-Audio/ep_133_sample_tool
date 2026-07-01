@@ -1258,6 +1258,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         sampleStart: Int,
         sampleEnd: Int,
         playmode: String = "oneshot",
+        muteGroup: Boolean = false,
     ): Boolean {
         if (_deviceState.value.outputPortId == null) return false
         return fileOpMutex.withLock {
@@ -1297,7 +1298,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 val padNodeId = padEntry.nodeId
 
                 // Build and write the hardware-verified pad metadata JSON.
-                val json = buildPadAssignmentJson(sampleNodeId, sampleStart, sampleEnd, playmode)
+                val json = buildPadAssignmentJson(sampleNodeId, sampleStart, sampleEnd, playmode, muteGroup)
                 Log.d("EP133APP", "assignSampleToPad: group=${group.name} gridIndex=$gridIndex padNode=$padNodeId json=$json")
                 setMetadata(padNodeId, json)
             } catch (e: CancellationException) {
@@ -1325,7 +1326,8 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         sampleStart: Int,
         sampleEnd: Int,
         playmode: String,
-    ): String = """{"sym":$sampleNodeId,"sample.start":$sampleStart,"sample.end":$sampleEnd,"sound.playmode":"$playmode","sound.amplitude":100,"sound.pan":0,"sound.pitch":0.00,"envelope.attack":0,"envelope.release":255,"sound.mutegroup":false,"time.mode":"off","midi.channel":0}"""
+        muteGroup: Boolean = false,
+    ): String = """{"sym":$sampleNodeId,"sample.start":$sampleStart,"sample.end":$sampleEnd,"sound.playmode":"$playmode","sound.amplitude":100,"sound.pan":0,"sound.pitch":0.00,"envelope.attack":0,"envelope.release":255,"sound.mutegroup":$muteGroup,"time.mode":"off","midi.channel":0}"""
 
     /**
      * Resolve the /sounds directory node ID inside a [fileOpMutex] locked context.

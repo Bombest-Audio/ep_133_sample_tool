@@ -76,6 +76,7 @@ private class KitFakeMIDIRepo(
         val sampleNodeId: Int,
         val sampleStart: Int,
         val sampleEnd: Int,
+        val muteGroup: Boolean,
     )
 
     private val _state = MutableStateFlow(
@@ -113,8 +114,9 @@ private class KitFakeMIDIRepo(
         sampleStart: Int,
         sampleEnd: Int,
         playmode: String,
+        muteGroup: Boolean,
     ): Boolean {
-        assignCalls.add(AssignCall(group, gridIndex, sampleNodeId, sampleStart, sampleEnd))
+        assignCalls.add(AssignCall(group, gridIndex, sampleNodeId, sampleStart, sampleEnd, muteGroup))
         return _state.value.connected
     }
 }
@@ -218,6 +220,31 @@ class KitViewModelTest {
             assertEquals("slice $i: sampleStart must be 0 (full trim on slice)", 0, call.sampleStart)
             assertEquals("slice $i: sampleEnd must equal sliceFrameCount", sliceFrameCount, call.sampleEnd)
         }
+    }
+
+    // ── Choke group (sound.mutegroup) reaches assignSampleToPad ────────────────
+
+    @Test
+    fun chop_chokeGroup_defaultsOn_writesMuteGroupTrue() = runTest {
+        val (repo, vm) = makeVm(connected = true)
+        vm.onSliceCountChange("4")
+        vm.chopFromPcm("loop.wav", pcm(1000))
+        advanceUntilIdle()
+
+        assertEquals("assignSampleToPad called per slice", 4, repo.assignCalls.size)
+        assertTrue("choke group defaults on → every pad muteGroup=true", repo.assignCalls.all { it.muteGroup })
+    }
+
+    @Test
+    fun chop_chokeGroupOff_writesMuteGroupFalse() = runTest {
+        val (repo, vm) = makeVm(connected = true)
+        vm.onChokeGroupChange(false)
+        vm.onSliceCountChange("4")
+        vm.chopFromPcm("loop.wav", pcm(1000))
+        advanceUntilIdle()
+
+        assertEquals("assignSampleToPad called per slice", 4, repo.assignCalls.size)
+        assertTrue("choke off → no pad has muteGroup=true", repo.assignCalls.none { it.muteGroup })
     }
 
     // ── Per-slice byte content tiles exactly with no dropped samples ───────────

@@ -164,6 +164,11 @@ class KitViewModel(
     private val _selectedGroup = MutableStateFlow(PadChannel.A)
     val selectedGroup: StateFlow<PadChannel> = _selectedGroup.asStateFlow()
 
+    // Choke group: when on, every slice/one-shot in the batch is written with sound.mutegroup=true
+    // so the pads in the group cut each other off (monophonic within the group). Default on.
+    private val _chokeGroup = MutableStateFlow(true)
+    val chokeGroup: StateFlow<Boolean> = _chokeGroup.asStateFlow()
+
     // Slice count: stored as String for TextField binding; validated on use.
     private val _sliceCountText = MutableStateFlow(DEFAULT_SLICE_COUNT.toString())
     val sliceCountText: StateFlow<String> = _sliceCountText.asStateFlow()
@@ -199,6 +204,7 @@ class KitViewModel(
 
     fun onModeChange(mode: KitMode) { _mode.value = mode }
     fun onGroupChange(group: PadChannel) { _selectedGroup.value = group }
+    fun onChokeGroupChange(on: Boolean) { _chokeGroup.value = on }
     fun onSliceCountChange(text: String) { _sliceCountText.value = text }
     fun dismissSnackbar() { _snackbarMessage.value = null }
 
@@ -330,7 +336,7 @@ class KitViewModel(
 
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames)
+                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames, muteGroup = _chokeGroup.value)
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -413,7 +419,7 @@ class KitViewModel(
 
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames)
+                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames, muteGroup = _chokeGroup.value)
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -499,7 +505,7 @@ class KitViewModel(
 
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames)
+                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames, muteGroup = _chokeGroup.value)
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -556,7 +562,7 @@ class KitViewModel(
 
                 val ok = try {
                     deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames)
+                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames, muteGroup = _chokeGroup.value)
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -765,6 +771,7 @@ fun KitScreen(viewModel: KitViewModel) {
     val sliceCountText by viewModel.sliceCountText.collectAsState()
     val items by viewModel.items.collectAsState()
     val stagedLoop by viewModel.stagedLoop.collectAsState()
+    val chokeGroup by viewModel.chokeGroup.collectAsState()
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollState = rememberScrollState()
@@ -865,6 +872,43 @@ fun KitScreen(viewModel: KitViewModel) {
                         selected = selectedGroup == ch,
                         modifier = Modifier.weight(1f),
                         onClick = { viewModel.onGroupChange(ch) },
+                    )
+                }
+            }
+
+            // Choke-group toggle: write sound.mutegroup=true so pads in the group cut each other off.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(PanelRadius)
+                    .background(t.inset, PanelRadius)
+                    .border(1.dp, t.rule, PanelRadius)
+                    .clickable { viewModel.onChokeGroupChange(!chokeGroup) }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "CHOKE GROUP",
+                        fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.6.sp, color = t.text,
+                    )
+                    Text(
+                        "pads in the group cut each other off",
+                        fontFamily = Mono, fontSize = 9.sp, color = t.text3,
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(PanelRadius)
+                        .background(if (chokeGroup) t.accent else t.chrome, PanelRadius)
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                ) {
+                    Text(
+                        if (chokeGroup) "ON" else "OFF",
+                        fontFamily = Mono, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.8.sp,
+                        color = if (chokeGroup) t.onAccent else t.text2,
                     )
                 }
             }
