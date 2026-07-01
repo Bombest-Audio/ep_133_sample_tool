@@ -66,18 +66,18 @@ F0  00 20 76  <deviceId>  40  <flags>  <reqId7>  <command>  <7-bit-packed payloa
 | `00 20 76` | Teenage Engineering manufacturer ID. |
 | `deviceId` | Device address. The device reports its own ID in the greet reply (**0x33** on the unit tested). Greet is accepted at deviceId 0; address other requests to the reported ID. |
 | `40` | TE subsystem byte. |
-| `flags` | Transaction flags. `0x40` = frame initiates a command; `0x20` = a request-id is present; low nibble = `reqId >> 7`. Requests send `0x60 \| (reqId>>7)` (command + id). |
+| `flags` | Transaction flags. `0x40` = is-request; `0x20` = request-id present; low nibble = `reqId >> 7`. Requests send `0x60 \| (reqId>>7)` (both bits set). The Android implementation names these `BIT_IS_REQUEST` / `BIT_REQUEST_ID_AVAILABLE`. |
 | `reqId7` | Request ID low 7 bits (full reqId is 14-bit; high bits live in `flags & 0x0F`). The response **echoes** it, so use it to correlate. |
 | `command` | Top-level command (above). |
 | payload | **7-bit packed** (see below). |
 
-`TE_SYSEX_HEADER_OVERHEAD = 8`, `TE_SYSEX_FOOTER_OVERHEAD = 1`: 8 bytes before the packed
-payload (`F0` + `00 20 76` + `deviceId` + `40` + `flags` + `reqId7` + `command`) and the trailing `F7`.
+`TE_SYSEX_HEADER_OVERHEAD = 8` (`00 20 76` + `deviceId` + `40` + `flags` + `reqId7` + `command`),
+`TE_SYSEX_FOOTER_OVERHEAD = 1` (the trailing `F7`). The `F0` start byte sits outside both.
 
 ### Response (device → host)
 
-Responses drop back the leading `F0` framing position, set flags to `0x20` (id present, not a
-command), and **insert a 1-byte status code after the command byte, before the packed payload**:
+Responses set flags to `0x20` (request-id present, is-request bit clear) and **insert a 1-byte
+status code after the command byte, before the packed payload**:
 
 ```
 00 20 76  <deviceId>  40  20  <reqId>  <command>  <STATUS>  <7-bit-packed payload…>
@@ -91,8 +91,8 @@ command), and **insert a 1-byte status code after the command byte, before the p
 ### Async event (device → host, unsolicited)
 
 The device also **pushes** frames you never asked for. They ride the `FILE` command (5) with
-flags `0x40` (a command, no request-id) and no status byte, and the packed payload begins with an
-event-type byte. See [Async events](#async-events).
+flags `0x40` (the is-request bit is set even on these device-initiated frames; no request-id) and
+no status byte, and the packed payload begins with an event-type byte. See [Async events](#async-events).
 
 ## 7-bit packing
 

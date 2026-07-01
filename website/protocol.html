@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EP-133 K.O. II: MIDI SysEx Protocol Reference</title>
-<meta name="description" content="Hardware-verified reverse-engineering notes for the Teenage Engineering EP-133 K.O. II file & playback SysEx protocol.">
+<meta name="description" content="Hardware-verified reverse-engineering notes for the Teenage Engineering EP-133 K.O. II MIDI and SysEx protocol: command space, file subsystem, async events, and the plain-MIDI control surface.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -795,7 +795,7 @@ unpacked[k] = (data[k] &amp; <span class="c-num">0x7F</span>) | (((highbits &gt;
       <p><strong>Echo</strong> (command <code>2</code>) is the safest thing you can send: hand it any payload and the device returns it byte-for-byte with status <code>0</code>. Great for confirming the port and your framing before you touch a single file.</p>
       <div class="code">
         <div class="code-top"><span class="dot act"></span><span class="t">echo · command 2 · round-trip</span></div>
-        <pre><code><span class="c-com">// →</span> 00 20 76 33 40 60 06 02  00 01 02 03   <span class="c-com">// payload [1,2,3]</span>
+        <pre><code><span class="c-com">// →</span> 00 20 76 33 40 60 06 02  00 01 02 03   <span class="c-com">// packed payload [1,2,3] (00 = high-bits byte)</span>
 <span class="c-com">// ←</span> 00 20 76 33 40 20 06 02  <span class="c-num">00</span>  00 01 02 03   <span class="c-com">// status 0, echoed</span></code></pre>
       </div>
       <p>Before <em>any</em> file op, you've got to open a session. That's command <code>5</code>, subcommand <code>FILE_INIT</code> (<code>1</code>). It negotiates a <strong>512-byte chunk size</strong>, sets up the session you'll lean on for the rest of the transfer, and (with <code>flags = 1</code>) arms the async events below. Skip it and every file op just fails.</p>
@@ -831,7 +831,7 @@ unpacked[k] = (data[k] &amp; <span class="c-num">0x7F</span>) | (((highbits &gt;
     <!-- 7 ASYNC EVENTS -->
     <section class="doc-section" id="events">
       <h2><span class="s-no">07</span> Async events</h2>
-      <p>The device doesn't just answer questions. It <strong>pushes</strong> filesystem and state changes at you, unasked. Each event rides the <code>FILE</code> command (5) with flags <code>0x40</code> (a command, no request id) and no status byte; the packed payload opens with an event-type byte, then a body.</p>
+      <p>The device doesn't just answer questions. It <strong>pushes</strong> filesystem and state changes at you, unasked. Each event rides the <code>FILE</code> command (5) with flags <code>0x40</code> (the is-request bit is set even on these device-initiated frames; no request id) and no status byte; the packed payload opens with an event-type byte, then a body.</p>
       <div class="tbl-wrap">
         <table class="tbl">
           <thead><tr><th>Event</th><th>Code</th><th>Means</th></tr></thead>
@@ -1032,7 +1032,7 @@ sendmidi dev <span class="c-str">"EP-133"</span> syx <span class="c-num">0 32 11
 sendmidi dev <span class="c-str">"EP-133"</span> syx <span class="c-num">0 32 118 51 64 96 4 5 0 1 1 0 0 2 0</span>
 sendmidi dev <span class="c-str">"EP-133"</span> syx <span class="c-num">0 32 118 51 64 96 5 5 0 4 0 0 0 0</span></code></pre>
       </div>
-      <p class="muted" style="font-size:13.5px"><code>96</code> is flags <code>0x60</code> = command + request-id present. The greet reply on my unit reads <code>os_version:2.5.0 … serial:XXXXXXXX</code>.</p>
+      <p class="muted" style="font-size:13.5px"><code>96</code> is flags <code>0x60</code> = is-request + request-id present. The greet reply on my unit reads <code>os_version:2.5.0 … serial:XXXXXXXX</code>.</p>
     </section>
 
     <!-- 16 CREDITS -->
