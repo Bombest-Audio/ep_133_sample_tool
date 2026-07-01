@@ -627,8 +627,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             val pageCount = if (pcmBytes.isEmpty()) 0 else (pcmBytes.size + rawChunkSize - 1) / rawChunkSize
             Log.d("EP133APP", "putSampleFile: chunkSize=$rawChunkSize pages=$pageCount for $name (${pcmBytes.size} bytes, ch=$channels sr=$sampleRate, deviceChunkSize=$deviceChunkSize)")
 
-            // Metadata JSON key names match data/index.js prepareTeenageMeta.
-            val metadataJson = """{"channels":$channels,"samplerate":$sampleRate}"""
+            // Metadata JSON must match the hardware-verified upload (the Python spike that
+            // successfully uploaded + played samples): channels/samplerate alone get the PUT INIT
+            // rejected — the device needs the sample `format`, a `name`, and a `sound.playmode`.
+            val metaName = name.substringBeforeLast('.', name)
+            val metadataJson =
+                """{"channels":$channels,"samplerate":$sampleRate,"format":"s16","name":"$metaName","sound.playmode":"oneshot"}"""
 
             // Transfer-local reqId counter (INIT=30, then each DATA page + terminator). Each frame
             // registers its own OneShot waiter under its reqId via awaitFileOp; only one is ever
