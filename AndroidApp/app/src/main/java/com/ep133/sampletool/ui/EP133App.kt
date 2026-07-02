@@ -57,9 +57,9 @@ private val BadgeShape = RoundedCornerShape(3.dp)
 
 private enum class NavRoute(val route: String, val label: String) {
     PADS("pads", "PADS"),
+    KIT("kit", "KIT"),
     PROJECTS("projects", "PROJ"),
     DEVICE("device", "DEVICE"),
-    KIT("kit", "KIT"),
 }
 
 /**
