@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.util.Log
 import android.hardware.usb.UsbManager
 import android.media.midi.MidiManager
 import android.net.Uri
@@ -25,6 +26,7 @@ import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
 import com.ep133.sampletool.ui.kit.KitViewModel
+import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 
@@ -66,6 +68,7 @@ class MainActivity : ComponentActivity() {
         val deviceViewModel = DeviceViewModel(midiRepo)
         val sampleImportManager = SampleImportManager(midiRepo)
         val kitViewModel = KitViewModel(midiRepo, sampleImportManager)
+        val kitBuilderViewModel = KitBuilderViewModel(midiRepo, sampleImportManager)
 
         // SAF launchers — MUST be registered before setContent (Activity lifecycle constraint).
         // See STATE.md decision: "SAF launchers must be registered before setContent() in MainActivity"
@@ -87,6 +90,23 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.OpenMultipleDocuments(),
         ) { uris: List<Uri> -> kitViewModel.onKitFilesPicked(uris, this) }
 
+        // Kit Builder: whole-folder pack picker. Persist the grant so pack URIs stay readable
+        // across sessions (audition + load happen well after the picker callback returns).
+        val packLauncher = registerForActivityResult(
+            ActivityResultContracts.OpenDocumentTree(),
+        ) { uri: Uri? ->
+            uri?.let {
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        it, Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                } catch (e: SecurityException) {
+                    Log.w("EP133", "takePersistableUriPermission failed", e)
+                }
+                kitBuilderViewModel.onPackPicked(it, this)
+            }
+        }
+
         deviceViewModel.onRequestBackup = { name -> backupLauncher.launch(name) }
         deviceViewModel.onRequestRestore = { restoreLauncher.launch(arrayOf("*/*")) }
         deviceViewModel.onOpenFirmwareUpdater = {
@@ -99,6 +119,7 @@ class MainActivity : ComponentActivity() {
         }
         kitViewModel.onRequestLoopPick = { kitLoopLauncher.launch(arrayOf("audio/*")) }
         kitViewModel.onRequestKitPick = { kitFilesLauncher.launch(arrayOf("audio/*")) }
+        kitBuilderViewModel.onRequestPackPick = { packLauncher.launch(null) }
 
         setContent {
             val deviceState by midiRepo.deviceState.collectAsState()
@@ -107,6 +128,7 @@ class MainActivity : ComponentActivity() {
                 projectsViewModel = projectsViewModel,
                 deviceViewModel = deviceViewModel,
                 kitViewModel = kitViewModel,
+                kitBuilderViewModel = kitBuilderViewModel,
                 isConnected = deviceState.connected,
             )
         }
