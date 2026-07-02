@@ -56,6 +56,8 @@ import com.ep133.sampletool.domain.audio.LoopSlicer
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.model.PadChannel
+import com.ep133.sampletool.ui.kitbuilder.KitBuilderScreen
+import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 import com.ep133.sampletool.ui.theme.Ep133GroupChip
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
@@ -990,7 +992,7 @@ private fun SliceProgressPadCell(
  * The app shell owns the header + bottom nav; this renders the body only.
  */
 @Composable
-fun KitScreen(viewModel: KitViewModel) {
+fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
     val t = LocalEP133Tokens.current
     val mode by viewModel.mode.collectAsState()
     val selectedGroup by viewModel.selectedGroup.collectAsState()
@@ -1025,20 +1027,15 @@ fun KitScreen(viewModel: KitViewModel) {
     }
 
     Box(modifier = Modifier.fillMaxSize().background(t.bg)) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 14.dp),
-        ) {
-          // Scrollable content; the PICK button below stays pinned so it's always reachable.
+        Column(modifier = Modifier.fillMaxSize()) {
+          // Header + mode switch stay pinned above both modes.
           Column(
             modifier = Modifier
-                .weight(1f)
                 .fillMaxWidth()
-                .verticalScroll(scrollState),
+                .padding(horizontal = 14.dp),
             verticalArrangement = Arrangement.spacedBy(11.dp),
           ) {
-            // Section header + batch status.
+            // Section header + batch status (chop-only status).
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1046,17 +1043,19 @@ fun KitScreen(viewModel: KitViewModel) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Ep133SectionLabel(
-                    if (mode == KitMode.CHOP) "Loop Chopper" else "Drum Kit",
+                    if (mode == KitMode.CHOP) "Loop Chopper" else "Kit Builder",
                     modifier = Modifier.weight(1f),
                 )
-                Text(
-                    text = headLabel,
-                    color = headColor,
-                    fontFamily = Mono,
-                    fontSize = 9.5.sp,
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = 0.6.sp,
-                )
+                if (mode == KitMode.CHOP) {
+                    Text(
+                        text = headLabel,
+                        color = headColor,
+                        fontFamily = Mono,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 0.6.sp,
+                    )
+                }
             }
 
             // Mode segmented control: CHOP | KIT.
@@ -1086,6 +1085,25 @@ fun KitScreen(viewModel: KitViewModel) {
                     }
                 }
             }
+          }
+
+          if (mode == KitMode.KIT) {
+            // KIT mode = the Kit Builder (pack browser + kit canvas + load), embedded edge-to-edge.
+            KitBuilderScreen(
+                viewModel = builderViewModel,
+                modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 11.dp),
+            )
+          } else {
+          // Scrollable chop content; the PICK button below stays pinned so it's always reachable.
+          Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp)
+                .verticalScroll(scrollState)
+                .padding(top = 11.dp),
+            verticalArrangement = Arrangement.spacedBy(11.dp),
+          ) {
 
             // Group picker: A | B | C | D.
             Row(
@@ -1204,22 +1222,22 @@ fun KitScreen(viewModel: KitViewModel) {
 
           }
 
-            // Pick button — pinned below the scroll so it's always reachable. In chop mode, once a
-            // loop is staged the primary action becomes CHOP (so the count can be set first);
-            // otherwise it picks files.
-            val chopReady = mode == KitMode.CHOP && stagedLoop != null
+            // Pick button — pinned below the scroll so it's always reachable. Once a loop is
+            // staged the primary action becomes CHOP (so the count can be set first).
+            val chopReady = stagedLoop != null
             Ep133PrimaryButton(
-                label = when {
-                    chopReady                              -> "CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → ${selectedGroup.name}"
-                    mode == KitMode.CHOP                   -> "PICK LOOP"
-                    items.isEmpty() && mode == KitMode.KIT -> "PICK FILES"
-                    else                                   -> "PICK MORE FILES"
+                label = if (chopReady) {
+                    "CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → ${selectedGroup.name}"
+                } else {
+                    "PICK LOOP"
                 },
                 modifier = Modifier
                     .fillMaxWidth()
+                    .padding(horizontal = 14.dp)
                     .padding(top = 11.dp, bottom = 14.dp),
                 onClick = { if (chopReady) viewModel.chopStagedLoop(context) else viewModel.triggerPick() },
             )
+          }
         }
 
         SnackbarHost(

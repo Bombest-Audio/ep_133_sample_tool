@@ -272,7 +272,7 @@ private val KbError = androidx.compose.ui.graphics.Color(0xFFD0021B)
  * audition one-shots, assign them pad-first onto the 4×3 canvas, and LOAD the kit to a group.
  */
 @Composable
-fun KitBuilderScreen(viewModel: KitBuilderViewModel) {
+fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifier.fillMaxSize()) {
     val t = LocalEP133Tokens.current
     val s by viewModel.state.collectAsState()
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
@@ -283,7 +283,7 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel) {
         snackbarMessage?.let { snackbarHostState.showSnackbar(it); viewModel.dismissSnackbar() }
     }
 
-    Box(Modifier.fillMaxSize().background(t.bg)) {
+    Box(modifier.background(t.bg)) {
         Column(Modifier.fillMaxSize()) {
 
             // ── Kit canvas ──
