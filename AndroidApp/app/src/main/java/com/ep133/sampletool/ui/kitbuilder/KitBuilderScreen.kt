@@ -99,6 +99,7 @@ data class KitBuilderState(
     val loadStates: Map<Int, KbLoadState> = emptyMap(),
     val loadedBanner: String? = null,
     val clearingPad: Int? = null,
+    val chokeGroup: Boolean = true,
 )
 
 class KitBuilderViewModel(
@@ -156,6 +157,7 @@ class KitBuilderViewModel(
 
     fun onCategoryChange(id: String) = _state.update { it.copy(category = id) }
     fun onGroupChange(group: PadChannel) = _state.update { it.copy(group = group) }
+    fun onChokeGroupChange(on: Boolean) = _state.update { it.copy(chokeGroup = on) }
     fun onPadSelected(index: Int) = _state.update { it.copy(selectedPad = index) }
 
     /**
@@ -255,7 +257,8 @@ class KitBuilderViewModel(
                     } else {
                         deviceMutex.withLock {
                             midi.assignSampleToPad(
-                                _state.value.group, padIdx, nodeId, 0, frames, muteGroup = true,
+                                _state.value.group, padIdx, nodeId, 0, frames,
+                                muteGroup = _state.value.chokeGroup,
                             )
                         }
                     }
@@ -518,6 +521,30 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                             Text(g.name, fontFamily = Mono, fontSize = 12.sp, fontWeight = FontWeight.Bold,
                                 color = if (on) PadEmptyInk else t.text3)
                         }
+                    }
+                }
+
+                // Choke-group toggle: pads in the group cut each other off (sound.mutegroup).
+                Row(
+                    Modifier.fillMaxWidth().clip(PanelRadius).background(t.panel, PanelRadius)
+                        .border(1.dp, t.rule, PanelRadius)
+                        .clickable { viewModel.onChokeGroupChange(!s.chokeGroup) }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("CHOKE GROUP", fontFamily = Mono, fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp, color = t.text)
+                        Text("pads cut each other off", fontFamily = Mono, fontSize = 8.5.sp, color = t.text3)
+                    }
+                    Box(
+                        Modifier.clip(PanelRadius)
+                            .background(if (s.chokeGroup) t.accent else t.chrome, PanelRadius)
+                            .padding(horizontal = 12.dp, vertical = 5.dp),
+                    ) {
+                        Text(if (s.chokeGroup) "ON" else "OFF", fontFamily = Mono, fontSize = 9.5.sp,
+                            fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp,
+                            color = if (s.chokeGroup) t.onAccent else t.text2)
                     }
                 }
 
