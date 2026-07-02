@@ -18,12 +18,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -58,6 +60,8 @@ import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.ProjectBackupManager
 import com.ep133.sampletool.domain.midi.ProjectBackupProgress
 import com.ep133.sampletool.domain.model.DeviceState
+import com.ep133.sampletool.domain.project.InMemoryProjectNameStore
+import com.ep133.sampletool.domain.project.ProjectNameStore
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
@@ -94,9 +98,22 @@ private const val RESTORE_ENABLED = false
 class ProjectsViewModel(
     private val midi: MIDIRepository,
     private val backupManager: ProjectBackupManager,
+    private val nameStore: ProjectNameStore = InMemoryProjectNameStore(),
 ) : ViewModel() {
 
     val deviceState: StateFlow<DeviceState> = midi.deviceState
+
+    /** Slot number (1..9) → app-side custom project name (see [ProjectNameStore]). */
+    val projectNames: StateFlow<Map<Int, String>> = nameStore.names
+
+    /** Set (or clear, when blank) the app-side custom name for a slot. */
+    fun setProjectName(slot: MIDIRepository.ProjectSlot, name: String) {
+        val n = slotNumberOf(slot) ?: return
+        nameStore.setName(n, name)
+    }
+
+    private fun slotNumberOf(slot: MIDIRepository.ProjectSlot): Int? =
+        projectSlotNumber(slot.name)
 
     private val _slots = MutableStateFlow<List<MIDIRepository.ProjectSlot>>(emptyList())
     val slots: StateFlow<List<MIDIRepository.ProjectSlot>> = _slots.asStateFlow()
@@ -166,10 +183,11 @@ class ProjectsViewModel(
     /** Back up one slot to app storage, surfacing progress and refreshing the library on done. */
     fun backupSlot(slot: MIDIRepository.ProjectSlot, context: Context) {
         if (_isBackupInProgress.value) return
+        val customName = slotNumberOf(slot)?.let { nameStore.nameFor(it) }
         viewModelScope.launch {
             _isBackupInProgress.value = true
             _backupProgress.value = 0f
-            backupManager.backupProject(slot, context).collect { progress ->
+            backupManager.backupProject(slot, context, customName).collect { progress ->
                 when (progress) {
                     is ProjectBackupProgress.Progress -> {
                         if (progress.total > 0) {
@@ -227,6 +245,13 @@ class ProjectsViewModel(
     }
 }
 
+/**
+ * Parse a device project-slot number (1..9) from its name. Device names are "01".."09", but
+ * mirrors [ProjectBackupManager]'s digit-anywhere match so "P03"-style names still resolve to 3.
+ */
+internal fun projectSlotNumber(name: String): Int? =
+    Regex("""(\d{1,2})""").find(name)?.groupValues?.get(1)?.toIntOrNull()
+
 /** Format a backup timestamp (epoch millis) for the library row. */
 private fun formatTimestamp(epochMillis: Long): String =
     SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(epochMillis))
@@ -275,7 +300,9 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val showRestoreConfirm by viewModel.showRestoreConfirm.collectAsState()
     val clearingSlot by viewModel.clearingSlot.collectAsState()
+    val projectNames by viewModel.projectNames.collectAsState()
     var slotToClear by remember { mutableStateOf<MIDIRepository.ProjectSlot?>(null) }
+    var slotToRename by remember { mutableStateOf<MIDIRepository.ProjectSlot?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
@@ -317,6 +344,49 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
             dismissButton = {
                 TextButton(
                     onClick = { slotToClear = null },
+                    colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
+                ) { Text("Cancel") }
+            },
+        )
+    }
+
+    slotToRename?.let { slot ->
+        val slotNum = projectSlotNumber(slot.name)
+        var draft by remember(slot.nodeId) {
+            mutableStateOf(slotNum?.let { projectNames[it] }.orEmpty())
+        }
+        AlertDialog(
+            onDismissRequest = { slotToRename = null },
+            containerColor = t.panel,
+            titleContentColor = t.text,
+            textContentColor = t.text2,
+            shape = PanelRadius,
+            title = { Text("Name project ${slot.name}", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "The name lives in the app and is used as the export/backup filename. " +
+                            "The device slot number (${slot.name}) doesn't change.",
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                    )
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { draft = it.take(40) },
+                        singleLine = true,
+                        placeholder = { Text("e.g. Summer Beat Tape") },
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { viewModel.setProjectName(slot, draft); slotToRename = null },
+                    colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
+                ) { Text("Save", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { slotToRename = null },
                     colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
                 ) { Text("Cancel") }
             },
@@ -374,11 +444,13 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
                 items(slots, key = { it.nodeId }) { slot ->
                     SlotCard(
                         slot = slot,
+                        customName = projectSlotNumber(slot.name)?.let { projectNames[it] },
                         isBackupInProgress = isBackupInProgress,
                         backupProgress = backupProgress,
                         isClearing = clearingSlot == slot.nodeId,
                         onBackup = { viewModel.backupSlot(slot, context) },
                         onClear = { slotToClear = slot },
+                        onRename = { slotToRename = slot },
                     )
                 }
             }
@@ -479,11 +551,13 @@ private fun NotConnectedPanel() {
 @Composable
 private fun SlotCard(
     slot: MIDIRepository.ProjectSlot,
+    customName: String?,
     isBackupInProgress: Boolean,
     backupProgress: Float,
     isClearing: Boolean,
     onBackup: () -> Unit,
     onClear: () -> Unit,
+    onRename: () -> Unit,
 ) {
     val t = LocalEP133Tokens.current
     Column(
@@ -495,7 +569,7 @@ private fun SlotCard(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(9.dp),
     ) {
-        // Name + active badge + node id.
+        // Name + active badge + slot tag + rename affordance.
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -505,7 +579,7 @@ private fun SlotCard(
                 Ep133StatusDot(t.live, size = 7)
             }
             Text(
-                text = slot.name,
+                text = customName?.takeIf { it.isNotBlank() } ?: "PROJECT ${slot.name}",
                 modifier = Modifier.weight(1f),
                 color = t.text,
                 fontSize = 13.sp,
@@ -513,6 +587,17 @@ private fun SlotCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            // Device slot tag — shown when a custom name replaces the raw slot number in the title.
+            if (!customName.isNullOrBlank()) {
+                Text(
+                    text = "P${slot.name}",
+                    color = t.text3,
+                    fontFamily = Mono,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.5.sp,
+                )
+            }
             if (slot.isActive) {
                 Text(
                     text = "ACTIVE",
@@ -523,6 +608,16 @@ private fun SlotCard(
                     letterSpacing = 0.6.sp,
                 )
             }
+            Icon(
+                imageVector = Icons.Filled.Edit,
+                contentDescription = "Rename project ${slot.name}",
+                modifier = Modifier
+                    .size(26.dp)
+                    .clip(PanelRadius)
+                    .clickable(enabled = !isClearing) { onRename() }
+                    .padding(5.dp),
+                tint = t.text3,
+            )
         }
 
         // Lightweight summary (RESEARCH Open Q3 — name + summary, no archive inspection).

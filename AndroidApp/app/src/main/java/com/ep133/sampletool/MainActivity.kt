@@ -20,6 +20,7 @@ import androidx.core.view.WindowCompat
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.ProjectBackupManager
 import com.ep133.sampletool.domain.midi.SampleImportManager
+import com.ep133.sampletool.domain.project.PrefsProjectNameStore
 import com.ep133.sampletool.midi.MIDIManager
 import com.ep133.sampletool.ui.EP133App
 import com.ep133.sampletool.ui.device.DeviceViewModel
@@ -64,7 +65,8 @@ class MainActivity : ComponentActivity() {
 
         val padsViewModel = PadsViewModel(midiRepo)
         val projectBackupManager = ProjectBackupManager(midiRepo)
-        val projectsViewModel = ProjectsViewModel(midiRepo, projectBackupManager)
+        val projectNameStore = PrefsProjectNameStore(this)
+        val projectsViewModel = ProjectsViewModel(midiRepo, projectBackupManager, projectNameStore)
         val deviceViewModel = DeviceViewModel(midiRepo)
         val sampleImportManager = SampleImportManager(midiRepo)
         val kitViewModel = KitViewModel(midiRepo, sampleImportManager)
