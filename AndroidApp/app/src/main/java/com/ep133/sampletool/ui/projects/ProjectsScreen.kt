@@ -31,8 +31,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -109,6 +112,26 @@ class ProjectsViewModel(
 
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
+
+    // Node id of the slot currently being cleared (null = none), so its card shows a busy state.
+    private val _clearingSlot = MutableStateFlow<Int?>(null)
+    val clearingSlot: StateFlow<Int?> = _clearingSlot.asStateFlow()
+
+    /** Empty every pad in all four groups of [slot] (the slot itself survives). */
+    fun clearProject(slot: MIDIRepository.ProjectSlot) {
+        if (_clearingSlot.value != null) return
+        _clearingSlot.value = slot.nodeId
+        viewModelScope.launch {
+            val cleared = midi.clearProject(slot.name)
+            _clearingSlot.value = null
+            _snackbarMessage.value = if (cleared >= 0) {
+                "Cleared project ${slot.name} — $cleared pads emptied"
+            } else {
+                "Couldn't clear project ${slot.name} — is the EP-133 connected?"
+            }
+            loadProjects()
+        }
+    }
 
     private var _pendingRestoreFile: File? = null
     private val _showRestoreConfirm = MutableStateFlow(false)
@@ -251,6 +274,8 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
     val backupProgress by viewModel.backupProgress.collectAsState()
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val showRestoreConfirm by viewModel.showRestoreConfirm.collectAsState()
+    val clearingSlot by viewModel.clearingSlot.collectAsState()
+    var slotToClear by remember { mutableStateOf<MIDIRepository.ProjectSlot?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
@@ -267,6 +292,35 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
             snackbarHostState.showSnackbar(msg)
             viewModel.dismissSnackbar()
         }
+    }
+
+    slotToClear?.let { slot ->
+        AlertDialog(
+            onDismissRequest = { slotToClear = null },
+            containerColor = t.panel,
+            titleContentColor = t.text,
+            textContentColor = t.text2,
+            shape = PanelRadius,
+            title = { Text("Clear project ${slot.name}?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "Empties every pad in all four groups of project ${slot.name} on the EP-133. " +
+                        "The project slot itself stays. This can't be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { viewModel.clearProject(slot); slotToClear = null },
+                    colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
+                ) { Text("Clear", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { slotToClear = null },
+                    colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
+                ) { Text("Cancel") }
+            },
+        )
     }
 
     if (showRestoreConfirm) {
@@ -322,7 +376,9 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
                         slot = slot,
                         isBackupInProgress = isBackupInProgress,
                         backupProgress = backupProgress,
+                        isClearing = clearingSlot == slot.nodeId,
                         onBackup = { viewModel.backupSlot(slot, context) },
+                        onClear = { slotToClear = slot },
                     )
                 }
             }
@@ -425,7 +481,9 @@ private fun SlotCard(
     slot: MIDIRepository.ProjectSlot,
     isBackupInProgress: Boolean,
     backupProgress: Float,
+    isClearing: Boolean,
     onBackup: () -> Unit,
+    onClear: () -> Unit,
 ) {
     val t = LocalEP133Tokens.current
     Column(
@@ -479,34 +537,58 @@ private fun SlotCard(
         // Decorative 4-bar fill meter, keyed off the slot node id.
         BarMeter(seed = slot.nodeId)
 
-        // Backup action — outline button; converts to a paged progress strip while running.
+        // Backup + Clear actions — outline buttons; backup converts to a progress strip while running.
         if (isBackupInProgress) {
             ProgressStrip(progress = backupProgress)
         } else {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(PanelRadius)
-                    .border(1.dp, t.rule, PanelRadius)
-                    .clickable { onBackup() }
-                    .padding(vertical = 9.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Filled.SaveAlt,
-                    contentDescription = null,
-                    modifier = Modifier.size(15.dp),
-                    tint = t.accent,
-                )
-                Text(
-                    text = "BACKUP",
-                    color = t.accent,
-                    fontFamily = Mono,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.6.sp,
-                )
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(PanelRadius)
+                        .border(1.dp, t.rule, PanelRadius)
+                        .clickable(enabled = !isClearing) { onBackup() }
+                        .padding(vertical = 9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.SaveAlt,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                        tint = t.accent,
+                    )
+                    Text(
+                        text = "BACKUP",
+                        color = t.accent,
+                        fontFamily = Mono,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.6.sp,
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(PanelRadius)
+                        .border(1.dp, t.rule, PanelRadius)
+                        .clickable(enabled = !isClearing) { onClear() }
+                        .padding(vertical = 9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (isClearing) "CLEARING…" else "CLEAR",
+                        color = t.text2,
+                        fontFamily = Mono,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.6.sp,
+                    )
+                }
             }
         }
     }

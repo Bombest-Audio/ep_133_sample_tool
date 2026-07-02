@@ -1355,6 +1355,41 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     }
 
     /**
+     * Clear a project slot: reset every pad in all four groups to empty (`{"sym":0}`). The slot
+     * itself always survives — project directories carry no DELETE capability (flags `0x0e`), so
+     * "clearing" means emptying its pads, not removing the numbered slot.
+     *
+     * @return the number of pads emptied, or -1 on failure / no output port.
+     */
+    open suspend fun clearProject(projectName: String): Int {
+        if (_deviceState.value.outputPortId == null) return -1
+        return fileOpMutex.withLock {
+            ensureFileSessionInitNoLock()
+            try {
+                var cleared = 0
+                for (group in PadChannel.entries) {
+                    val groupDir = resolveNodeIdInternal("/projects/$projectName/groups/${group.name}")
+                        ?: continue
+                    val body = listNodeBody(groupDir, requestId = nextFileReqId()) ?: continue
+                    val padNodes = SysExProtocol.parseFileListEntries(body)
+                        .filter { it.name.length == 2 && it.name.all(Char::isDigit) }  // pad dirs 01..12
+                        .map { it.nodeId }
+                    for (padNode in padNodes) {
+                        if (setMetadata(padNode, padEmptyJson)) cleared++
+                    }
+                }
+                Log.d("EP133APP", "clearProject($projectName): emptied $cleared pads")
+                cleared
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("EP133APP", "clearProject($projectName) failed", e)
+                -1
+            }
+        }
+    }
+
+    /**
      * Resolve the /sounds directory node ID inside a [fileOpMutex] locked context.
      *
      * Exists as a protected open method so test subclasses can stub the resolution without
