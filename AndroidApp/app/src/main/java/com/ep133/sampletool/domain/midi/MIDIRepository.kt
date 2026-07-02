@@ -1390,6 +1390,51 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     }
 
     /**
+     * Read which sample is bound to each pad of [group] in the active project.
+     *
+     * Returns gridIndex (0-based, 0..11) → sample display name for every OCCUPIED pad — a pad whose
+     * metadata `sym` is non-zero (an empty pad is `{"sym":0}`). Empty pads are omitted. Names have
+     * their extension stripped; if the sample node can't be named, falls back to `"sample"`.
+     *
+     * This lets the Kit Builder canvas mirror what's actually on the device instead of showing a
+     * blank staging grid. Resolves the group dir + pad list once, then a METADATA GET per pad (plus
+     * a FILE_INFO per occupied pad to name it). Returns an empty map when offline or on error.
+     */
+    open suspend fun readGroupPadState(group: PadChannel): Map<Int, String> {
+        if (_deviceState.value.outputPortId == null) return emptyMap()
+        return fileOpMutex.withLock {
+            ensureFileSessionInitNoLock()
+            try {
+                val projectsNode = resolveNodeIdInternal("/projects") ?: return@withLock emptyMap()
+                val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
+                    .takeIf { it >= 0 } ?: return@withLock emptyMap()
+                val projName = getNodeInfo(activeProjNodeId)?.name ?: return@withLock emptyMap()
+                val groupDir = resolveNodeIdInternal("/projects/$projName/groups/${group.name}")
+                    ?: return@withLock emptyMap()
+                val body = listNodeBody(groupDir, requestId = nextFileReqId()) ?: return@withLock emptyMap()
+                val padEntries = SysExProtocol.parseFileListEntries(body)
+                    .filter { it.name.length == 2 && it.name.all(Char::isDigit) }  // pad dirs 01..12
+                val result = LinkedHashMap<Int, String>()
+                for (entry in padEntries) {
+                    val gridIndex = (entry.name.toIntOrNull() ?: continue) - 1
+                    if (gridIndex !in 0 until 12) continue
+                    val sym = getMetadataJson(entry.nodeId).optInt("sym", 0)
+                    if (sym == 0) continue
+                    val name = getNodeInfo(sym)?.name?.substringBeforeLast('.') ?: "sample"
+                    result[gridIndex] = name
+                }
+                Log.d("EP133APP", "readGroupPadState(${group.name}): ${result.size} occupied pads")
+                result
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("EP133APP", "readGroupPadState(${group.name}) failed", e)
+                emptyMap()
+            }
+        }
+    }
+
+    /**
      * Resolve the /sounds directory node ID inside a [fileOpMutex] locked context.
      *
      * Exists as a protected open method so test subclasses can stub the resolution without

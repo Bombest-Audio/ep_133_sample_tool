@@ -60,6 +60,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -100,6 +102,9 @@ data class KitBuilderState(
     val loadedBanner: String? = null,
     val clearingPad: Int? = null,
     val chokeGroup: Boolean = true,
+    // gridIndex → sample name currently bound on the DEVICE for [group] (read back from hardware).
+    // Distinct from [assignments], which are pack samples staged locally but not yet uploaded.
+    val devicePads: Map<Int, String> = emptyMap(),
 )
 
 class KitBuilderViewModel(
@@ -119,10 +124,37 @@ class KitBuilderViewModel(
     private val deviceMutex = Mutex()
     private var player: MediaPlayer? = null
 
+    init {
+        // Hydrate the canvas from the device whenever a unit connects (and clear it on unplug), so
+        // the pads mirror what's actually loaded instead of showing a blank staging grid.
+        viewModelScope.launch {
+            midi.deviceState
+                .map { it.connected }
+                .distinctUntilChanged()
+                .collect { connected ->
+                    if (connected) refreshDevicePads()
+                    else _state.update { it.copy(devicePads = emptyMap()) }
+                }
+        }
+    }
+
     fun dismissSnackbar() { _snackbarMessage.value = null }
     fun dismissBanner() = _state.update { it.copy(loadedBanner = null) }
 
     fun triggerPackPick() { onRequestPackPick?.invoke() }
+
+    /**
+     * Read the selected group's current pad bindings off the device and show them on the canvas.
+     * The response is only applied if the selected group hasn't changed since the read started, so
+     * a slow read for a previous group can't clobber the current one.
+     */
+    fun refreshDevicePads() {
+        val group = _state.value.group
+        viewModelScope.launch {
+            val pads = midi.readGroupPadState(group)
+            _state.update { if (it.group == group) it.copy(devicePads = pads) else it }
+        }
+    }
 
     /** SAF OpenDocumentTree callback: parse the pack folder into categories. */
     fun onPackPicked(treeUri: Uri, context: Context) {
@@ -156,7 +188,13 @@ class KitBuilderViewModel(
     }
 
     fun onCategoryChange(id: String) = _state.update { it.copy(category = id) }
-    fun onGroupChange(group: PadChannel) = _state.update { it.copy(group = group) }
+
+    /** Switch target group; drop the old group's device pads immediately and re-read the new one. */
+    fun onGroupChange(group: PadChannel) {
+        _state.update { it.copy(group = group, devicePads = emptyMap()) }
+        refreshDevicePads()
+    }
+
     fun onChokeGroupChange(on: Boolean) = _state.update { it.copy(chokeGroup = on) }
     fun onPadSelected(index: Int) = _state.update { it.copy(selectedPad = index) }
 
@@ -182,6 +220,7 @@ class KitBuilderViewModel(
             } else {
                 "Couldn't clear pad ${KB_PAD_LABELS[pad]} — is the EP-133 connected?"
             }
+            if (ok) refreshDevicePads()
         }
     }
 
@@ -280,6 +319,8 @@ class KitBuilderViewModel(
                     loadedBanner = if (failed == 0) "KIT LOADED → GROUP ${it.group.name} · $ok pads written"
                     else "$failed FAILED · $ok loaded → GROUP ${it.group.name}")
             }
+            // The just-written pads are now on the device — re-read so the canvas reflects them.
+            refreshDevicePads()
         }
     }
 
@@ -313,12 +354,16 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
         snackbarMessage?.let { snackbarHostState.showSnackbar(it); viewModel.dismissSnackbar() }
     }
 
+    // Re-read the device pads whenever the Kit Builder becomes visible, so a kit loaded/edited
+    // elsewhere (or before this screen opened) shows up on the canvas.
+    LaunchedEffect(Unit) { viewModel.refreshDevicePads() }
+
     // Clear-pad confirmation. Always available: the pad may hold a sample on the DEVICE that the
     // canvas (a staging view) never showed, so clearing writes {"sym":0} to the hardware pad.
     var confirmClear by remember { mutableStateOf(false) }
     if (confirmClear) {
         val padLabel = KB_PAD_LABELS[s.selectedPad]
-        val localSample = s.assignments[s.selectedPad]
+        val padSampleName = s.assignments[s.selectedPad]?.name ?: s.devicePads[s.selectedPad]
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             containerColor = t.panel,
@@ -328,8 +373,8 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
             title = { Text("Clear pad $padLabel?", fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    if (localSample != null) {
-                        "Removes \"${localSample.name}\" from pad $padLabel of group ${s.group.name} on the EP-133."
+                    if (padSampleName != null) {
+                        "Removes \"$padSampleName\" from pad $padLabel of group ${s.group.name} on the EP-133."
                     } else {
                         "Unbinds whatever sample is on pad $padLabel of group ${s.group.name} on the EP-133."
                     },
@@ -391,6 +436,7 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                             KbPadCell(
                                 label = label,
                                 sample = s.assignments[idx],
+                                deviceName = s.devicePads[idx],
                                 selected = idx == s.selectedPad,
                                 loadState = s.loadStates[idx],
                                 modifier = Modifier.weight(1f),
@@ -584,6 +630,7 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
 private fun KbPadCell(
     label: String,
     sample: KitSample?,
+    deviceName: String?,
     selected: Boolean,
     loadState: KbLoadState?,
     modifier: Modifier,
@@ -591,10 +638,14 @@ private fun KbPadCell(
 ) {
     val t = LocalEP133Tokens.current
     val shape = RoundedCornerShape(12.dp)
-    val filled = sample != null
+    val staged = sample != null
+    // A pad already holding a device sample (and not being restaged) reads as "on device": a dark
+    // pad face like empty, but with the sample name — distinct from the bright accent of a staged
+    // pack sample about to be uploaded.
+    val onDevice = !staged && deviceName != null
     val bg = when {
         loadState == KbLoadState.Error -> KbError
-        filled -> t.accent
+        staged -> t.accent
         else -> t.padFace
     }
     Column(
@@ -610,32 +661,38 @@ private fun KbPadCell(
         Row(Modifier.fillMaxWidth()) {
             Text(label, fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.Bold,
                 color = when {
-                    filled -> PadFilledInk
+                    staged -> PadFilledInk
+                    onDevice -> t.text2
                     selected -> t.live
                     else -> t.text3
                 },
                 modifier = Modifier.weight(1f))
-            when (loadState) {
-                KbLoadState.Uploading -> Text("…", fontFamily = Mono, fontSize = 10.sp,
+            when {
+                loadState == KbLoadState.Uploading -> Text("…", fontFamily = Mono, fontSize = 10.sp,
                     fontWeight = FontWeight.Bold, color = PadFilledInk)
-                KbLoadState.Done -> Text("✓", fontFamily = Mono, fontSize = 10.sp,
+                loadState == KbLoadState.Done -> Text("✓", fontFamily = Mono, fontSize = 10.sp,
                     fontWeight = FontWeight.Bold, color = PadFilledInk.copy(alpha = 0.7f))
-                KbLoadState.Error -> Text("✕", fontFamily = Mono, fontSize = 10.sp,
+                loadState == KbLoadState.Error -> Text("✕", fontFamily = Mono, fontSize = 10.sp,
                     fontWeight = FontWeight.Bold, color = PadEmptyInk)
+                // Marker for a pad that's occupied on the device but not (re)staged from a pack.
+                onDevice -> Text("◉", fontFamily = Mono, fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold, color = t.text3)
                 else -> {}
             }
         }
         Text(
             text = when {
                 sample != null -> sample.name
+                deviceName != null -> deviceName
                 selected -> "assign →"
                 else -> "empty"
             },
             fontFamily = Mono, fontSize = 9.sp,
-            fontWeight = if (filled) FontWeight.SemiBold else FontWeight.Normal,
+            fontWeight = if (staged || onDevice) FontWeight.SemiBold else FontWeight.Normal,
             color = when {
                 loadState == KbLoadState.Error -> PadEmptyInk
-                filled -> PadFilledInk
+                staged -> PadFilledInk
+                onDevice -> t.text2
                 selected -> t.live
                 else -> t.text3
             },
