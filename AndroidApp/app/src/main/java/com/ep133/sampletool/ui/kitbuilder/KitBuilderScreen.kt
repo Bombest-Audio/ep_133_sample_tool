@@ -500,54 +500,11 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                 }
             }
 
-            // ── Footer ──
+            // ── Footer — fill meter + LOAD. GROUP + CHOKE live in the pinned header shared with CHOP. ──
             Column(
                 Modifier.fillMaxWidth().background(t.panel2).padding(14.dp, 10.dp, 14.dp, 12.dp),
                 verticalArrangement = Arrangement.spacedBy(9.dp),
             ) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("GROUP", fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.sp, color = t.text3)
-                    PadChannel.entries.forEach { g ->
-                        val on = s.group == g
-                        Box(
-                            Modifier.weight(1f).clip(PanelRadius)
-                                .background(if (on) t.padFace else t.panel, PanelRadius)
-                                .border(1.dp, if (on) t.padEdge else t.rule, PanelRadius)
-                                .clickable { viewModel.onGroupChange(g) }
-                                .padding(vertical = 7.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(g.name, fontFamily = Mono, fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                                color = if (on) PadEmptyInk else t.text3)
-                        }
-                    }
-                }
-
-                // Choke-group toggle: pads in the group cut each other off (sound.mutegroup).
-                Row(
-                    Modifier.fillMaxWidth().clip(PanelRadius).background(t.panel, PanelRadius)
-                        .border(1.dp, t.rule, PanelRadius)
-                        .clickable { viewModel.onChokeGroupChange(!s.chokeGroup) }
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("CHOKE GROUP", fontFamily = Mono, fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp, color = t.text)
-                        Text("pads cut each other off", fontFamily = Mono, fontSize = 8.5.sp, color = t.text3)
-                    }
-                    Box(
-                        Modifier.clip(PanelRadius)
-                            .background(if (s.chokeGroup) t.accent else t.chrome, PanelRadius)
-                            .padding(horizontal = 12.dp, vertical = 5.dp),
-                    ) {
-                        Text(if (s.chokeGroup) "ON" else "OFF", fontFamily = Mono, fontSize = 9.5.sp,
-                            fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp,
-                            color = if (s.chokeGroup) t.onAccent else t.text2)
-                    }
-                }
-
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     // Fill count + bars

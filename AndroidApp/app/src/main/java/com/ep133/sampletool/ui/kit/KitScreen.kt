@@ -58,7 +58,7 @@ import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderScreen
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
-import com.ep133.sampletool.ui.theme.Ep133GroupChip
+import com.ep133.sampletool.ui.theme.Ep133GroupChokeBar
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
@@ -1000,6 +1000,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
     val items by viewModel.items.collectAsState()
     val stagedLoop by viewModel.stagedLoop.collectAsState()
     val chokeGroup by viewModel.chokeGroup.collectAsState()
+    val builderState by builderViewModel.state.collectAsState()
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollState = rememberScrollState()
@@ -1085,6 +1086,24 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                     }
                 }
             }
+
+            // Shared group + choke bar — pinned in the same spot for BOTH modes, routed to the
+            // active mode's ViewModel so CHOP and KIT present identical controls in one place.
+            if (mode == KitMode.CHOP) {
+                Ep133GroupChokeBar(
+                    group = selectedGroup,
+                    onGroupChange = { viewModel.onGroupChange(it) },
+                    chokeOn = chokeGroup,
+                    onChokeChange = { viewModel.onChokeGroupChange(it) },
+                )
+            } else {
+                Ep133GroupChokeBar(
+                    group = builderState.group,
+                    onGroupChange = { builderViewModel.onGroupChange(it) },
+                    chokeOn = builderState.chokeGroup,
+                    onChokeChange = { builderViewModel.onChokeGroupChange(it) },
+                )
+            }
           }
 
           if (mode == KitMode.KIT) {
@@ -1104,58 +1123,6 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 .padding(top = 11.dp),
             verticalArrangement = Arrangement.spacedBy(11.dp),
           ) {
-
-            // Group picker: A | B | C | D.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                PadChannel.entries.forEach { ch ->
-                    Ep133GroupChip(
-                        label = ch.name,
-                        selected = selectedGroup == ch,
-                        modifier = Modifier.weight(1f),
-                        onClick = { viewModel.onGroupChange(ch) },
-                    )
-                }
-            }
-
-            // Choke-group toggle: write sound.mutegroup=true so pads in the group cut each other off.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(PanelRadius)
-                    .background(t.inset, PanelRadius)
-                    .border(1.dp, t.rule, PanelRadius)
-                    .clickable { viewModel.onChokeGroupChange(!chokeGroup) }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "CHOKE GROUP",
-                        fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.6.sp, color = t.text,
-                    )
-                    Text(
-                        "pads in the group cut each other off",
-                        fontFamily = Mono, fontSize = 9.sp, color = t.text3,
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .clip(PanelRadius)
-                        .background(if (chokeGroup) t.accent else t.chrome, PanelRadius)
-                        .padding(horizontal = 14.dp, vertical = 6.dp),
-                ) {
-                    Text(
-                        if (chokeGroup) "ON" else "OFF",
-                        fontFamily = Mono, fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.8.sp,
-                        color = if (chokeGroup) t.onAccent else t.text2,
-                    )
-                }
-            }
 
             // The pad grid is both the chop slice-count SELECTOR (idle) and the upload PROGRESS
             // indicator (once a chop or kit build is running/done). One grid, two modes.
