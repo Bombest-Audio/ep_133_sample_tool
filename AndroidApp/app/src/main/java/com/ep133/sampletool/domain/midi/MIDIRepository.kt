@@ -1264,38 +1264,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         return fileOpMutex.withLock {
             ensureFileSessionInitNoLock()
             try {
-                // Resolve active project name (same path as getActiveGroupIndexNoLock / setActiveGroup).
-                val projectsNode = resolveNodeIdInternal("/projects") ?: run {
-                    Log.w("EP133APP", "assignSampleToPad: cannot resolve /projects")
-                    return@withLock false
-                }
-                val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
-                    .takeIf { it >= 0 } ?: run {
-                    Log.w("EP133APP", "assignSampleToPad: no active project in /projects metadata")
-                    return@withLock false
-                }
-                val projName = getNodeInfo(activeProjNodeId)?.name ?: run {
-                    Log.w("EP133APP", "assignSampleToPad: cannot get project name for nodeId=$activeProjNodeId")
-                    return@withLock false
-                }
-
-                // Resolve the group directory and list its children to find the pad node.
-                val groupDirPath = "/projects/$projName/groups/${group.name}"
-                val groupDirNode = resolveNodeIdInternal(groupDirPath) ?: run {
-                    Log.w("EP133APP", "assignSampleToPad: cannot resolve $groupDirPath")
-                    return@withLock false
-                }
-                val body = listNodeBody(groupDirNode, requestId = nextFileReqId()) ?: run {
-                    Log.w("EP133APP", "assignSampleToPad: FILE_LIST for $groupDirPath returned null")
-                    return@withLock false
-                }
-                // Pad node name = "%02d".format(gridIndex + 1) per hardware-verified naming.
-                val padName = "%02d".format(gridIndex + 1)
-                val padEntry = SysExProtocol.parseFileListEntries(body).firstOrNull { it.name == padName } ?: run {
-                    Log.w("EP133APP", "assignSampleToPad: pad '$padName' not found in $groupDirPath — entries=${SysExProtocol.parseFileListEntries(body).map { it.name }}")
-                    return@withLock false
-                }
-                val padNodeId = padEntry.nodeId
+                val padNodeId = resolvePadNodeIdNoLock(group, gridIndex) ?: return@withLock false
 
                 // Build and write the hardware-verified pad metadata JSON.
                 val json = buildPadAssignmentJson(sampleNodeId, sampleStart, sampleEnd, playmode, muteGroup)
@@ -1328,6 +1297,62 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         playmode: String,
         muteGroup: Boolean = false,
     ): String = """{"sym":$sampleNodeId,"sample.start":$sampleStart,"sample.end":$sampleEnd,"sound.playmode":"$playmode","sound.amplitude":100,"sound.pan":0,"sound.pitch":0.00,"envelope.attack":0,"envelope.release":255,"sound.mutegroup":$muteGroup,"time.mode":"off","midi.channel":0}"""
+
+    /**
+     * Metadata for an empty (unbound) pad — the device's own representation. Hardware-verified:
+     * an empty pad's FILE_METADATA GET returns exactly `{"sym":0}` (see pad dumps), so SET-ting
+     * it back unbinds the pad.
+     */
+    private val padEmptyJson = """{"sym":0}"""
+
+    /**
+     * Resolve a pad node id at `/projects/<active>/groups/<X>/<NN>` inside a [fileOpMutex]-locked
+     * context. Shared by [assignSampleToPad] and [clearPad].
+     */
+    private suspend fun resolvePadNodeIdNoLock(group: PadChannel, gridIndex: Int): Int? {
+        val projectsNode = resolveNodeIdInternal("/projects") ?: run {
+            Log.w("EP133APP", "resolvePadNode: cannot resolve /projects"); return null
+        }
+        val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1).takeIf { it >= 0 } ?: run {
+            Log.w("EP133APP", "resolvePadNode: no active project in /projects metadata"); return null
+        }
+        val projName = getNodeInfo(activeProjNodeId)?.name ?: run {
+            Log.w("EP133APP", "resolvePadNode: cannot get project name for nodeId=$activeProjNodeId"); return null
+        }
+        val groupDirPath = "/projects/$projName/groups/${group.name}"
+        val groupDirNode = resolveNodeIdInternal(groupDirPath) ?: run {
+            Log.w("EP133APP", "resolvePadNode: cannot resolve $groupDirPath"); return null
+        }
+        val body = listNodeBody(groupDirNode, requestId = nextFileReqId()) ?: run {
+            Log.w("EP133APP", "resolvePadNode: FILE_LIST for $groupDirPath returned null"); return null
+        }
+        // Pad node name = "%02d".format(gridIndex + 1) per hardware-verified naming.
+        val padName = "%02d".format(gridIndex + 1)
+        return SysExProtocol.parseFileListEntries(body).firstOrNull { it.name == padName }?.nodeId ?: run {
+            Log.w("EP133APP", "resolvePadNode: pad '$padName' not found in $groupDirPath"); return null
+        }
+    }
+
+    /**
+     * Unbind a pad on the device: write the empty-pad metadata (`{"sym":0}`) to the pad node so it
+     * plays nothing. Returns false if there's no output port or the pad can't be resolved.
+     */
+    open suspend fun clearPad(group: PadChannel, gridIndex: Int): Boolean {
+        if (_deviceState.value.outputPortId == null) return false
+        return fileOpMutex.withLock {
+            ensureFileSessionInitNoLock()
+            try {
+                val padNodeId = resolvePadNodeIdNoLock(group, gridIndex) ?: return@withLock false
+                Log.d("EP133APP", "clearPad: group=${group.name} gridIndex=$gridIndex padNode=$padNodeId")
+                setMetadata(padNodeId, padEmptyJson)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("EP133APP", "clearPad(${group.name}[$gridIndex]) failed", e)
+                false
+            }
+        }
+    }
 
     /**
      * Resolve the /sounds directory node ID inside a [fileOpMutex] locked context.

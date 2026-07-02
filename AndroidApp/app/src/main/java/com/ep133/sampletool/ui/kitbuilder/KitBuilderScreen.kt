@@ -22,14 +22,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -93,6 +98,7 @@ data class KitBuilderState(
     val loading: Boolean = false,
     val loadStates: Map<Int, KbLoadState> = emptyMap(),
     val loadedBanner: String? = null,
+    val clearingPad: Int? = null,
 )
 
 class KitBuilderViewModel(
@@ -152,8 +158,29 @@ class KitBuilderViewModel(
     fun onGroupChange(group: PadChannel) = _state.update { it.copy(group = group) }
     fun onPadSelected(index: Int) = _state.update { it.copy(selectedPad = index) }
 
-    fun onClearPad() = _state.update { s ->
-        if (s.assignments.containsKey(s.selectedPad)) s.copy(assignments = s.assignments - s.selectedPad) else s
+    /**
+     * Clear the selected pad ON THE DEVICE (write `{"sym":0}`), then drop it from the local canvas.
+     * The device may hold a sample the canvas never showed (it's a staging view, not a live mirror),
+     * so this always targets the hardware pad rather than the local map.
+     */
+    fun onClearPad() {
+        val group = _state.value.group
+        val pad = _state.value.selectedPad
+        _state.update { it.copy(clearingPad = pad) }
+        viewModelScope.launch {
+            val ok = deviceMutex.withLock { midi.clearPad(group, pad) }
+            _state.update {
+                it.copy(
+                    clearingPad = null,
+                    assignments = if (ok) it.assignments - pad else it.assignments,
+                )
+            }
+            _snackbarMessage.value = if (ok) {
+                "Cleared pad ${KB_PAD_LABELS[pad]} on group ${group.name}"
+            } else {
+                "Couldn't clear pad ${KB_PAD_LABELS[pad]} — is the EP-133 connected?"
+            }
+        }
     }
 
     /** Assign [sample] to the selected pad, then auto-advance to the next empty pad in fill order. */
@@ -283,6 +310,47 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
         snackbarMessage?.let { snackbarHostState.showSnackbar(it); viewModel.dismissSnackbar() }
     }
 
+    // Clear-pad confirmation. Always available: the pad may hold a sample on the DEVICE that the
+    // canvas (a staging view) never showed, so clearing writes {"sym":0} to the hardware pad.
+    var confirmClear by remember { mutableStateOf(false) }
+    if (confirmClear) {
+        val padLabel = KB_PAD_LABELS[s.selectedPad]
+        val localSample = s.assignments[s.selectedPad]
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            containerColor = t.panel,
+            titleContentColor = t.text,
+            textContentColor = t.text2,
+            shape = PanelRadius,
+            title = { Text("Clear pad $padLabel?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    if (localSample != null) {
+                        "Removes \"${localSample.name}\" from pad $padLabel of group ${s.group.name} on the EP-133."
+                    } else {
+                        "Unbinds whatever sample is on pad $padLabel of group ${s.group.name} on the EP-133."
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { viewModel.onClearPad(); confirmClear = false },
+                    colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
+                ) {
+                    Text("Clear", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { confirmClear = false },
+                    colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
+                ) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
     Box(modifier.background(t.bg)) {
         Column(Modifier.fillMaxSize()) {
 
@@ -298,16 +366,18 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                         Text(s.pack?.name ?: "no pack loaded", fontFamily = Mono, fontSize = 9.sp,
                             color = t.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    val clearActive = s.assignments.containsKey(s.selectedPad)
+                    val clearing = s.clearingPad != null
                     Box(
                         Modifier.clip(PanelRadius).background(t.panel, PanelRadius)
-                            .border(1.dp, if (clearActive) t.rule else t.ruleSoft, PanelRadius)
-                            .clickable(enabled = clearActive) { viewModel.onClearPad() }
+                            .border(1.dp, t.rule, PanelRadius)
+                            .clickable(enabled = !clearing) { confirmClear = true }
                             .padding(horizontal = 8.dp, vertical = 5.dp),
                     ) {
-                        Text("⌫ CLEAR PAD ${KB_PAD_LABELS[s.selectedPad]}", fontFamily = Mono,
-                            fontSize = 9.sp, fontWeight = FontWeight.Bold,
-                            color = if (clearActive) t.accentInk else t.text3)
+                        Text(
+                            if (clearing) "CLEARING…" else "⌫ CLEAR PAD ${KB_PAD_LABELS[s.selectedPad]}",
+                            fontFamily = Mono, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                            color = t.accentInk,
+                        )
                     }
                 }
 
