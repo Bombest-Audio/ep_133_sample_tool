@@ -77,7 +77,8 @@ object SysExProtocol {
      * Pack 8-bit data bytes into MIDI-safe 7-bit encoding.
      *
      * For each group of up to 7 input bytes:
-     * - A leading byte holds the high bits (bit 7 of each data byte), packed MSB-first
+     * - A leading byte holds the high bits (bit 7 of each data byte), packed LSB-first
+     *   (bit j of the leading byte carries the high bit of data byte j)
      * - Each data byte is then written with its high bit cleared (AND 0x7F)
      *
      * All output bytes are < 128 and therefore MIDI SysEx-safe.
