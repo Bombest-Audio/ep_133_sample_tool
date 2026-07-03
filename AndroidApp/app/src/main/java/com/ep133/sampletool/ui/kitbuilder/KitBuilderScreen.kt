@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.MediaPlayer
 import android.net.Uri
 import android.util.Log
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -386,6 +387,7 @@ private val KbError = androidx.compose.ui.graphics.Color(0xFFD0021B)
  * Kit Builder (implements the "Kit Builder" design): pick a pack folder, browse categories,
  * audition one-shots, assign them pad-first onto the 4×3 canvas, and LOAD the kit to a group.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifier.fillMaxSize()) {
     val t = LocalEP133Tokens.current
@@ -445,9 +447,14 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
 
     Box(modifier.background(t.bg)) {
         Column(Modifier.fillMaxSize()) {
+          // One lazy scroll surface for canvas + tabs + samples: Compose forbids nesting a lazy
+          // list inside a scrollable column, so the whole page IS the list — the canvas scrolls
+          // away and the sample browser gets the full height. Category tabs pin as a sticky header.
+          LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
 
             // ── Kit canvas ──
-            Column(
+            item {
+              Column(
                 Modifier.fillMaxWidth().background(t.bg).padding(14.dp, 12.dp, 14.dp, 10.dp),
                 verticalArrangement = Arrangement.spacedBy(9.dp),
             ) {
@@ -489,11 +496,13 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                         }
                     }
                 }
+              }
             }
 
-            // ── Category tabs ──
+            // ── Category tabs — sticky so the browser keeps context while the samples scroll ──
             val pack = s.pack
             if (pack != null) {
+                stickyHeader {
                 Row(
                     Modifier.fillMaxWidth().background(t.panel)
                         .horizontalScroll(rememberScrollState())
@@ -520,13 +529,13 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                         }
                     }
                 }
+                }
 
-                // ── Sample list ──
+                // ── Sample list — flattened into the page-level LazyColumn ──
                 val samples = pack.categories.firstOrNull { it.id == s.category }?.samples.orEmpty()
                 val uriToPad = s.assignments.entries.associate { (idx, smp) -> smp.uri to KB_PAD_LABELS[idx] }
-                LazyColumn(Modifier.weight(1f).fillMaxWidth().background(t.panel)) {
                     item {
-                        Row(Modifier.fillMaxWidth().padding(14.dp, 8.dp, 14.dp, 4.dp)) {
+                        Row(Modifier.fillMaxWidth().background(t.panel).padding(14.dp, 8.dp, 14.dp, 4.dp)) {
                             Text("${s.category} · ${samples.size}", fontFamily = Mono, fontSize = 9.sp,
                                 letterSpacing = 1.2.sp, color = t.text3, modifier = Modifier.weight(1f))
                             Text("TAP ROW → PAD ${KB_PAD_LABELS[s.selectedPad]}", fontFamily = Mono,
@@ -570,11 +579,11 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                             }
                         }
                     }
-                }
             } else {
                 // Empty state — no pack loaded yet.
+                item {
                 Column(
-                    Modifier.weight(1f).fillMaxWidth().background(t.panel).padding(24.dp),
+                    Modifier.fillParentMaxHeight(0.5f).fillMaxWidth().background(t.panel).padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
@@ -588,7 +597,9 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                         textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp),
                     )
                 }
+                }
             }
+          }
 
             // ── Footer — fill meter + pack switcher. GROUP + CHOKE live in the pinned header
             // shared with CHOP; the push action is the shared PUSH TO DEVICE button below. ──
