@@ -108,17 +108,19 @@ fun Ep133GroupChip(
     label: String,
     selected: Boolean,
     modifier: Modifier = Modifier,
+    subLabel: String? = null,
     onClick: () -> Unit,
 ) {
     val t = LocalEP133Tokens.current
-    Box(
+    Column(
         modifier = modifier
             .clip(Radius)
             .background(if (selected) t.accent else t.inset, Radius)
             .border(1.dp, if (selected) t.accent else t.rule, Radius)
             .clickable { onClick() }
-            .padding(vertical = 9.dp, horizontal = 14.dp),
-        contentAlignment = Alignment.Center,
+            .padding(vertical = if (subLabel != null) 6.dp else 9.dp, horizontal = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(1.dp),
     ) {
         Text(
             label,
@@ -127,6 +129,16 @@ fun Ep133GroupChip(
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
         )
+        if (subLabel != null) {
+            Text(
+                subLabel,
+                color = if (selected) t.onAccent.copy(alpha = 0.75f) else t.text3,
+                fontFamily = Mono,
+                fontSize = 7.5.sp,
+                letterSpacing = 0.8.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
     }
 }
 
@@ -144,16 +156,18 @@ fun Ep133GroupChokeBar(
     chokeOn: Boolean,
     onChokeChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    tagFor: ((PadChannel) -> String?)? = null,
 ) {
     val t = LocalEP133Tokens.current
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        // A | B | C | D — one chip per group, equal width.
+        // A | B | C | D — one chip per group, equal width, each tagged with its designation.
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             PadChannel.entries.forEach { ch ->
                 Ep133GroupChip(
                     label = ch.name,
                     selected = group == ch,
                     modifier = Modifier.weight(1f),
+                    subLabel = tagFor?.invoke(ch),
                     onClick = { onGroupChange(ch) },
                 )
             }

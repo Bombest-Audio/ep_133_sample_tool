@@ -26,6 +26,7 @@ import com.ep133.sampletool.ui.EP133App
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
+import com.ep133.sampletool.ui.kit.GroupSession
 import com.ep133.sampletool.ui.kit.KitViewModel
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 import androidx.compose.runtime.collectAsState
@@ -69,8 +70,11 @@ class MainActivity : ComponentActivity() {
         val projectsViewModel = ProjectsViewModel(midiRepo, projectBackupManager, projectNameStore)
         val deviceViewModel = DeviceViewModel(midiRepo)
         val sampleImportManager = SampleImportManager(midiRepo)
-        val kitViewModel = KitViewModel(midiRepo, sampleImportManager)
-        val kitBuilderViewModel = KitBuilderViewModel(midiRepo, sampleImportManager)
+        // ONE GroupSession shared by the chopper and the Kit Builder — group selection, per-group
+        // CHOP/KIT designation, and choke are a single source of truth, persisted across launches.
+        val groupSession = GroupSession(getSharedPreferences("ep133_group_session", MODE_PRIVATE))
+        val kitViewModel = KitViewModel(midiRepo, sampleImportManager, groupSession)
+        val kitBuilderViewModel = KitBuilderViewModel(midiRepo, sampleImportManager, groupSession)
 
         // SAF launchers — MUST be registered before setContent (Activity lifecycle constraint).
         // See STATE.md decision: "SAF launchers must be registered before setContent() in MainActivity"

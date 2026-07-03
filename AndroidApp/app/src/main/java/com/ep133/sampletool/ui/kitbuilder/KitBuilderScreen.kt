@@ -53,15 +53,18 @@ import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.domain.pack.KitPack
 import com.ep133.sampletool.domain.pack.KitSample
 import com.ep133.sampletool.domain.pack.SamplePackLoader
-import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
+import com.ep133.sampletool.ui.kit.GroupSession
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -88,32 +91,72 @@ private val KB_FILL_RANK = intArrayOf(10, 11, 12, 7, 8, 9, 4, 5, 6, 1, 2, 3)
 /** Per-pad load status while a kit upload runs. */
 enum class KbLoadState { Idle, Uploading, Done, Error }
 
-/** UI state for the Kit Builder screen (single group at a time; kit itself is per-pad). */
-data class KitBuilderState(
-    val pack: KitPack? = null,
-    val packLoading: Boolean = false,
-    val category: String? = null,
+/**
+ * Per-group Kit Builder working state: each A/B/C/D group keeps its own staged kit, pad selection,
+ * upload progress, and device mirror. Switching groups never discards a staged kit.
+ */
+data class KbGroupState(
     val selectedPad: Int = 9,                       // visual idx of '.' — first pad in fill order
     val assignments: Map<Int, KitSample> = emptyMap(),
-    val group: PadChannel = PadChannel.A,
-    val auditioningUri: Uri? = null,
     val loading: Boolean = false,
     val loadStates: Map<Int, KbLoadState> = emptyMap(),
     val loadedBanner: String? = null,
     val clearingPad: Int? = null,
-    val chokeGroup: Boolean = true,
-    // gridIndex → sample name currently bound on the DEVICE for [group] (read back from hardware).
-    // Distinct from [assignments], which are pack samples staged locally but not yet uploaded.
+    // gridIndex → sample name currently bound on the DEVICE for this group (read back from
+    // hardware). Distinct from [assignments], which are staged locally but not yet uploaded.
     val devicePads: Map<Int, String> = emptyMap(),
+)
+
+/**
+ * Flattened UI state the Kit Builder screen renders: the pack browser globals plus the SELECTED
+ * group's [KbGroupState], with group + choke sourced from the shared [GroupSession].
+ */
+data class KitBuilderState(
+    val pack: KitPack? = null,
+    val packLoading: Boolean = false,
+    val category: String? = null,
+    val auditioningUri: Uri? = null,
+    val group: PadChannel = PadChannel.A,
+    val chokeGroup: Boolean = true,
+    val selectedPad: Int = 9,
+    val assignments: Map<Int, KitSample> = emptyMap(),
+    val loading: Boolean = false,
+    val loadStates: Map<Int, KbLoadState> = emptyMap(),
+    val loadedBanner: String? = null,
+    val clearingPad: Int? = null,
+    val devicePads: Map<Int, String> = emptyMap(),
+)
+
+/** The pack-browser globals (shared across groups — a pack is a browsing resource, not kit state). */
+private data class KbGlobals(
+    val pack: KitPack? = null,
+    val packLoading: Boolean = false,
+    val category: String? = null,
+    val auditioningUri: Uri? = null,
 )
 
 class KitBuilderViewModel(
     private val midi: MIDIRepository,
     private val manager: SampleImportManager,
+    private val session: GroupSession = GroupSession(),
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(KitBuilderState())
-    val state: StateFlow<KitBuilderState> = _state.asStateFlow()
+    private val _globals = MutableStateFlow(KbGlobals())
+    private val _groups = MutableStateFlow(PadChannel.entries.associateWith { KbGroupState() })
+
+    /** Flattened state for the UI: globals + the selected group's state + session group/choke. */
+    val state: StateFlow<KitBuilderState> =
+        combine(_globals, _groups, session.selected, session.choke) { g, groups, sel, choke ->
+            val gs = groups.getValue(sel)
+            KitBuilderState(
+                pack = g.pack, packLoading = g.packLoading, category = g.category,
+                auditioningUri = g.auditioningUri,
+                group = sel, chokeGroup = choke.getValue(sel),
+                selectedPad = gs.selectedPad, assignments = gs.assignments,
+                loading = gs.loading, loadStates = gs.loadStates, loadedBanner = gs.loadedBanner,
+                clearingPad = gs.clearingPad, devicePads = gs.devicePads,
+            )
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, KitBuilderState())
 
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
@@ -124,41 +167,50 @@ class KitBuilderViewModel(
     private val deviceMutex = Mutex()
     private var player: MediaPlayer? = null
 
+    private fun updateGroup(g: PadChannel, block: (KbGroupState) -> KbGroupState) {
+        _groups.update { it + (g to block(it.getValue(g))) }
+    }
+    private fun updateCurrent(block: (KbGroupState) -> KbGroupState) =
+        updateGroup(session.selected.value, block)
+
     init {
-        // Hydrate the canvas from the device whenever a unit connects (and clear it on unplug), so
-        // the pads mirror what's actually loaded instead of showing a blank staging grid.
+        // Hydrate the canvas from the device whenever a unit connects (and clear the mirrors on
+        // unplug), so the pads reflect what's actually loaded instead of a blank staging grid.
         viewModelScope.launch {
             midi.deviceState
                 .map { it.connected }
                 .distinctUntilChanged()
                 .collect { connected ->
                     if (connected) refreshDevicePads()
-                    else _state.update { it.copy(devicePads = emptyMap()) }
+                    else _groups.update { m -> m.mapValues { (_, gs) -> gs.copy(devicePads = emptyMap()) } }
                 }
+        }
+        // Re-read whenever the shared selection moves to a group we haven't mirrored yet.
+        viewModelScope.launch {
+            session.selected.collect { refreshDevicePads(it) }
         }
     }
 
     fun dismissSnackbar() { _snackbarMessage.value = null }
-    fun dismissBanner() = _state.update { it.copy(loadedBanner = null) }
+    fun dismissBanner() = updateCurrent { it.copy(loadedBanner = null) }
 
     fun triggerPackPick() { onRequestPackPick?.invoke() }
 
     /**
-     * Read the selected group's current pad bindings off the device and show them on the canvas.
-     * The response is only applied if the selected group hasn't changed since the read started, so
-     * a slow read for a previous group can't clobber the current one.
+     * Read [group]'s current pad bindings off the device and mirror them on that group's canvas.
+     * Results are keyed by the group they were read for, so a slow read can never land on the
+     * wrong group even if the selection moves mid-flight.
      */
-    fun refreshDevicePads() {
-        val group = _state.value.group
+    fun refreshDevicePads(group: PadChannel = session.selected.value) {
         viewModelScope.launch {
             val pads = midi.readGroupPadState(group)
-            _state.update { if (it.group == group) it.copy(devicePads = pads) else it }
+            updateGroup(group) { it.copy(devicePads = pads) }
         }
     }
 
     /** SAF OpenDocumentTree callback: parse the pack folder into categories. */
     fun onPackPicked(treeUri: Uri, context: Context) {
-        _state.update { it.copy(packLoading = true) }
+        _globals.update { it.copy(packLoading = true) }
         viewModelScope.launch {
             val pack = try {
                 SamplePackLoader.load(context, treeUri)
@@ -167,36 +219,28 @@ class KitBuilderViewModel(
             } catch (e: Exception) {
                 Log.e(TAG, "KitBuilder: pack load failed", e)
                 _snackbarMessage.value = "Couldn't read pack: ${e.message ?: e}"
-                _state.update { it.copy(packLoading = false) }
+                _globals.update { it.copy(packLoading = false) }
                 return@launch
             }
             if (pack.isEmpty) {
                 _snackbarMessage.value = "No audio files found in that folder"
-                _state.update { it.copy(packLoading = false) }
+                _globals.update { it.copy(packLoading = false) }
                 return@launch
             }
-            _state.update {
-                it.copy(
-                    pack = pack,
-                    packLoading = false,
-                    category = pack.categories.first().id,
-                    loadStates = emptyMap(),
-                    loadedBanner = null,
-                )
+            _globals.update {
+                it.copy(pack = pack, packLoading = false, category = pack.categories.first().id)
             }
+            updateCurrent { it.copy(loadStates = emptyMap(), loadedBanner = null) }
         }
     }
 
-    fun onCategoryChange(id: String) = _state.update { it.copy(category = id) }
+    fun onCategoryChange(id: String) = _globals.update { it.copy(category = id) }
 
-    /** Switch target group; drop the old group's device pads immediately and re-read the new one. */
-    fun onGroupChange(group: PadChannel) {
-        _state.update { it.copy(group = group, devicePads = emptyMap()) }
-        refreshDevicePads()
-    }
+    /** Switch the shared group selection (device re-read happens via the session observer). */
+    fun onGroupChange(group: PadChannel) = session.select(group)
 
-    fun onChokeGroupChange(on: Boolean) = _state.update { it.copy(chokeGroup = on) }
-    fun onPadSelected(index: Int) = _state.update { it.copy(selectedPad = index) }
+    fun onChokeGroupChange(on: Boolean) = session.setChoke(session.selected.value, on)
+    fun onPadSelected(index: Int) = updateCurrent { it.copy(selectedPad = index) }
 
     /**
      * Clear the selected pad ON THE DEVICE (write `{"sym":0}`), then drop it from the local canvas.
@@ -204,12 +248,12 @@ class KitBuilderViewModel(
      * so this always targets the hardware pad rather than the local map.
      */
     fun onClearPad() {
-        val group = _state.value.group
-        val pad = _state.value.selectedPad
-        _state.update { it.copy(clearingPad = pad) }
+        val group = session.selected.value
+        val pad = _groups.value.getValue(group).selectedPad
+        updateGroup(group) { it.copy(clearingPad = pad) }
         viewModelScope.launch {
             val ok = deviceMutex.withLock { midi.clearPad(group, pad) }
-            _state.update {
+            updateGroup(group) {
                 it.copy(
                     clearingPad = null,
                     assignments = if (ok) it.assignments - pad else it.assignments,
@@ -220,12 +264,12 @@ class KitBuilderViewModel(
             } else {
                 "Couldn't clear pad ${KB_PAD_LABELS[pad]} — is the EP-133 connected?"
             }
-            if (ok) refreshDevicePads()
+            if (ok) refreshDevicePads(group)
         }
     }
 
     /** Assign [sample] to the selected pad, then auto-advance to the next empty pad in fill order. */
-    fun onAssign(sample: KitSample) = _state.update { s ->
+    fun onAssign(sample: KitSample) = updateCurrent { s ->
         val assignments = s.assignments + (s.selectedPad to sample)
         var next = s.selectedPad
         val curRank = KB_FILL_RANK[s.selectedPad]
@@ -239,7 +283,7 @@ class KitBuilderViewModel(
 
     /** Toggle audition playback of [sample] via MediaPlayer (local preview, not the device). */
     fun onAudition(sample: KitSample, context: Context) {
-        val cur = _state.value.auditioningUri
+        val cur = _globals.value.auditioningUri
         stopAudition()
         if (cur == sample.uri) return   // tapped the playing row's button → just stop
         try {
@@ -250,7 +294,7 @@ class KitBuilderViewModel(
                 prepare()
                 start()
             }
-            _state.update { it.copy(auditioningUri = sample.uri) }
+            _globals.update { it.copy(auditioningUri = sample.uri) }
         } catch (e: Exception) {
             Log.e(TAG, "KitBuilder: audition failed for ${sample.name}", e)
             _snackbarMessage.value = "Can't play ${sample.name}"
@@ -262,19 +306,22 @@ class KitBuilderViewModel(
         try { player?.stop() } catch (_: Exception) {}
         try { player?.release() } catch (_: Exception) {}
         player = null
-        _state.update { it.copy(auditioningUri = null) }
+        _globals.update { it.copy(auditioningUri = null) }
     }
 
     /**
-     * Upload every assigned sample and bind it to its pad on the selected group.
-     * Serial (device transfers are single-in-flight); per-pad status drives the canvas.
-     * Pads are written with sound.mutegroup=true so the kit chokes within the group.
+     * Upload every staged sample and bind it to its pad on the group that was selected when the
+     * push started (captured up front — switching groups mid-push must not redirect writes).
+     * Serial (device transfers are single-in-flight); per-pad status drives that group's canvas.
+     * Pads are written with the group's choke setting as `sound.mutegroup`.
      */
     fun onLoadKit(context: Context) {
-        val s = _state.value
-        if (s.loading || s.assignments.isEmpty()) return
-        val entries = s.assignments.toSortedMap(compareBy { KB_FILL_RANK[it] })
-        _state.update {
+        val group = session.selected.value
+        val chokeOn = session.chokeFor(group)
+        val gs = _groups.value.getValue(group)
+        if (gs.loading || gs.assignments.isEmpty()) return
+        val entries = gs.assignments.toSortedMap(compareBy { KB_FILL_RANK[it] })
+        updateGroup(group) {
             it.copy(loading = true, loadedBanner = null,
                 loadStates = entries.keys.associateWith { KbLoadState.Idle })
         }
@@ -283,7 +330,7 @@ class KitBuilderViewModel(
             var ok = 0
             var failed = 0
             for ((padIdx, sample) in entries) {
-                _state.update { it.copy(loadStates = it.loadStates + (padIdx to KbLoadState.Uploading)) }
+                updateGroup(group) { it.copy(loadStates = it.loadStates + (padIdx to KbLoadState.Uploading)) }
                 val success = try {
                     val converted = withContext(Dispatchers.IO) { manager.convert(context, sample.uri) }
                     val frames = converted.pcm.size / 2 / converted.channels
@@ -295,10 +342,7 @@ class KitBuilderViewModel(
                         false
                     } else {
                         deviceMutex.withLock {
-                            midi.assignSampleToPad(
-                                _state.value.group, padIdx, nodeId, 0, frames,
-                                muteGroup = _state.value.chokeGroup,
-                            )
+                            midi.assignSampleToPad(group, padIdx, nodeId, 0, frames, muteGroup = chokeOn)
                         }
                     }
                 } catch (e: CancellationException) {
@@ -309,18 +353,18 @@ class KitBuilderViewModel(
                     false
                 }
                 if (success) ok++ else failed++
-                _state.update {
+                updateGroup(group) {
                     it.copy(loadStates = it.loadStates +
                         (padIdx to if (success) KbLoadState.Done else KbLoadState.Error))
                 }
             }
-            _state.update {
+            updateGroup(group) {
                 it.copy(loading = false,
-                    loadedBanner = if (failed == 0) "KIT LOADED → GROUP ${it.group.name} · $ok pads written"
-                    else "$failed FAILED · $ok loaded → GROUP ${it.group.name}")
+                    loadedBanner = if (failed == 0) "KIT LOADED → GROUP ${group.name} · $ok pads written"
+                    else "$failed FAILED · $ok loaded → GROUP ${group.name}")
             }
             // The just-written pads are now on the device — re-read so the canvas reflects them.
-            refreshDevicePads()
+            refreshDevicePads(group)
         }
     }
 
@@ -546,13 +590,14 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                 }
             }
 
-            // ── Footer — fill meter + LOAD. GROUP + CHOKE live in the pinned header shared with CHOP. ──
-            Column(
-                Modifier.fillMaxWidth().background(t.panel2).padding(14.dp, 10.dp, 14.dp, 12.dp),
-                verticalArrangement = Arrangement.spacedBy(9.dp),
-            ) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
+            // ── Footer — fill meter + pack switcher. GROUP + CHOKE live in the pinned header
+            // shared with CHOP; the push action is the shared PUSH TO DEVICE button below. ──
+            if (s.pack != null) {
+                Row(
+                    Modifier.fillMaxWidth().background(t.panel2).padding(14.dp, 10.dp, 14.dp, 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     // Fill count + bars
                     Column(
                         Modifier.clip(PanelRadius).background(t.panel, PanelRadius)
@@ -573,30 +618,15 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                             }
                         }
                     }
-                    if (s.pack == null) {
-                        Ep133PrimaryButton(
-                            label = if (s.packLoading) "READING…" else "PICK PACK FOLDER",
-                            modifier = Modifier.weight(1f),
-                            onClick = { if (!s.packLoading) viewModel.triggerPackPick() },
-                        )
-                    } else {
-                        Ep133PrimaryButton(
-                            label = when {
-                                s.loading -> "LOADING…"
-                                s.assignments.isEmpty() -> "ASSIGN PADS FIRST"
-                                else -> "LOAD KIT → ${s.group.name}"
-                            },
-                            modifier = Modifier.weight(1f),
-                            onClick = { if (!s.loading && s.assignments.isNotEmpty()) viewModel.onLoadKit(context) },
-                        )
-                    }
-                }
-                if (s.pack != null) {
+                    Text(
+                        "STAGED FOR GROUP ${s.group.name}",
+                        fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.sp, color = t.text3,
+                        modifier = Modifier.weight(1f),
+                    )
                     Text(
                         "PICK A DIFFERENT PACK",
-                        fontFamily = Mono, fontSize = 8.5.sp, letterSpacing = 1.sp, color = t.text3,
+                        fontFamily = Mono, fontSize = 8.5.sp, letterSpacing = 1.sp, color = t.text2,
                         modifier = Modifier
-                            .align(Alignment.CenterHorizontally)
                             .clickable { if (!s.loading) viewModel.triggerPackPick() }
                             .padding(2.dp),
                     )

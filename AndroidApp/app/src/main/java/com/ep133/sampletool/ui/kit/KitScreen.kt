@@ -128,10 +128,11 @@ data class KitResultItem(
 
 enum class KitItemState { Pending, Working, Done, Error }
 
-/** All per-group working state for one A/B/C/D group (see `KitViewModel._groups`). */
+/**
+ * Per-group chop working state (see `KitViewModel._groups`). The group's designation (CHOP/KIT)
+ * and choke setting live in [GroupSession] — the source of truth shared with the Kit Builder.
+ */
 data class GroupState(
-    val mode: KitMode = KitMode.CHOP,
-    val chokeGroup: Boolean = true,
     val sliceCountText: String = DEFAULT_SLICE_COUNT.toString(),
     val stagedLoop: StagedLoop? = null,
     val items: List<KitResultItem> = emptyList(),
@@ -179,30 +180,42 @@ fun KitResultItem.isError(): Boolean = state == KitItemState.Error
 class KitViewModel(
     private val midi: MIDIRepository,
     private val manager: SampleImportManager,
+    val session: GroupSession = GroupSession(),
 ) : ViewModel() {
 
-    // Which group's state the UI is showing/editing. Global (not per-group).
-    private val _selectedGroup = MutableStateFlow(PadChannel.A)
-    val selectedGroup: StateFlow<PadChannel> = _selectedGroup.asStateFlow()
+    // Which group's state the UI is showing/editing — owned by the shared GroupSession so the
+    // Kit Builder sees the same selection.
+    val selectedGroup: StateFlow<PadChannel> = session.selected
 
-    // Per-group working state: each A/B/C/D keeps its own mode, staged loop, slice count, choke, and
-    // chop/kit progress. Starting a chop on A and switching to B leaves A running and persisted.
+    // Per-group chop working state: each A/B/C/D keeps its own staged loop, slice count, and
+    // chop progress. Starting a chop on A and switching to B leaves A running and persisted.
     private val _groups = MutableStateFlow(PadChannel.entries.associateWith { GroupState() })
 
     private fun groupOf(g: PadChannel): GroupState = _groups.value.getValue(g)
     private fun updateGroup(g: PadChannel, block: (GroupState) -> GroupState) {
         _groups.update { it + (g to block(it.getValue(g))) }
     }
-    private fun updateCurrent(block: (GroupState) -> GroupState) = updateGroup(_selectedGroup.value, block)
+    private fun updateCurrent(block: (GroupState) -> GroupState) = updateGroup(session.selected.value, block)
 
     // Exposed state for the currently-selected group; re-emits when the selection or that group's
     // state changes. The UI collects these exactly as before — they just follow the selected group.
     private fun <T> derived(sel: (GroupState) -> T): StateFlow<T> =
-        combine(_selectedGroup, _groups) { g, m -> sel(m.getValue(g)) }
+        combine(session.selected, _groups) { g, m -> sel(m.getValue(g)) }
             .stateIn(viewModelScope, SharingStarted.Eagerly, sel(GroupState()))
 
-    val mode: StateFlow<KitMode> = derived { it.mode }
-    val chokeGroup: StateFlow<Boolean> = derived { it.chokeGroup }
+    /** The selected group's designation (CHOP/KIT) — drives which workflow the page shows. */
+    val mode: StateFlow<KitMode> =
+        combine(session.selected, session.designations) { g, d -> d.getValue(g) }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, session.designationFor(session.selected.value))
+
+    /** The selected group's choke setting. */
+    val chokeGroup: StateFlow<Boolean> =
+        combine(session.selected, session.choke) { g, c -> c.getValue(g) }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, session.chokeFor(session.selected.value))
+
+    /** Per-group designations for the whole bar (so each A/B/C/D chip can show its mode tag). */
+    val designations: StateFlow<Map<PadChannel, KitMode>> = session.designations
+
     val sliceCountText: StateFlow<String> = derived { it.sliceCountText }
     val items: StateFlow<List<KitResultItem>> = derived { it.items }
     val stagedLoop: StateFlow<StagedLoop?> = derived { it.stagedLoop }
@@ -229,15 +242,16 @@ class KitViewModel(
      */
     var onRequestKitPick: (() -> Unit)? = null
 
-    fun onModeChange(mode: KitMode) = updateCurrent { it.copy(mode = mode) }
-    fun onGroupChange(group: PadChannel) { _selectedGroup.value = group }
-    fun onChokeGroupChange(on: Boolean) = updateCurrent { it.copy(chokeGroup = on) }
+    /** Re-designate the SELECTED group as a CHOP or KIT group. */
+    fun onModeChange(mode: KitMode) = session.designate(session.selected.value, mode)
+    fun onGroupChange(group: PadChannel) = session.select(group)
+    fun onChokeGroupChange(on: Boolean) = session.setChoke(session.selected.value, on)
     fun onSliceCountChange(text: String) = updateCurrent { it.copy(sliceCountText = text) }
     fun dismissSnackbar() { _snackbarMessage.value = null }
 
-    /** Trigger the appropriate SAF picker based on the current group's mode. */
+    /** Trigger the appropriate SAF picker based on the current group's designation. */
     fun triggerPick() {
-        when (groupOf(_selectedGroup.value).mode) {
+        when (session.designationFor(session.selected.value)) {
             KitMode.CHOP -> onRequestLoopPick?.invoke()
             KitMode.KIT  -> onRequestKitPick?.invoke()
         }
@@ -256,7 +270,7 @@ class KitViewModel(
 
     /** Chop the selected group's staged loop into its slice count. No-op if nothing is staged. */
     fun chopStagedLoop(context: Context) {
-        val group = _selectedGroup.value
+        val group = session.selected.value
         val staged = groupOf(group).stagedLoop ?: return
         runChop(group, staged.uri, staged.name, context)
     }
@@ -273,7 +287,7 @@ class KitViewModel(
      */
     private fun runChop(group: PadChannel, uri: Uri, rawName: String, context: Context) {
         val sliceCount = resolvedSliceCountFor(group)
-        val chokeOn = groupOf(group).chokeGroup
+        val chokeOn = session.chokeFor(group)
         val safeName = manager.sanitizeName(rawName) ?: rawName
 
         // Seed N rows — one per slice (no separate upload row; each row covers its own upload+assign).
@@ -398,8 +412,8 @@ class KitViewModel(
     fun onKitFilesPicked(uris: List<Uri>, context: Context) {
         if (uris.isEmpty()) return
         val capped = uris.take(MAX_SLICES)
-        val group = _selectedGroup.value
-        val chokeOn = groupOf(group).chokeGroup
+        val group = session.selected.value
+        val chokeOn = session.chokeFor(group)
         val names = capped.map { uri ->
             uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "sample.wav"
         }
@@ -481,9 +495,9 @@ class KitViewModel(
      * @param sampleRate Device sample rate (default 46875).
      */
     fun chopFromPcm(name: String, pcm: ByteArray, channels: Int = 1, sampleRate: Int = 46875) {
-        val group = _selectedGroup.value
+        val group = session.selected.value
         val sliceCount = resolvedSliceCountFor(group)
-        val chokeOn = groupOf(group).chokeGroup
+        val chokeOn = session.chokeFor(group)
         val safeName = manager.sanitizeName(name) ?: name
 
         val sliceLabels = (0 until sliceCount).map { i -> "slice ${group.name}${i + 1}" }
@@ -562,8 +576,8 @@ class KitViewModel(
     fun kitFromPcm(files: List<Triple<String, ByteArray, Int>>, sampleRate: Int = 46875) {
         if (files.isEmpty()) return
         val capped = files.take(MAX_SLICES)
-        val group = _selectedGroup.value
-        val chokeOn = groupOf(group).chokeGroup
+        val group = session.selected.value
+        val chokeOn = session.chokeFor(group)
         setItems(group, capped.map { (name, _, _) -> KitResultItem(name) })
 
         capped.forEachIndexed { i, triple ->
@@ -616,7 +630,7 @@ class KitViewModel(
         groupOf(group).sliceCountText.toIntOrNull()?.coerceIn(1, MAX_SLICES) ?: MAX_SLICES
 
     /** Slice count for the currently-selected group (used by the UI labels). */
-    fun resolvedSliceCount(): Int = resolvedSliceCountFor(_selectedGroup.value)
+    fun resolvedSliceCount(): Int = resolvedSliceCountFor(session.selected.value)
 
     /** Replace [group]'s progress items. */
     private fun setItems(group: PadChannel, items: List<KitResultItem>) =
@@ -1000,6 +1014,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
     val items by viewModel.items.collectAsState()
     val stagedLoop by viewModel.stagedLoop.collectAsState()
     val chokeGroup by viewModel.chokeGroup.collectAsState()
+    val designations by viewModel.designations.collectAsState()
     val builderState by builderViewModel.state.collectAsState()
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -1059,7 +1074,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 }
             }
 
-            // Mode segmented control: CHOP | KIT.
+            // Designation segmented control: CHOP | KIT — sets what the SELECTED group is.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1087,27 +1102,21 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 }
             }
 
-            // Shared group + choke bar — pinned in the same spot for BOTH modes, routed to the
-            // active mode's ViewModel so CHOP and KIT present identical controls in one place.
-            if (mode == KitMode.CHOP) {
-                Ep133GroupChokeBar(
-                    group = selectedGroup,
-                    onGroupChange = { viewModel.onGroupChange(it) },
-                    chokeOn = chokeGroup,
-                    onChokeChange = { viewModel.onChokeGroupChange(it) },
-                )
-            } else {
-                Ep133GroupChokeBar(
-                    group = builderState.group,
-                    onGroupChange = { builderViewModel.onGroupChange(it) },
-                    chokeOn = builderState.chokeGroup,
-                    onChokeChange = { builderViewModel.onChokeGroupChange(it) },
-                )
-            }
+            // Shared group + choke bar — ONE control backed by the shared GroupSession, so both
+            // workflows always agree on the selected group and its choke. Each chip is tagged with
+            // its group's designation; selecting a group flips the page into that group's mode.
+            Ep133GroupChokeBar(
+                group = selectedGroup,
+                onGroupChange = { viewModel.onGroupChange(it) },
+                chokeOn = chokeGroup,
+                onChokeChange = { viewModel.onChokeGroupChange(it) },
+                tagFor = { g -> designations[g]?.name },
+            )
           }
 
           if (mode == KitMode.KIT) {
-            // KIT mode = the Kit Builder (pack browser + kit canvas + load), embedded edge-to-edge.
+            // KIT mode = the Kit Builder (pack browser + kit canvas), embedded edge-to-edge.
+            // The push action lives in the shared PUSH TO DEVICE button below.
             KitBuilderScreen(
                 viewModel = builderViewModel,
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 11.dp),
@@ -1188,23 +1197,41 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
             }
 
           }
+          }
 
-            // Pick button — pinned below the scroll so it's always reachable. Once a loop is
-            // staged the primary action becomes CHOP (so the count can be set first).
+            // Shared PUSH TO DEVICE button — pinned below both workflows. In a CHOP group it picks
+            // then chops the staged loop; in a KIT group it picks a pack then loads the staged kit.
             val chopReady = stagedLoop != null
+            val pushLabel = if (mode == KitMode.CHOP) {
+                if (chopReady) "PUSH TO DEVICE · ${viewModel.resolvedSliceCount()} SLICES → ${selectedGroup.name}"
+                else "PICK LOOP"
+            } else {
+                when {
+                    builderState.packLoading -> "READING PACK…"
+                    builderState.pack == null -> "PICK PACK FOLDER"
+                    builderState.loading -> "PUSHING…"
+                    builderState.assignments.isEmpty() -> "ASSIGN PADS FIRST"
+                    else -> "PUSH TO DEVICE · ${builderState.assignments.size} PADS → ${selectedGroup.name}"
+                }
+            }
             Ep133PrimaryButton(
-                label = if (chopReady) {
-                    "CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → ${selectedGroup.name}"
-                } else {
-                    "PICK LOOP"
-                },
+                label = pushLabel,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp)
                     .padding(top = 11.dp, bottom = 14.dp),
-                onClick = { if (chopReady) viewModel.chopStagedLoop(context) else viewModel.triggerPick() },
+                onClick = {
+                    if (mode == KitMode.CHOP) {
+                        if (chopReady) viewModel.chopStagedLoop(context) else viewModel.triggerPick()
+                    } else {
+                        when {
+                            builderState.packLoading || builderState.loading -> {}
+                            builderState.pack == null -> builderViewModel.triggerPackPick()
+                            builderState.assignments.isNotEmpty() -> builderViewModel.onLoadKit(context)
+                        }
+                    }
+                },
             )
-          }
         }
 
         SnackbarHost(
