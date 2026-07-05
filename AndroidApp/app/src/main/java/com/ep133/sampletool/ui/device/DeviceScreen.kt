@@ -48,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -67,6 +68,7 @@ import com.ep133.sampletool.domain.model.EP133Scales
 import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.domain.model.PermissionState
 import com.ep133.sampletool.domain.model.Scale
+import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.theme.Ep133GhostButton
 import com.ep133.sampletool.ui.theme.Ep133GroupChip
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
@@ -446,6 +448,7 @@ private fun FirmwareUpdateBanner(
         is FirmwareUpdateState.UpdateAvailable -> {
             Row(
                 modifier = Modifier
+                    .testTag(TestTags.DEVICE_FIRMWARE_BANNER)
                     .fillMaxWidth()
                     .clip(PanelRadius)
                     .background(t.accent.copy(alpha = 0.12f), PanelRadius)
@@ -624,7 +627,10 @@ private fun StatsGrid(state: DeviceState, channel: PadChannel) {
     } else "—"
     val firmwareValue = state.firmwareVersion ?: "—"
 
-    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+    Column(
+        modifier = Modifier.testTag(TestTags.DEVICE_STATS_GRID),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -891,7 +897,11 @@ private fun DeviceOfflineState(
                     letterSpacing = 0.3.sp,
                 )
                 Spacer(Modifier.height(16.dp))
-                Ep133GhostButton(label = "Open Settings", onClick = onOpenSettings)
+                Ep133GhostButton(
+                    label = "Open Settings",
+                    modifier = Modifier.testTag(TestTags.DEVICE_PERMISSION_ACTION),
+                    onClick = onOpenSettings,
+                )
             }
             else -> {
                 // UNKNOWN or GRANTED — device present but not yet enumerated
@@ -915,7 +925,11 @@ private fun DeviceOfflineState(
                     )
                 }
                 Spacer(Modifier.height(14.dp))
-                Ep133GhostButton(label = "Grant Permission", onClick = onGrantPermission)
+                Ep133GhostButton(
+                    label = "Grant Permission",
+                    modifier = Modifier.testTag(TestTags.DEVICE_PERMISSION_ACTION),
+                    onClick = onGrantPermission,
+                )
             }
         }
     }
@@ -930,6 +944,7 @@ private fun RestoreConfirmDialog(
     val t = LocalEP133Tokens.current
     AlertDialog(
         onDismissRequest = onDismiss,
+        modifier = Modifier.testTag(TestTags.DEVICE_RESTORE_CONFIRM_DIALOG),
         containerColor = t.panel,
         titleContentColor = t.text,
         textContentColor = t.text2,
