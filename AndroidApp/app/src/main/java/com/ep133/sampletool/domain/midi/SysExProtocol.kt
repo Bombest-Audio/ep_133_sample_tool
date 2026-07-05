@@ -178,9 +178,12 @@ object SysExProtocol {
      * "sw_version:1.3.2;serial:ABCDEF;..."
      */
     fun parseGreetResponse(rawPayload: ByteArray): Map<String, String> {
-        if (rawPayload.isEmpty()) return emptyMap()
+        if (rawPayload.size < 2) return emptyMap()
+        // Hardware-verified (2026-06-27): the greet body is a 1-byte status prefix followed by
+        // 7-bit-packed "key:value;…" ASCII (e.g. sw_version:2.0.5;serial:E3PUA1T2). Skipping the
+        // prefix is required — unpacking from byte 0 desyncs the high-bits groups and garbles it.
         val decoded = try {
-            String(unpack7bit(rawPayload), Charsets.US_ASCII)
+            String(unpack7bit(rawPayload.copyOfRange(1, rawPayload.size)), Charsets.US_ASCII)
         } catch (_: Exception) {
             return emptyMap()
         }

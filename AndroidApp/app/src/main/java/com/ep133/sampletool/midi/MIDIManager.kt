@@ -334,6 +334,24 @@ class MIDIManager(
         openDevices.clear()
     }
 
+    /**
+     * Release the USB device and all open ports so another owner can claim them, WITHOUT tearing
+     * down the device/permission callbacks (unlike [close]). USB-MIDI ports are exclusive: while
+     * this activity is backgrounded its ports would starve the foreground one (the native UI and
+     * the WebView each own a MIDIManager). Call this in onStop; re-acquire with [refreshDevices]
+     * in onStart. Send ports reopen lazily on the next send.
+     */
+    fun releasePorts() {
+        for ((_, port) in openInputPorts) { try { port.close() } catch (_: Exception) {} }
+        for ((_, port) in openOutputPorts) { try { port.close() } catch (_: Exception) {} }
+        for ((_, device) in openDevices) { try { device.close() } catch (_: Exception) {} }
+        openInputPorts.clear()
+        openOutputPorts.clear()
+        openDevices.clear()
+        startingOutputPorts.clear()
+        Log.d(TAG, "releasePorts: released device + ports (backgrounded)")
+    }
+
     // MARK: - Helpers
 
     @Suppress("DEPRECATION")

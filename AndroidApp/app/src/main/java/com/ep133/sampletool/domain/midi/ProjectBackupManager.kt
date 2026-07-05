@@ -50,11 +50,23 @@ data class BackupItem(val file: File, val name: String, val timestamp: Long)
  */
 class ProjectBackupManager(private val midi: MIDIRepository) {
 
-    /** Backup file name: `EP133-P{NN}-{timestamp}.tar` (reuses BackupManager's date format). */
-    fun suggestedProjectFilename(slot: MIDIRepository.ProjectSlot): String {
+    /**
+     * Backup file name: `[{customName}-]EP133-P{NN}-{timestamp}.tar`. An optional app-side
+     * [customName] (see ProjectNameStore) is sanitized to `[A-Za-z0-9_ ]`, trimmed to 40 chars,
+     * spaces → underscores, and prefixed so the exported file carries the user's project name.
+     */
+    fun suggestedProjectFilename(slot: MIDIRepository.ProjectSlot, customName: String? = null): String {
         val fmt = SimpleDateFormat("yyyy-MM-dd-HHmm", Locale.US)
         val slotIndex = slotIndexOf(slot.name)
-        return "EP133-P%02d-%s.tar".format(slotIndex, fmt.format(Date()))
+        val prefix = customName
+            ?.replace(Regex("[^A-Za-z0-9_ ]"), "")
+            ?.trim()
+            ?.take(40)
+            ?.replace(' ', '_')
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { "$it-" }
+            .orEmpty()
+        return "${prefix}EP133-P%02d-%s.tar".format(slotIndex, fmt.format(Date()))
     }
 
     /**
@@ -64,7 +76,11 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
      * `getExternalFilesDir("backups")` (falling back to internal `filesDir/backups` if external
      * storage is unavailable — Pitfall 6). Emits Progress → Done(file), or Error on failure.
      */
-    fun backupProject(slot: MIDIRepository.ProjectSlot, context: Context): Flow<ProjectBackupProgress> = flow {
+    fun backupProject(
+        slot: MIDIRepository.ProjectSlot,
+        context: Context,
+        customName: String? = null,
+    ): Flow<ProjectBackupProgress> = flow {
         if (midi.deviceState.value.outputPortId == null) {
             emit(ProjectBackupProgress.Error("No EP-133 connected"))
             return@flow
@@ -84,7 +100,7 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
         val file = try {
             withContext(Dispatchers.IO) {
                 val dir = backupsDir(context)
-                val out = File(dir, suggestedProjectFilename(slot))
+                val out = File(dir, suggestedProjectFilename(slot, customName))
                 out.writeBytes(archive)   // opaque blob — written as-is
                 out
             }
@@ -184,9 +200,13 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
         (context.getExternalFilesDir(BACKUPS_DIR)
             ?: context.filesDir.resolve(BACKUPS_DIR)).also { it.mkdirs() }
 
-    /** Extract the numeric slot index from a name like "P03" → 3; -1 if not a P{NN} name. */
+    /**
+     * Extract the numeric slot index from a project name. The device names slots "01".."09"
+     * (no "P" prefix — confirmed from the /projects/NN device paths), so match digits anywhere;
+     * "P03" still yields 3. Fall back to 0 so a backup never ends up named "P-1".
+     */
     private fun slotIndexOf(name: String): Int =
-        Regex("""P(\d{2})""").find(name)?.groupValues?.get(1)?.toIntOrNull() ?: -1
+        Regex("""(\d{1,2})""").find(name)?.groupValues?.get(1)?.toIntOrNull() ?: 0
 
     companion object {
         /**

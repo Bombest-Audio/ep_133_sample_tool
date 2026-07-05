@@ -16,6 +16,22 @@ offline, open source. Our code is MIT — fork it, build on it, make it yours.
 
 ---
 
+## The Android app
+
+Load your own samples onto the K.O. II right from your phone — plus play your kit, sketch
+beats, browse 661 sounds, and build chord progressions. All offline, all on-device.
+
+<img src="docs/manual/img/01-pads.png" width="280" alt="Pads screen"> <img src="docs/manual/img/04-chords.png" width="280" alt="Chords screen"> <img src="docs/manual/img/07-import.png" width="280" alt="Sample Import screen">
+
+📖 **[Read the full user manual →](docs/manual/README.md)** — a screen-by-screen tour with
+shots of every tab, light/dark, and the EP-133 / EP-1320 themes.
+
+We reverse-engineered the K.O. II's whole USB-MIDI file protocol to make the import work, and
+wrote it all down: the [**SysEx protocol reference**](docs/ep133-sysex-protocol.md) (or the
+[web version](https://bombest-audio.github.io/ep_133_sample_tool/protocol.html)).
+
+---
+
 ## Platforms
 
 | Platform | Stack | Min Requirement |

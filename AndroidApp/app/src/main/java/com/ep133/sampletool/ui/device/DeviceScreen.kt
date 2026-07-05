@@ -3,6 +3,9 @@ package com.ep133.sampletool.ui.device
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import android.util.Log
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,48 +19,45 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Circle
-import androidx.compose.material.icons.filled.CloudSync
-import androidx.compose.material.icons.filled.DeleteForever
-import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Restore
-import androidx.compose.material.icons.filled.SaveAlt
-import androidx.compose.material.icons.filled.Usb
-import androidx.compose.material.icons.filled.Web
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextField
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
-import com.ep133.sampletool.webview.EP133WebViewSetup
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ep133.sampletool.domain.firmware.FirmwareCatalog
+import com.ep133.sampletool.domain.firmware.FirmwareVersion
+import com.ep133.sampletool.domain.firmware.TeFirmwareCatalog
 import com.ep133.sampletool.domain.midi.BackupManager
 import com.ep133.sampletool.domain.midi.BackupProgress
 import com.ep133.sampletool.domain.midi.MIDIRepository
@@ -67,7 +67,14 @@ import com.ep133.sampletool.domain.model.EP133Scales
 import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.domain.model.PermissionState
 import com.ep133.sampletool.domain.model.Scale
-import com.ep133.sampletool.ui.theme.TEColors
+import com.ep133.sampletool.ui.theme.Ep133GhostButton
+import com.ep133.sampletool.ui.theme.Ep133GroupChip
+import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
+import com.ep133.sampletool.ui.theme.Ep133SectionLabel
+import com.ep133.sampletool.ui.theme.Ep133StatReadout
+import com.ep133.sampletool.ui.theme.Ep133StatusDot
+import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -75,7 +82,30 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
+/**
+ * State machine for the firmware update check on the Device screen.
+ *
+ * Idle     — initial state; no check has been requested yet
+ * Checking — check in progress (catalog.latestVersion() in flight)
+ * UpToDate — device firmware >= latest known version
+ * UpdateAvailable — device firmware < latest; holds both versions for the banner
+ * Unknown  — device firmware string unparseable, or catalog returned null
+ */
+sealed class FirmwareUpdateState {
+    object Idle : FirmwareUpdateState()
+    object Checking : FirmwareUpdateState()
+    object UpToDate : FirmwareUpdateState()
+    data class UpdateAvailable(
+        val current: FirmwareVersion,
+        val latest: FirmwareVersion,
+    ) : FirmwareUpdateState()
+    object Unknown : FirmwareUpdateState()
+}
+
+class DeviceViewModel(
+    private val midi: MIDIRepository,
+    private val catalog: FirmwareCatalog = TeFirmwareCatalog(),
+) : ViewModel() {
 
     val deviceState: StateFlow<DeviceState> = midi.deviceState
 
@@ -109,9 +139,21 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
     private val _showRestoreConfirm = MutableStateFlow(false)
     val showRestoreConfirm: StateFlow<Boolean> = _showRestoreConfirm.asStateFlow()
 
+    // True while querying firmware/storage/sample-count, so the storage card shows a spinner
+    // only while loading (not forever when a value comes back empty).
+    private val _statsLoading = MutableStateFlow(false)
+    val statsLoading: StateFlow<Boolean> = _statsLoading.asStateFlow()
+
+    // Firmware update detection state (FW-01 / FW-02)
+    private val _firmwareUpdate = MutableStateFlow<FirmwareUpdateState>(FirmwareUpdateState.Idle)
+    val firmwareUpdate: StateFlow<FirmwareUpdateState> = _firmwareUpdate.asStateFlow()
+
     // SAF callbacks — set by MainActivity.onCreate() (cannot register ActivityResult inside ViewModel)
     var onRequestBackup: ((suggestedName: String) -> Unit)? = null
     var onRequestRestore: (() -> Unit)? = null
+
+    // Firmware updater callback — set by MainActivity (mirrors SAF pattern); Wave 3 wires the Custom Tab
+    var onOpenFirmwareUpdater: (() -> Unit)? = null
 
     fun triggerBackup() {
         if (_isBackupInProgress.value || _isRestoreInProgress.value) return
@@ -129,7 +171,7 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
             _isBackupInProgress.value = true
             _backupProgress.value = 0f
             val backupManager = BackupManager(midi)
-            backupManager.createBackup(deviceId = 0).collect { progress ->
+            backupManager.createBackup().collect { progress ->
                 when (progress) {
                     is BackupProgress.Progress -> {
                         if (progress.total > 0) {
@@ -177,7 +219,7 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
         viewModelScope.launch {
             _isRestoreInProgress.value = true
             _restoreProgress.value = 0f
-            BackupManager(midi).restore(bytes, deviceId = 0).collect { progress ->
+            BackupManager(midi).restore(bytes).collect { progress ->
                 when (progress) {
                     is RestoreProgress.Progress -> {
                         if (progress.total > 0) {
@@ -208,6 +250,11 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
         _snackbarMessage.value = null
     }
 
+    /** Surface a snackbar message from outside the ViewModel (e.g. MainActivity). */
+    fun showSnackbar(message: String) {
+        _snackbarMessage.value = message
+    }
+
     fun selectChannel(channel: PadChannel) {
         _selectedChannel.value = channel
         // EP-133 uses MIDI ch 1 (index 0) for all groups by default
@@ -225,13 +272,75 @@ class DeviceViewModel(private val midi: MIDIRepository) : ViewModel() {
     fun refreshDevices() {
         midi.refreshDeviceState()
     }
+
+    /** Invokes the firmware updater callback wired by MainActivity (Wave 3). */
+    fun openFirmwareUpdater() {
+        onOpenFirmwareUpdater?.invoke()
+    }
+
+    /** Query firmware / storage / sample count. Called when the Device screen opens connected. */
+    fun loadStats() {
+        if (_statsLoading.value) return
+        viewModelScope.launch {
+            _statsLoading.value = true
+            try {
+                midi.queryDeviceStats()
+            } finally {
+                _statsLoading.value = false
+            }
+            if (deviceState.value.firmwareVersion != null) {
+                checkFirmwareUpdate()
+            }
+        }
+    }
+
+    /**
+     * Checks whether the device firmware is up to date by asking the catalog for the latest version.
+     * Emits Checking → UpdateAvailable / UpToDate / Unknown.
+     *
+     * Only called from loadStats() after a successful stats query with a non-null firmwareVersion.
+     * The _statsLoading guard on loadStats() prevents concurrent invocations.
+     */
+    private fun checkFirmwareUpdate() {
+        viewModelScope.launch {
+            _firmwareUpdate.value = FirmwareUpdateState.Checking
+            val rawFw = deviceState.value.firmwareVersion
+            val current = FirmwareVersion.parse(rawFw)
+            if (current == null) {
+                Log.w("EP133APP", "FW check: unparseable firmware '$rawFw'")
+                _firmwareUpdate.value = FirmwareUpdateState.Unknown
+                return@launch
+            }
+            val latest = try {
+                catalog.latestVersion()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("EP133APP", "FW check failed", e)
+                null
+            }
+            if (latest == null) {
+                _firmwareUpdate.value = FirmwareUpdateState.Unknown
+                return@launch
+            }
+            _firmwareUpdate.value = if (current >= latest) {
+                FirmwareUpdateState.UpToDate
+            } else {
+                FirmwareUpdateState.UpdateAvailable(current, latest)
+            }
+        }
+    }
 }
+
+/** Hard ~2–3dp faceplate corner (mirrors the design's `border-radius:2px/3px`). */
+private val PanelRadius = RoundedCornerShape(3.dp)
+private val Mono = FontFamily.Monospace
 
 @Composable
 fun DeviceScreen(
     viewModel: DeviceViewModel,
-    onNavigateToWebView: () -> Unit = {},
 ) {
+    val t = LocalEP133Tokens.current
     val deviceState by viewModel.deviceState.collectAsState()
     val selectedChannel by viewModel.selectedChannel.collectAsState()
     val selectedScale by viewModel.selectedScale.collectAsState()
@@ -242,10 +351,17 @@ fun DeviceScreen(
     val restoreProgress by viewModel.restoreProgress.collectAsState()
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val showRestoreConfirm by viewModel.showRestoreConfirm.collectAsState()
-    val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+    val statsLoading by viewModel.statsLoading.collectAsState()
+    val firmwareUpdate by viewModel.firmwareUpdate.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Query firmware / storage / samples whenever we're connected and the screen is shown.
+    LaunchedEffect(deviceState.connected) {
+        if (deviceState.connected) viewModel.loadStats()
+    }
 
     // Show snackbar when message appears
-    androidx.compose.runtime.LaunchedEffect(snackbarMessage) {
+    LaunchedEffect(snackbarMessage) {
         snackbarMessage?.let { msg ->
             snackbarHostState.showSnackbar(msg)
             viewModel.dismissSnackbar()
@@ -254,310 +370,295 @@ fun DeviceScreen(
 
     // Restore confirmation dialog
     if (showRestoreConfirm) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { viewModel.cancelRestore() },
-            title = { Text("Restore EP-133?") },
-            text = { Text("This will overwrite all content on your EP-133. This cannot be undone.") },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { viewModel.confirmRestore() }) {
-                    Text("Restore")
-                }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { viewModel.cancelRestore() }) {
-                    Text("Cancel")
-                }
-            },
+        RestoreConfirmDialog(
+            onConfirm = { viewModel.confirmRestore() },
+            onDismiss = { viewModel.cancelRestore() },
         )
     }
 
     val context = LocalContext.current
 
-    androidx.compose.material3.Scaffold(
-        snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(innerPadding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            if (!deviceState.connected) {
-                DeviceConnectionState(
-                    permissionState = deviceState.permissionState,
-                    onGrantPermission = { viewModel.refreshDevices() },
-                    onOpenSettings = {
-                        val intent = Intent(
-                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                            Uri.fromParts("package", context.packageName, null),
-                        )
-                        context.startActivity(intent)
-                    },
-                )
-            }
-            DeviceCard(deviceState)
-            StatsRow(deviceState)
-            ChannelSelector(
-                selected = selectedChannel,
-                onSelect = viewModel::selectChannel,
+    Box(modifier = Modifier.fillMaxSize().background(t.bg)) {
+        if (!deviceState.connected) {
+            // Clean offline state — fills the body, plug-in guidance keyed off permission.
+            DeviceOfflineState(
+                permissionState = deviceState.permissionState,
+                onGrantPermission = { viewModel.refreshDevices() },
+                onOpenSettings = {
+                    val intent = Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", context.packageName, null),
+                    )
+                    context.startActivity(intent)
+                },
             )
-            ScaleModeSelector(
-                selectedScale = selectedScale,
-                onScaleSelect = viewModel::selectScale,
-                selectedRoot = selectedRootNote,
-                onRootSelect = viewModel::selectRootNote,
-            )
-            BackupRestoreSection(
-                isBackupInProgress = isBackupInProgress,
-                isRestoreInProgress = isRestoreInProgress,
-                backupProgress = backupProgress,
-                restoreProgress = restoreProgress,
-                onBackup = { viewModel.triggerBackup() },
-                onRestore = { viewModel.triggerRestore() },
-            )
-            RestoreFactoryButton(onOpen = onNavigateToWebView)
-            FormatDeviceButton(onOpen = onNavigateToWebView)
-        }
-    }
-}
-
-/**
- * Three-state connection guidance shown when no device is connected (D-19, CONN-04).
- *
- * - UNKNOWN / GRANTED (no device detected): "Connect your EP-133" + Grant Permission button
- * - AWAITING: spinner + waiting text
- * - DENIED: actionable message + Open Settings button
- */
-@Composable
-private fun DeviceConnectionState(
-    permissionState: PermissionState,
-    onGrantPermission: () -> Unit,
-    onOpenSettings: () -> Unit,
-) {
-    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            when (permissionState) {
-                PermissionState.AWAITING -> {
-                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
-                    Text(
-                        text = "Waiting for USB permission…",
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
-                    )
-                }
-                PermissionState.DENIED -> {
-                    Icon(
-                        imageVector = Icons.Filled.Usb,
-                        contentDescription = null,
-                        modifier = Modifier.size(32.dp),
-                        tint = MaterialTheme.colorScheme.error,
-                    )
-                    Text(
-                        text = "USB permission required. Go to Settings to allow USB access.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
-                    )
-                    Button(onClick = onOpenSettings) {
-                        Text("Open Settings")
-                    }
-                }
-                else -> {
-                    // UNKNOWN or GRANTED — device present but not yet enumerated
-                    Icon(
-                        imageVector = Icons.Filled.Usb,
-                        contentDescription = null,
-                        modifier = Modifier.size(32.dp),
-                    )
-                    Text(
-                        text = "Connect your EP-133 via USB",
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
-                    )
-                    Button(onClick = onGrantPermission) {
-                        Text("Grant Permission")
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DeviceCard(state: DeviceState) {
-    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth(),
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(11.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Filled.Circle,
-                    contentDescription = null,
-                    modifier = Modifier.size(10.dp),
-                    tint = if (state.connected) TEColors.Teal else TEColors.InkTertiary,
+                ConnectionCard(deviceState)
+                StorageBar(deviceState, loading = statsLoading)
+                StatsGrid(deviceState, selectedChannel)
+                FirmwareUpdateBanner(
+                    state = firmwareUpdate,
+                    onOpenUpdater = { viewModel.openFirmwareUpdater() },
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = if (state.connected) "ONLINE" else "OFFLINE",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (state.connected) TEColors.Teal else TEColors.InkTertiary,
-                    maxLines = 1,
+                ChannelSelector(
+                    selected = selectedChannel,
+                    onSelect = viewModel::selectChannel,
                 )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Text(
-                text = "EP-133",
-                style = MaterialTheme.typography.displayMedium,
-            )
-
-            Text(
-                text = state.deviceName.ifBlank { "No device connected" },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Text(
-                text = "STORAGE",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            val storageProgress = if (state.connected && state.storageUsedBytes != null && state.storageTotalBytes != null && state.storageTotalBytes > 0) {
-                (state.storageUsedBytes.toFloat() / state.storageTotalBytes.toFloat()).coerceIn(0f, 1f)
-            } else 0f
-            val storageLabel = when {
-                !state.connected -> "--"
-                state.storageUsedBytes != null && state.storageTotalBytes != null && state.storageTotalBytes > 0 ->
-                    "${(storageProgress * 100).toInt()}% used"
-                else -> null  // null = loading
-            }
-            LinearProgressIndicator(
-                progress = { storageProgress },
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant,
-            )
-            if (storageLabel != null) {
-                Text(
-                    text = storageLabel,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                ScaleModeSelector(
+                    selectedScale = selectedScale,
+                    onScaleSelect = viewModel::selectScale,
+                    selectedRoot = selectedRootNote,
+                    onRootSelect = viewModel::selectRootNote,
                 )
-            } else if (state.connected) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 1.5.dp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                BackupRestoreSection(
+                    isBackupInProgress = isBackupInProgress,
+                    isRestoreInProgress = isRestoreInProgress,
+                    backupProgress = backupProgress,
+                    restoreProgress = restoreProgress,
+                    onBackup = { viewModel.triggerBackup() },
+                    onRestore = { viewModel.triggerRestore() },
                 )
             }
         }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
     }
 }
 
+// ── Firmware update banner — shows above ChannelSelector when UpdateAvailable; spinner on Checking ──
 @Composable
-private fun StatsRow(state: DeviceState) {
-    val samplesValue = when {
-        !state.connected -> "--"
-        state.sampleCount != null -> state.sampleCount.toString()
-        else -> null  // null = loading
-    }
-    val storageValue = when {
-        !state.connected -> "--"
-        state.storageUsedBytes != null && state.storageTotalBytes != null -> {
-            val usedMb = state.storageUsedBytes / 1_048_576
-            val totalMb = state.storageTotalBytes / 1_048_576
-            "${usedMb}MB / ${totalMb}MB"
-        }
-        else -> null  // null = loading
-    }
-    val firmwareValue = when {
-        !state.connected -> "--"
-        state.firmwareVersion != null -> state.firmwareVersion
-        else -> null  // null = loading
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        StatCard("SAMPLES", samplesValue, isLoading = state.connected && samplesValue == null, Modifier.weight(1f))
-        StatCard("STORAGE", storageValue, isLoading = state.connected && storageValue == null, Modifier.weight(1f))
-        StatCard("FIRMWARE", firmwareValue, isLoading = state.connected && firmwareValue == null, Modifier.weight(1f))
-    }
-}
-
-@Composable
-private fun StatCard(
-    label: String,
-    value: String?,
-    isLoading: Boolean = false,
-    modifier: Modifier = Modifier,
+private fun FirmwareUpdateBanner(
+    state: FirmwareUpdateState,
+    onOpenUpdater: () -> Unit,
 ) {
-    OutlinedCard(modifier = modifier) {
-        Column(
+    val t = LocalEP133Tokens.current
+    when (state) {
+        is FirmwareUpdateState.UpdateAvailable -> {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(PanelRadius)
+                    .background(t.accent.copy(alpha = 0.12f), PanelRadius)
+                    .border(1.dp, t.accent.copy(alpha = 0.35f), PanelRadius)
+                    .padding(horizontal = 13.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Firmware ${state.latest} available",
+                    color = t.text,
+                    fontFamily = Mono,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.3.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                TextButton(
+                    onClick = onOpenUpdater,
+                    colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
+                ) {
+                    Text(
+                        text = "Open updater",
+                        fontFamily = Mono,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.4.sp,
+                    )
+                }
+            }
+        }
+        is FirmwareUpdateState.Checking -> {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 2.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 1.5.dp,
+                    color = t.live,
+                )
+                Text(
+                    text = "CHECKING FIRMWARE…",
+                    color = t.text3,
+                    fontFamily = Mono,
+                    fontSize = 9.sp,
+                    letterSpacing = 0.8.sp,
+                )
+            }
+        }
+        else -> {
+            // Idle, UpToDate, Unknown — render nothing
+        }
+    }
+}
+
+// ── Connection card (faceplate-black, mono eyebrow + device name + halo dot) ──
+@Composable
+private fun ConnectionCard(state: DeviceState) {
+    val t = LocalEP133Tokens.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(PanelRadius)
+            .background(t.padFace, PanelRadius)
+            .border(1.dp, t.padEdge, PanelRadius)
+            .padding(15.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "CONNECTED OVER USB-OTG",
+                color = t.padName,
+                fontFamily = Mono,
+                fontSize = 9.sp,
+                letterSpacing = 1.4.sp,
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = state.deviceName.ifBlank { "EP-133 K.O. II" },
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 17.sp,
+            )
+            Spacer(Modifier.height(13.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                MonoFact("FW", state.firmwareVersion ?: "—", valueColor = t.live)
+                MonoFact("CH", "01", valueColor = Color.White)
+            }
+        }
+        // teal halo "online" dot
+        Box(
+            modifier = Modifier
+                .size(19.dp)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(t.live.copy(alpha = 0.18f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Ep133StatusDot(t.live, size = 11)
+        }
+    }
+}
+
+/** A `LABEL value` pair on the dark connection card (mono). */
+@Composable
+private fun MonoFact(label: String, value: String, valueColor: Color) {
+    val t = LocalEP133Tokens.current
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Text(label, color = t.padName, fontFamily = Mono, fontSize = 9.5.sp, letterSpacing = 0.6.sp)
+        Text(value, color = valueColor, fontFamily = Mono, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp)
+    }
+}
+
+// ── Storage progress (M3 LinearProgressIndicator, accent track, mono readout) ──
+@Composable
+private fun StorageBar(state: DeviceState, loading: Boolean) {
+    val t = LocalEP133Tokens.current
+    val storageProgress = if (state.storageUsedBytes != null && state.storageTotalBytes != null && state.storageTotalBytes > 0) {
+        (state.storageUsedBytes.toFloat() / state.storageTotalBytes.toFloat()).coerceIn(0f, 1f)
+    } else 0f
+    val haveBytes = state.storageUsedBytes != null && state.storageTotalBytes != null
+    val readout = if (haveBytes) {
+        val usedMb = state.storageUsedBytes!!.toFloat() / 1_048_576f
+        val totalMb = state.storageTotalBytes!!.toFloat() / 1_048_576f
+        "%.1f / %.1f MB".format(usedMb, totalMb)
+    } else null
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(PanelRadius)
+            .background(t.panel2, PanelRadius)
+            .border(1.dp, t.rule, PanelRadius)
+            .padding(horizontal = 13.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("STORAGE", color = t.text2, fontFamily = Mono, fontSize = 9.5.sp, letterSpacing = 0.6.sp)
+            when {
+                readout != null ->
+                    Text(readout, color = t.text, fontFamily = Mono, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.4.sp)
+                loading ->
+                    CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp, color = t.text3)
+                else ->
+                    Text("—", color = t.text3, fontFamily = Mono, fontSize = 9.5.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        LinearProgressIndicator(
+            progress = { storageProgress },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .height(6.dp)
+                .clip(RoundedCornerShape(2.dp)),
+            color = t.accent,
+            trackColor = t.inset,
+        )
+    }
+}
+
+// ── Stats grid — samples / storage / firmware as mono readouts + MIDI CH ──
+@Composable
+private fun StatsGrid(state: DeviceState, channel: PadChannel) {
+    val samplesValue = state.sampleCount?.toString() ?: "—"
+    val storageValue = if (state.storageUsedBytes != null && state.storageTotalBytes != null) {
+        val usedMb = state.storageUsedBytes / 1_048_576
+        val totalMb = state.storageTotalBytes / 1_048_576
+        "${usedMb}/${totalMb}MB"
+    } else "—"
+    val firmwareValue = state.firmwareVersion ?: "—"
+
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
-            if (isLoading) {
-                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-            } else {
-                Text(
-                    text = value ?: "--",
-                    style = MaterialTheme.typography.displaySmall,
-                    textAlign = TextAlign.Center,
-                )
-            }
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
+            Ep133StatReadout("SAMPLES", samplesValue, modifier = Modifier.weight(1f))
+            Ep133StatReadout("STORAGE", storageValue, modifier = Modifier.weight(1f))
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Ep133StatReadout("FIRMWARE", firmwareValue, modifier = Modifier.weight(1f))
+            Ep133StatReadout("MIDI CH", "01", modifier = Modifier.weight(1f))
         }
     }
 }
 
+// ── MIDI channel (pad-group selector A/B/C/D) ──
 @Composable
 private fun ChannelSelector(
     selected: PadChannel,
     onSelect: (PadChannel) -> Unit,
 ) {
-    Column {
-        Text(
-            text = "MIDI CHANNEL",
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(modifier = Modifier.height(8.dp))
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Ep133SectionLabel("MIDI CHANNEL")
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             PadChannel.entries.forEach { channel ->
-                FilterChip(
+                Ep133GroupChip(
+                    label = channel.name,
                     selected = selected == channel,
                     onClick = { onSelect(channel) },
-                    label = {
-                        Text(
-                            text = channel.name,
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                    },
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -565,6 +666,7 @@ private fun ChannelSelector(
     }
 }
 
+// ── Scale + root (themed M3 exposed dropdowns) ──
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ScaleModeSelector(
@@ -573,20 +675,14 @@ private fun ScaleModeSelector(
     selectedRoot: String,
     onRootSelect: (String) -> Unit,
 ) {
-    Column {
-        Text(
-            text = "SCALE MODE",
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Ep133SectionLabel("SCALE MODE")
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             ScaleDropdown(
-                label = "Scale",
+                label = "SCALE",
                 selectedText = selectedScale?.name ?: "None",
                 options = listOf("None") + EP133Scales.ALL.map { it.name },
                 onSelect = { name ->
@@ -601,7 +697,7 @@ private fun ScaleModeSelector(
             )
 
             ScaleDropdown(
-                label = "Root",
+                label = "ROOT",
                 selectedText = selectedRoot,
                 options = EP133Scales.ROOT_NOTES,
                 onSelect = onRootSelect,
@@ -620,6 +716,7 @@ private fun ScaleDropdown(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val t = LocalEP133Tokens.current
     var expanded by remember { mutableStateOf(false) }
 
     ExposedDropdownMenuBox(
@@ -627,13 +724,31 @@ private fun ScaleDropdown(
         onExpandedChange = { expanded = it },
         modifier = modifier,
     ) {
-        TextField(
+        OutlinedTextField(
             value = selectedText,
             onValueChange = {},
             readOnly = true,
-            label = { Text(label) },
+            shape = PanelRadius,
+            textStyle = androidx.compose.ui.text.TextStyle(
+                fontFamily = Mono,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = t.text,
+            ),
+            label = {
+                Text(label, color = t.text3, fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.2.sp)
+            },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-            colors = ExposedDropdownMenuDefaults.textFieldColors(),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = t.panel2,
+                unfocusedContainerColor = t.panel2,
+                focusedBorderColor = t.accent,
+                unfocusedBorderColor = t.rule,
+                focusedTrailingIconColor = t.text2,
+                unfocusedTrailingIconColor = t.text3,
+                focusedLabelColor = t.text3,
+                unfocusedLabelColor = t.text3,
+            ),
             modifier = Modifier
                 .menuAnchor()
                 .fillMaxWidth(),
@@ -642,10 +757,13 @@ private fun ScaleDropdown(
         ExposedDropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
+            modifier = Modifier.background(t.panel),
         ) {
             options.forEach { option ->
                 DropdownMenuItem(
-                    text = { Text(option) },
+                    text = {
+                        Text(option, color = t.text, fontFamily = Mono, fontSize = 13.sp)
+                    },
                     onClick = {
                         onSelect(option)
                         expanded = false
@@ -657,6 +775,7 @@ private fun ScaleDropdown(
     }
 }
 
+// ── Backup & restore (primary + ghost actions, themed progress) ──
 @Composable
 private fun BackupRestoreSection(
     isBackupInProgress: Boolean,
@@ -666,176 +785,172 @@ private fun BackupRestoreSection(
     onBackup: () -> Unit,
     onRestore: () -> Unit,
 ) {
+    val t = LocalEP133Tokens.current
     val busy = isBackupInProgress || isRestoreInProgress
-    Column {
-        Text(
-            text = "BACKUP & RESTORE",
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(modifier = Modifier.height(8.dp))
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Ep133SectionLabel("BACKUP & RESTORE")
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
-            Button(
+            Ep133PrimaryButton(
+                label = "Backup",
+                enabled = !busy,
                 onClick = onBackup,
-                enabled = !busy,
                 modifier = Modifier.weight(1f),
-            ) {
-                Icon(
-                    imageVector = Icons.Default.SaveAlt,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Backup")
-            }
-            Button(
+            )
+            Ep133GhostButton(
+                label = "Restore",
+                enabled = !busy,
                 onClick = onRestore,
-                enabled = !busy,
                 modifier = Modifier.weight(1f),
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Restore,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Restore")
-            }
+            )
         }
         if (isBackupInProgress) {
-            Spacer(modifier = Modifier.height(4.dp))
-            Text("Backup in progress…", style = MaterialTheme.typography.bodySmall)
+            Text("BACKUP IN PROGRESS…", color = t.text2, fontFamily = Mono, fontSize = 9.5.sp, letterSpacing = 0.6.sp)
             LinearProgressIndicator(
                 progress = { backupProgress },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(2.dp)),
+                color = t.accent,
+                trackColor = t.inset,
             )
         }
         if (isRestoreInProgress) {
-            Spacer(modifier = Modifier.height(4.dp))
-            Text("Restore in progress…", style = MaterialTheme.typography.bodySmall)
+            Text("RESTORE IN PROGRESS…", color = t.text2, fontFamily = Mono, fontSize = 9.5.sp, letterSpacing = 0.6.sp)
             LinearProgressIndicator(
                 progress = { restoreProgress },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(2.dp)),
+                color = t.accent,
+                trackColor = t.inset,
             )
         }
     }
 }
 
+// ── Clean "NO DEVICE" offline state (design lines 304–313), keyed off permission ──
 @Composable
-private fun ActionButtons(onOpenManager: () -> Unit) {
-    Column {
+private fun DeviceOfflineState(
+    permissionState: PermissionState,
+    onGrantPermission: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    val t = LocalEP133Tokens.current
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        // eject glyph in a dashed square
+        Box(
+            modifier = Modifier
+                .size(74.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .border(1.dp, t.rule, RoundedCornerShape(6.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("⏏", color = t.text3, fontFamily = Mono, fontSize = 26.sp)
+        }
+        Spacer(Modifier.height(16.dp))
         Text(
-            text = "ACTIONS",
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            text = "no device",
+            color = t.text,
+            fontWeight = FontWeight.Bold,
+            fontSize = 18.sp,
+            letterSpacing = (-0.3).sp,
         )
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-            Column {
-                ActionRow(
-                    icon = Icons.Default.SaveAlt,
-                    label = "Backup Device",
-                    onClick = onOpenManager,
+        Spacer(Modifier.height(7.dp))
+
+        when (permissionState) {
+            PermissionState.AWAITING -> {
+                Text(
+                    text = "waiting for USB permission…",
+                    color = t.text2,
+                    fontFamily = Mono,
+                    fontSize = 11.sp,
+                    textAlign = TextAlign.Center,
+                    letterSpacing = 0.3.sp,
                 )
-                HorizontalDivider()
-                ActionRow(
-                    icon = Icons.Default.CloudSync,
-                    label = "Sync Samples",
-                    onClick = onOpenManager,
+                Spacer(Modifier.height(16.dp))
+                CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.dp, color = t.text3)
+            }
+            PermissionState.DENIED -> {
+                Text(
+                    text = "USB permission required.\nallow USB access in Settings",
+                    color = t.text2,
+                    fontFamily = Mono,
+                    fontSize = 11.sp,
+                    textAlign = TextAlign.Center,
+                    letterSpacing = 0.3.sp,
                 )
-                HorizontalDivider()
-                ActionRow(
-                    icon = Icons.Default.Web,
-                    label = "Sample Manager",
-                    onClick = onOpenManager,
+                Spacer(Modifier.height(16.dp))
+                Ep133GhostButton(label = "Open Settings", onClick = onOpenSettings)
+            }
+            else -> {
+                // UNKNOWN or GRANTED — device present but not yet enumerated
+                Text(
+                    text = "plug in your K.O. II\nover USB-OTG",
+                    color = t.text2,
+                    fontFamily = Mono,
+                    fontSize = 11.sp,
+                    textAlign = TextAlign.Center,
+                    letterSpacing = 0.3.sp,
                 )
+                Spacer(Modifier.height(16.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Ep133StatusDot(t.text3, size = 7)
+                    Text(
+                        "SCANNING PORTS…",
+                        color = t.text3,
+                        fontFamily = Mono,
+                        fontSize = 9.sp,
+                        letterSpacing = 0.8.sp,
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                Ep133GhostButton(label = "Grant Permission", onClick = onGrantPermission)
             }
         }
     }
 }
 
+// ── Themed restore confirmation dialog ──
 @Composable
-private fun ActionRow(
-    icon: ImageVector,
-    label: String,
-    onClick: () -> Unit,
+private fun RestoreConfirmDialog(
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(22.dp),
-            tint = MaterialTheme.colorScheme.primary,
-        )
-        Spacer(modifier = Modifier.width(12.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.weight(1f),
-        )
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
+    val t = LocalEP133Tokens.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = t.panel,
+        titleContentColor = t.text,
+        textContentColor = t.text2,
+        shape = PanelRadius,
+        title = { Text("Restore EP-133?", fontWeight = FontWeight.Bold) },
+        text = { Text("This will overwrite all content on your EP-133. This cannot be undone.") },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
+            ) {
+                Text("Restore", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
+            ) {
+                Text("Cancel")
+            }
+        },
+    )
 }
-
-@Composable
-private fun RestoreFactoryButton(onOpen: () -> Unit) {
-    Column {
-        Text(
-            text = "FACTORY RESET",
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-            ActionRow(
-                icon = Icons.Default.Restore,
-                label = "Restore Factory Sounds",
-                onClick = onOpen,
-            )
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "Opens Sample Manager to restore the 559 factory sounds bundled with the EP-133.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 4.dp),
-        )
-    }
-}
-
-@Composable
-private fun FormatDeviceButton(onOpen: () -> Unit) {
-    Button(
-        onClick = onOpen,
-        modifier = Modifier.fillMaxWidth(),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.error,
-            contentColor = MaterialTheme.colorScheme.onError,
-        ),
-    ) {
-        Icon(
-            imageVector = Icons.Default.DeleteForever,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = "FORMAT DEVICE",
-            style = MaterialTheme.typography.labelLarge,
-        )
-    }
-}
-

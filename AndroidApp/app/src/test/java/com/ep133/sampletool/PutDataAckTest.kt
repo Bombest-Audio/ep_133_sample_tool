@@ -39,6 +39,9 @@ import org.junit.Assert.*
  * The response is a minimal raw SysEx: F0 00 20 76 00 40 <reqHigh> <reqLow> 05 <status> F7
  * exactly what the hardware emits for a STATUS-ONLY (no packed body after the status byte).
  */
+/** Node ID the fake device "assigns" in its PUT INIT ack body (hardware returned 193 in testing). */
+private const val INIT_NODE_ID = 193
+
 private class AutoAckMIDIPort(
     private val statusForDataAcks: Int = SysExProtocol.STATUS_OK,
 ) : MIDIPort {
@@ -68,15 +71,29 @@ private class AutoAckMIDIPort(
         // Determine which status to send back.
         // PUT INIT frames carry innerPayload[0]=TE_SYSEX_FILE_PUT, [1]=TE_SYSEX_FILE_PUT_TYPE_INIT.
         // PUT DATA frames carry innerPayload[1]=TE_SYSEX_FILE_PUT_TYPE_DATA.
-        val isPutData = innerPayload.size >= 2 &&
-            innerPayload[0].toInt() and 0xFF == SysExProtocol.TE_SYSEX_FILE_PUT &&
+        val isPut = innerPayload.size >= 2 &&
+            innerPayload[0].toInt() and 0xFF == SysExProtocol.TE_SYSEX_FILE_PUT
+        val isPutData = isPut &&
             innerPayload[1].toInt() and 0xFF == SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_DATA
+        val isPutInit = isPut &&
+            innerPayload[1].toInt() and 0xFF == SysExProtocol.TE_SYSEX_FILE_PUT_TYPE_INIT
         val responseStatus = if (isPutData) statusForDataAcks else SysExProtocol.STATUS_OK
 
-        // Build the response: STATUS-ONLY, empty body (hardware-confirmed PUT DATA ack format).
-        // Frame: F0 00 20 76 00 40 <reqHigh4> <reqLow7> 05 <status> F7
+        // Build the response. DATA/terminator acks are STATUS-ONLY with an empty body
+        // (hardware-confirmed format — that emptiness is the regression under test). The PUT INIT
+        // ack instead carries the device-assigned node ID in body[0..1] (u16 BE), exactly like
+        // the hardware (verified 2026-06-29: a test upload returned node ID 193).
+        // Frame: F0 00 20 76 00 40 <reqHigh4> <reqLow7> 05 <status> [packed body] F7
         val reqHigh = (reqId shr 7) and 0x0F
         val reqLow  = reqId and 0x7F
+        val packedBody = if (isPutInit) {
+            SysExProtocol.pack7bit(byteArrayOf(
+                ((INIT_NODE_ID shr 8) and 0xFF).toByte(),
+                (INIT_NODE_ID and 0xFF).toByte(),
+            ))
+        } else {
+            ByteArray(0)
+        }
         val response = byteArrayOf(
             0xF0.toByte(),
             SysExProtocol.TE_ID_0,
@@ -88,8 +105,7 @@ private class AutoAckMIDIPort(
             reqLow.toByte(),
             SysExProtocol.TE_SYSEX_FILE.toByte(),
             responseStatus.toByte(),
-            0xF7.toByte(),
-        )
+        ) + packedBody + byteArrayOf(0xF7.toByte())
         onMidiReceived?.invoke("in", response)
     }
 
@@ -138,7 +154,14 @@ class PutDataAckTest {
         // Upload 1 byte so we get exactly one DATA page + one terminator.
         val result = repo.putSampleFile("kick.wav", ByteArray(1) { 0x42 })
 
-        assertTrue("putSampleFile must return true when device sends empty-body STATUS_OK acks", result)
+        // The empty-body DATA/terminator acks must complete the pages (the regression under
+        // test), and the nodeId must come through from the INIT ack body — putSampleFile
+        // returns null when no nodeId can be determined, so non-null here proves both.
+        assertEquals(
+            "putSampleFile must return the INIT-ack nodeId when device sends empty-body STATUS_OK DATA acks",
+            INIT_NODE_ID,
+            result,
+        )
     }
 
     /**
@@ -156,6 +179,6 @@ class PutDataAckTest {
 
         val result = repo.putSampleFile("kick.wav", ByteArray(1) { 0x42 })
 
-        assertFalse("putSampleFile must return false when device sends non-OK status on page ack", result)
+        assertNull("putSampleFile must return null when device sends non-OK status on page ack", result)
     }
 }

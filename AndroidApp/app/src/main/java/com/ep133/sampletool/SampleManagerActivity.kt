@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.media.midi.MidiManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import com.ep133.sampletool.midi.MIDIManager
@@ -19,6 +21,7 @@ class SampleManagerActivity : ComponentActivity() {
 
     private lateinit var webView: WebView
     private lateinit var midiManager: MIDIManager
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,6 +44,27 @@ class SampleManagerActivity : ComponentActivity() {
 
         // Load the original web app (data/index.html), not mobile.html
         webView.loadUrl("https://appassets.androidplatform.net/assets/data/index.html")
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Re-claim the exclusive USB-MIDI port whenever the WebView is foregrounded. Retried
+        // because MainActivity still holds the port until its onStop fires (the launch-order race).
+        reacquireMidi(attempt = 0)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Drop any queued reacquire retries — they must not fire after the port is released,
+        // or they'd fight MainActivity for the exclusive USB-MIDI port.
+        mainHandler.removeCallbacksAndMessages(null)
+        // Hand the port back so the native UI (MainActivity) can re-claim it. Re-acquired in onStart.
+        midiManager.releasePorts()
+    }
+
+    private fun reacquireMidi(attempt: Int) {
+        midiManager.refreshDevices()
+        if (attempt < 2) mainHandler.postDelayed({ reacquireMidi(attempt + 1) }, 500)
     }
 
     override fun onDestroy() {

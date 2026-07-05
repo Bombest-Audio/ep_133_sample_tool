@@ -4,10 +4,12 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.util.Log
 import android.hardware.usb.UsbManager
 import android.media.midi.MidiManager
 import android.net.Uri
 import android.os.Bundle
+import androidx.browser.customtabs.CustomTabsIntent
 import android.os.Handler
 import android.os.Looper
 import android.view.WindowManager
@@ -15,35 +17,31 @@ import androidx.activity.compose.setContent
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
-import android.media.AudioManager
-import com.ep133.sampletool.domain.midi.ChordPlayer
 import com.ep133.sampletool.domain.midi.MIDIRepository
-import com.ep133.sampletool.domain.midi.NativeSynth
 import com.ep133.sampletool.domain.midi.ProjectBackupManager
 import com.ep133.sampletool.domain.midi.SampleImportManager
-import com.ep133.sampletool.domain.sequencer.SequencerEngine
+import com.ep133.sampletool.domain.project.PrefsProjectNameStore
 import com.ep133.sampletool.midi.MIDIManager
-import androidx.lifecycle.lifecycleScope
 import com.ep133.sampletool.ui.EP133App
-import com.ep133.sampletool.ui.beats.BeatsViewModel
-import com.ep133.sampletool.ui.chords.ChordsViewModel
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
-import com.ep133.sampletool.ui.sounds.SoundsViewModel
-import com.ep133.sampletool.ui.`import`.SampleImportViewModel
+import com.ep133.sampletool.ui.kit.GroupSession
+import com.ep133.sampletool.ui.kit.KitViewModel
+import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var midiManager: MIDIManager
     private lateinit var midiRepo: MIDIRepository
-    private lateinit var sequencer: SequencerEngine
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Tracks whether onStart has run before, so we only re-acquire MIDI when *returning* to the
+    // foreground (the first launch's connect flow is driven by onCreate + the USB-attach intent).
+    private var startedOnce = false
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -65,19 +63,18 @@ class MainActivity : ComponentActivity() {
         val systemMidiManager = getSystemService(Context.MIDI_SERVICE) as MidiManager
         midiManager = MIDIManager(this, systemMidiManager)
         midiRepo = MIDIRepository(midiManager)
-        sequencer = SequencerEngine(midiRepo)
 
-        val nativeSynth = NativeSynth(getSystemService(AudioManager::class.java))
-        val chordPlayer = ChordPlayer(midiRepo, nativeSynth)
         val padsViewModel = PadsViewModel(midiRepo)
-        val beatsViewModel = BeatsViewModel(sequencer, midiRepo)
-        val soundsViewModel = SoundsViewModel(midiRepo)
-        val chordsViewModel = ChordsViewModel(chordPlayer, midiRepo)
         val projectBackupManager = ProjectBackupManager(midiRepo)
-        val projectsViewModel = ProjectsViewModel(midiRepo, projectBackupManager)
+        val projectNameStore = PrefsProjectNameStore(this)
+        val projectsViewModel = ProjectsViewModel(midiRepo, projectBackupManager, projectNameStore)
         val deviceViewModel = DeviceViewModel(midiRepo)
         val sampleImportManager = SampleImportManager(midiRepo)
-        val sampleImportViewModel = SampleImportViewModel(midiRepo, sampleImportManager)
+        // ONE GroupSession shared by the chopper and the Kit Builder — group selection, per-group
+        // CHOP/KIT designation, and choke are a single source of truth, persisted across launches.
+        val groupSession = GroupSession(getSharedPreferences("ep133_group_session", MODE_PRIVATE))
+        val kitViewModel = KitViewModel(midiRepo, sampleImportManager, groupSession)
+        val kitBuilderViewModel = KitBuilderViewModel(midiRepo, sampleImportManager, groupSession)
 
         // SAF launchers — MUST be registered before setContent (Activity lifecycle constraint).
         // See STATE.md decision: "SAF launchers must be registered before setContent() in MainActivity"
@@ -90,24 +87,54 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.OpenDocument(),
         ) { uri: Uri? -> uri?.let { deviceViewModel.onRestoreUriSelected(it, this) } }
 
-        val importLauncher = registerForActivityResult(
+        // Kit SAF launchers: single-file picker for chop mode, multi-file picker for kit mode.
+        val kitLoopLauncher = registerForActivityResult(
+            ActivityResultContracts.OpenDocument(),
+        ) { uri: Uri? -> uri?.let { kitViewModel.onLoopFilePicked(it) } }
+
+        val kitFilesLauncher = registerForActivityResult(
             ActivityResultContracts.OpenMultipleDocuments(),
-        ) { uris: List<Uri> -> sampleImportViewModel.onFilesPicked(uris, this) }
+        ) { uris: List<Uri> -> kitViewModel.onKitFilesPicked(uris, this) }
+
+        // Kit Builder: whole-folder pack picker. Persist the grant so pack URIs stay readable
+        // across sessions (audition + load happen well after the picker callback returns).
+        val packLauncher = registerForActivityResult(
+            ActivityResultContracts.OpenDocumentTree(),
+        ) { uri: Uri? ->
+            uri?.let {
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        it, Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                } catch (e: SecurityException) {
+                    Log.w("EP133", "takePersistableUriPermission failed", e)
+                }
+                kitBuilderViewModel.onPackPicked(it, this)
+            }
+        }
 
         deviceViewModel.onRequestBackup = { name -> backupLauncher.launch(name) }
         deviceViewModel.onRequestRestore = { restoreLauncher.launch(arrayOf("*/*")) }
-        sampleImportViewModel.onRequestPick = { importLauncher.launch(arrayOf("audio/*")) }
+        deviceViewModel.onOpenFirmwareUpdater = {
+            try {
+                val customTabsIntent = CustomTabsIntent.Builder().build()
+                customTabsIntent.launchUrl(this, Uri.parse("https://teenage.engineering/apps/update"))
+            } catch (e: Exception) {
+                deviceViewModel.showSnackbar("No browser available to open the updater")
+            }
+        }
+        kitViewModel.onRequestLoopPick = { kitLoopLauncher.launch(arrayOf("audio/*")) }
+        kitViewModel.onRequestKitPick = { kitFilesLauncher.launch(arrayOf("audio/*")) }
+        kitBuilderViewModel.onRequestPackPick = { packLauncher.launch(null) }
 
         setContent {
             val deviceState by midiRepo.deviceState.collectAsState()
             EP133App(
                 padsViewModel = padsViewModel,
-                beatsViewModel = beatsViewModel,
-                soundsViewModel = soundsViewModel,
-                chordsViewModel = chordsViewModel,
                 projectsViewModel = projectsViewModel,
                 deviceViewModel = deviceViewModel,
-                sampleImportViewModel = sampleImportViewModel,
+                kitViewModel = kitViewModel,
+                kitBuilderViewModel = kitBuilderViewModel,
                 isConnected = deviceState.connected,
             )
         }
@@ -120,25 +147,39 @@ class MainActivity : ComponentActivity() {
 
         // Enumerate MIDI devices after USB permission grant delay
         mainHandler.postDelayed({ midiRepo.refreshDeviceState() }, 2000)
-
-        observeScreenOnState()
     }
 
-    private fun observeScreenOnState() {
-        lifecycleScope.launch {
-            sequencer.state.collectLatest { state ->
-                if (state.playing) {
-                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                } else {
-                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                }
-            }
-        }
+    override fun onStart() {
+        super.onStart()
+        // USB-MIDI ports are exclusive, and the WebView (SampleManagerActivity) owns a second
+        // MIDIManager. Re-claim the port when we come back to the foreground. Skip the very first
+        // onStart — onCreate + the USB-attach intent handle the initial connect.
+        if (startedOnce) reacquireMidi(attempt = 0)
+        startedOnce = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Drop any queued reacquire/refresh callbacks — they must not fire after the port is
+        // released, or they'd fight the foreground owner for the exclusive USB-MIDI port.
+        mainHandler.removeCallbacksAndMessages(null)
+        // Release the exclusive USB-MIDI port so the foreground owner can claim it. Re-acquired
+        // in onStart. (See SampleManagerActivity for the matching half.)
+        midiManager.releasePorts()
+    }
+
+    /**
+     * Re-open the device + receive port after returning to the foreground. Retried twice because
+     * our onStart fires *before* the outgoing activity's onStop releases the port (the launch-order
+     * race); by the second retry it has released. refreshDevices() is idempotent (dedups ports).
+     */
+    private fun reacquireMidi(attempt: Int) {
+        midiManager.refreshDevices()
+        if (attempt < 2) mainHandler.postDelayed({ reacquireMidi(attempt + 1) }, 500)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        sequencer.close()
         try {
             unregisterReceiver(usbReceiver)
         } catch (_: IllegalArgumentException) {

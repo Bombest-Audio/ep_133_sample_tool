@@ -6,13 +6,21 @@ All notable changes to this project are tracked here. Format follows
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-06-26
+
 The big one: this release turns a desktop-only tool into a real cross-platform app
 and opens the whole thing up as a community project.
 
 ### Added
-- Native **Android** app — Kotlin + Jetpack Compose. Pads, Beats, Sounds, Chords,
-  Device, Projects, and Sample Import screens talking straight to the MIDI layer,
-  with the original web app kept as a WebView fallback for backup/restore/sync.
+- Native **Android** app — Kotlin + Jetpack Compose. Pads, Device, Projects, and
+  Sample Import screens talking straight to the MIDI layer, with the original web
+  app kept as a WebView fallback for backup/restore/sync. (Beats, Sounds, and
+  Chords are sitting out this first release until their hardware behavior is solid.)
+- A **Teenage-Engineering-grade redesign** of the whole Android UI — every screen
+  rebuilt on a hardware-faithful design system (faceplate grays, rubberized pads,
+  mono labels, hairline rules). Light and dark themes, plus an EP-133 ↔ EP-1320
+  rust SKU you flip right from the header.
+- **Signed release builds** for Android, so the APK installs clean as a sideload.
 - Native **iOS** app (Swift/SwiftUI WKWebView wrapper) and a **JUCE** AU/VST3
   plugin wrapper for the DAW.
 - **Import your own WAV samples over USB** straight to the device's `/sounds` — the
@@ -27,6 +35,18 @@ and opens the whole thing up as a community project.
 
 ### Changed
 - `package.json` now declares its MIT license and points at the Bombest-Audio org.
+
+### Fixed
+- Rebuilt how the app handles EP-133 file responses: every reply is now matched to
+  its request by request id, instead of guessing from in-flight flags. The old way
+  dropped reqId-matching replies under rapid or overlapping transfers — which
+  silently broke sample import, truncated backups, and forced active-group sync off.
+  It's race-proof now.
+- **Backups no longer truncate.** Multi-chunk sample files download in full instead
+  of stopping after the first chunk (older backups came out with barely more than a
+  metadata file).
+- Device→app **active-group sync** works again: tap a group on the hardware and the
+  app follows along.
 
 ## [1.2.0] - 2025-05-28
 
@@ -49,6 +69,7 @@ and opens the whole thing up as a community project.
 - First fully offline build of the EP-133 sample tool — factory pack and all
   WebAssembly audio libraries bundled, no internet required.
 
-[Unreleased]: https://github.com/Bombest-Audio/ep_133_sample_tool/compare/1.2.0...HEAD
+[Unreleased]: https://github.com/Bombest-Audio/ep_133_sample_tool/compare/2.0.0...HEAD
+[2.0.0]: https://github.com/Bombest-Audio/ep_133_sample_tool/compare/1.2.0...2.0.0
 [1.2.0]: https://github.com/Bombest-Audio/ep_133_sample_tool/compare/1.1.0...1.2.0
 [1.1.0]: https://github.com/Bombest-Audio/ep_133_sample_tool/releases/tag/1.1.0

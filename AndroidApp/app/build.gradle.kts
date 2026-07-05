@@ -23,13 +23,45 @@ android {
         }
     }
 
+    // Release signing material is supplied at build time via environment variables
+    // (CI) or -P gradle properties (local) — nothing secret lives in the repo:
+    //   EP133_KEYSTORE_FILE, EP133_KEYSTORE_PASSWORD, EP133_KEY_ALIAS, EP133_KEY_PASSWORD
+    // When the keystore is absent/missing the "release" signingConfig is never created,
+    // the release build is produced UNSIGNED, and local/dev + debug builds never fail.
+    val releaseStoreFile = (System.getenv("EP133_KEYSTORE_FILE")
+        ?: project.findProperty("EP133_KEYSTORE_FILE") as String?)
+        ?.let { file(it) }
+        ?.takeIf { it.exists() }
+
+    signingConfigs {
+        if (releaseStoreFile != null) {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = System.getenv("EP133_KEYSTORE_PASSWORD")
+                    ?: project.findProperty("EP133_KEYSTORE_PASSWORD") as String?
+                keyAlias = System.getenv("EP133_KEY_ALIAS")
+                    ?: project.findProperty("EP133_KEY_ALIAS") as String?
+                keyPassword = System.getenv("EP133_KEY_PASSWORD")
+                    ?: project.findProperty("EP133_KEY_PASSWORD") as String?
+                enableV1Signing = true   // jar signature — older sideload readers
+                enableV2Signing = true   // primary, required
+                enableV3Signing = true   // key-rotation capable
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = true
+            // First signed release ships with minify OFF to decouple signing from R8 risk.
+            // proguard-rules.pro is committed and ready; flip this to true in a follow-up
+            // release once the keep-rules are proven on real hardware.
+            isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // null when no keystore is configured (local/dev) → unsigned release, not a failure
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
@@ -94,9 +126,13 @@ dependencies {
     // Core AndroidX
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("androidx.documentfile:documentfile:1.0.1")
 
     // WebView (kept for sample management fallback)
     implementation("androidx.webkit:webkit:1.9.0")
+
+    // Custom Tabs — opens TE firmware updater in-app via Chrome (Wave 3 wires the intent)
+    implementation("androidx.browser:browser:1.8.0")
 
     // JSON parsing for EP-133 data
     implementation("org.json:json:20231013")

@@ -138,7 +138,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
             return@flow
         }
 
-        val ok = try {
+        val nodeId = try {
             uploadMutex.withLock {
                 midi.putSampleFile(safeName, converted.pcm, converted.channels, converted.sampleRate)
             }
@@ -150,7 +150,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
             return@flow
         }
 
-        if (ok) {
+        if (nodeId != null) {
             emit(SampleImportProgress.Progress(1, 1))
             emit(SampleImportProgress.Done(safeName))
         } else {
@@ -201,7 +201,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
             return@flow
         }
 
-        val ok = try {
+        val nodeId = try {
             uploadMutex.withLock {
                 midi.putSampleFile(safeName, converted.pcm, converted.channels, converted.sampleRate)
             }
@@ -213,7 +213,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
             return@flow
         }
 
-        if (ok) {
+        if (nodeId != null) {
             emit(SampleImportProgress.Progress(1, 1))
             emit(SampleImportProgress.Done(safeName))
         } else {
@@ -239,7 +239,17 @@ class SampleImportManager(private val midi: MIDIRepository) {
      * Runs under [Dispatchers.IO] for the initial byte read; [AudioDecoder] switches to
      * its own IO context for the decode loop.
      */
-    suspend fun convert(context: Context, uri: Uri): ConvertedSample =
+    /**
+     * @param enforceMaxLength when true (single-sample import), reject sources longer than the
+     *   device's 20 s single-sample cap up front. The loop chopper passes **false**: it needs the
+     *   full-length PCM to slice, and each resulting slice is size-checked against the device's
+     *   per-sample byte budget before upload, so the whole-loop cap must not apply here.
+     */
+    suspend fun convert(
+        context: Context,
+        uri: Uri,
+        enforceMaxLength: Boolean = true,
+    ): ConvertedSample =
         withContext(Dispatchers.IO) {
             // Read raw bytes inside the grant (Landmine 7 — content:// URI lifetime).
             val rawBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
@@ -265,7 +275,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
                     throw IllegalArgumentException("invalid sample rate: $srcRate Hz (must be 3000–768000)")
                 }
                 val durationSec = (pcm.size / channels).toDouble() / srcRate
-                if (durationSec > 20.0) {
+                if (enforceMaxLength && durationSec > 20.0) {
                     throw IllegalArgumentException(
                         "max sample length is 20 seconds (was %.1fs)".format(durationSec)
                     )
