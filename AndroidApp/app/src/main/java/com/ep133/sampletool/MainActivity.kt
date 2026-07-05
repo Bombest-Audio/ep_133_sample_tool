@@ -8,6 +8,7 @@ import android.hardware.usb.UsbManager
 import android.media.midi.MidiManager
 import android.net.Uri
 import android.os.Bundle
+import androidx.browser.customtabs.CustomTabsIntent
 import android.os.Handler
 import android.os.Looper
 import android.view.WindowManager
@@ -15,35 +16,28 @@ import androidx.activity.compose.setContent
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
-import android.media.AudioManager
-import com.ep133.sampletool.domain.midi.ChordPlayer
 import com.ep133.sampletool.domain.midi.MIDIRepository
-import com.ep133.sampletool.domain.midi.NativeSynth
 import com.ep133.sampletool.domain.midi.ProjectBackupManager
 import com.ep133.sampletool.domain.midi.SampleImportManager
-import com.ep133.sampletool.domain.sequencer.SequencerEngine
 import com.ep133.sampletool.midi.MIDIManager
-import androidx.lifecycle.lifecycleScope
 import com.ep133.sampletool.ui.EP133App
-import com.ep133.sampletool.ui.beats.BeatsViewModel
-import com.ep133.sampletool.ui.chords.ChordsViewModel
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
-import com.ep133.sampletool.ui.sounds.SoundsViewModel
 import com.ep133.sampletool.ui.`import`.SampleImportViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var midiManager: MIDIManager
     private lateinit var midiRepo: MIDIRepository
-    private lateinit var sequencer: SequencerEngine
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Tracks whether onStart has run before, so we only re-acquire MIDI when *returning* to the
+    // foreground (the first launch's connect flow is driven by onCreate + the USB-attach intent).
+    private var startedOnce = false
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -65,14 +59,8 @@ class MainActivity : ComponentActivity() {
         val systemMidiManager = getSystemService(Context.MIDI_SERVICE) as MidiManager
         midiManager = MIDIManager(this, systemMidiManager)
         midiRepo = MIDIRepository(midiManager)
-        sequencer = SequencerEngine(midiRepo)
 
-        val nativeSynth = NativeSynth(getSystemService(AudioManager::class.java))
-        val chordPlayer = ChordPlayer(midiRepo, nativeSynth)
         val padsViewModel = PadsViewModel(midiRepo)
-        val beatsViewModel = BeatsViewModel(sequencer, midiRepo)
-        val soundsViewModel = SoundsViewModel(midiRepo)
-        val chordsViewModel = ChordsViewModel(chordPlayer, midiRepo)
         val projectBackupManager = ProjectBackupManager(midiRepo)
         val projectsViewModel = ProjectsViewModel(midiRepo, projectBackupManager)
         val deviceViewModel = DeviceViewModel(midiRepo)
@@ -97,14 +85,19 @@ class MainActivity : ComponentActivity() {
         deviceViewModel.onRequestBackup = { name -> backupLauncher.launch(name) }
         deviceViewModel.onRequestRestore = { restoreLauncher.launch(arrayOf("*/*")) }
         sampleImportViewModel.onRequestPick = { importLauncher.launch(arrayOf("audio/*")) }
+        deviceViewModel.onOpenFirmwareUpdater = {
+            try {
+                val customTabsIntent = CustomTabsIntent.Builder().build()
+                customTabsIntent.launchUrl(this, Uri.parse("https://teenage.engineering/apps/update"))
+            } catch (e: Exception) {
+                deviceViewModel.showSnackbar("No browser available to open the updater")
+            }
+        }
 
         setContent {
             val deviceState by midiRepo.deviceState.collectAsState()
             EP133App(
                 padsViewModel = padsViewModel,
-                beatsViewModel = beatsViewModel,
-                soundsViewModel = soundsViewModel,
-                chordsViewModel = chordsViewModel,
                 projectsViewModel = projectsViewModel,
                 deviceViewModel = deviceViewModel,
                 sampleImportViewModel = sampleImportViewModel,
@@ -120,25 +113,39 @@ class MainActivity : ComponentActivity() {
 
         // Enumerate MIDI devices after USB permission grant delay
         mainHandler.postDelayed({ midiRepo.refreshDeviceState() }, 2000)
-
-        observeScreenOnState()
     }
 
-    private fun observeScreenOnState() {
-        lifecycleScope.launch {
-            sequencer.state.collectLatest { state ->
-                if (state.playing) {
-                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                } else {
-                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                }
-            }
-        }
+    override fun onStart() {
+        super.onStart()
+        // USB-MIDI ports are exclusive, and the WebView (SampleManagerActivity) owns a second
+        // MIDIManager. Re-claim the port when we come back to the foreground. Skip the very first
+        // onStart — onCreate + the USB-attach intent handle the initial connect.
+        if (startedOnce) reacquireMidi(attempt = 0)
+        startedOnce = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Drop any queued reacquire/refresh callbacks — they must not fire after the port is
+        // released, or they'd fight the foreground owner for the exclusive USB-MIDI port.
+        mainHandler.removeCallbacksAndMessages(null)
+        // Release the exclusive USB-MIDI port so the foreground owner can claim it. Re-acquired
+        // in onStart. (See SampleManagerActivity for the matching half.)
+        midiManager.releasePorts()
+    }
+
+    /**
+     * Re-open the device + receive port after returning to the foreground. Retried twice because
+     * our onStart fires *before* the outgoing activity's onStop releases the port (the launch-order
+     * race); by the second retry it has released. refreshDevices() is idempotent (dedups ports).
+     */
+    private fun reacquireMidi(attempt: Int) {
+        midiManager.refreshDevices()
+        if (attempt < 2) mainHandler.postDelayed({ reacquireMidi(attempt + 1) }, 500)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        sequencer.close()
         try {
             unregisterReceiver(usbReceiver)
         } catch (_: IllegalArgumentException) {

@@ -65,23 +65,65 @@ jobs:
           key: gradle-${{ hashFiles('AndroidApp/**/*.gradle*', 'AndroidApp/**/gradle-wrapper.properties') }}
           restore-keys: gradle-
 
-      - name: Build debug APK
+      - name: Verify signing secrets present
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=
+          [ -z "$KEYSTORE_B64" ] && missing="$missing ANDROID_KEYSTORE_BASE64"
+          [ -z "$KS_PASS" ]      && missing="$missing ANDROID_KEYSTORE_PASSWORD"
+          [ -z "$KEY_ALIAS" ]    && missing="$missing ANDROID_KEY_ALIAS"
+          [ -z "$KEY_PASS" ]     && missing="$missing ANDROID_KEY_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::Release signing secrets missing:$missing — add them under Settings → Secrets and variables → Actions" >&2
+            exit 1
+          fi
+
+      - name: Decode keystore
+        id: keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          KS_PATH="$RUNNER_TEMP/ep133-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$KS_PATH"
+          if [ ! -s "$KS_PATH" ]; then
+            echo "::error::Decoded keystore is empty — check ANDROID_KEYSTORE_BASE64" >&2
+            exit 1
+          fi
+          echo "path=$KS_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed release APK
         working-directory: AndroidApp
-        run: ./gradlew :app:assembleDebug
+        env:
+          EP133_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
+          EP133_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          EP133_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          EP133_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease
 
       - name: Stage APK
         id: apk
         env:
           TAG: ${{ steps.tag.outputs.name }}
         run: |
-          SRC="AndroidApp/app/build/outputs/apk/debug/app-debug.apk"
+          SRC="AndroidApp/app/build/outputs/apk/release/app-release.apk"
           if [ ! -f "$SRC" ]; then
-            echo "::error::APK not found at $SRC" >&2
+            echo "::error::Signed release APK not found at $SRC (signing may have failed)" >&2
             exit 1
           fi
           OUT="EP133SampleTool-${TAG}.apk"
           cp "$SRC" "$OUT"
           echo "path=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Verify APK signature
+        env:
+          APK: ${{ steps.apk.outputs.path }}
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --verbose --print-certs "$APK"
 
       - name: Build release notes
         id: notes

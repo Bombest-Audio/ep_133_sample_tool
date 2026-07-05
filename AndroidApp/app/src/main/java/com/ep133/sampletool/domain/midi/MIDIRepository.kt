@@ -149,6 +149,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private val channelBuffer = java.io.ByteArrayOutputStream(3)
 
     // ── SysEx response deferreds (D-12) ──
+    // reqId→waiter correlation registry (backlog 999.4). Migrated file ops register a waiter
+    // under their unique reqId and the dispatcher routes responses by reqId via [fileWaiters].
+    // Ops not yet migrated still use the pending*Deferred fields below + the legacy fallback in
+    // dispatchFileResponse. As each op moves onto the registry its legacy branch is deleted.
+    private val fileWaiters = FileWaiterRegistry()
+
     private var pendingGreetDeferred: CompletableDeferred<Map<String, String>>? = null
     private var pendingMetadataDeferred: CompletableDeferred<Map<String, String>>? = null
     private var pendingFileListCountDeferred: CompletableDeferred<Int>? = null
@@ -162,56 +168,23 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     // to bound response sizes. Reset to false on greet (new connection).
     @Volatile private var fileSessionInitialized = false
     private var deviceChunkSize: Int = 512
-    private var pendingFileInitDeferred: CompletableDeferred<Int>? = null
+    // (pendingFileInitDeferred removed — FILE_INIT now correlates by reqId via fileWaiters)
 
     // ── Paged project transfer state (Phase 4 GATE) ──
-    // A paged GET/PUT keeps its request registered across STATUS_SPECIFIC_SUCCESS_START
-    // and resolves on STATUS_OK. Unlike a single CompletableDeferred, intermediate DATA
-    // responses keep arriving, so pages flow through a Channel (RESEARCH Pitfall 3).
-    @Volatile private var transferInFlight = false
-    private var pendingGetInitDeferred: CompletableDeferred<SysExProtocol.GetInitResponse>? = null
-    private var pendingGetPages: Channel<SysExProtocol.GetDataResponse>? = null
-    // Hardware-verified (2026-06-24): device returns "unexpected page" if DATA frames are sent
-    // before the INIT response arrives. pendingPutInitDeferred is completed by the dispatcher
-    // on the first PUT response; putSampleFile awaits it before sending any DATA pages.
-    private var pendingPutInitDeferred: CompletableDeferred<Boolean>? = null
-    private var pendingPutAckDeferred: CompletableDeferred<Boolean>? = null
-    // Hardware-proven (2026-06-24): the device echoes the request reqId in each response.
-    // awaitedFileReqId is set immediately before EVERY file-op send (INIT, LIST, METADATA,
-    // INFO, PUT INIT, PUT DATA, GET INIT, GET DATA) and cleared once the matching response
-    // is consumed. The dispatcher ignores any FILE response whose reqId doesn't match —
-    // this is the primary defence against duplicate responses poisoning the wrong deferred
-    // (hardware-confirmed root cause 2026-06-24: duplicate FILE_INIT response completing
-    // the LIST deferred → resolveNodeId returns null → upload aborts).
-    @Volatile private var awaitedFileReqId: Int = -1
-    // awaitedPutReqId is kept for PUT-specific per-page ack matching inside
-    // dispatchPagedPutResponse (the PUT path checks both fields).
-    @Volatile private var awaitedPutReqId: Int = -1
+    // fileOpMutex serializes whole file ops (the device tolerates one transfer at a time), and
+    // each op registers a reqId-keyed waiter in fileWaiters — so there is no shared in-flight
+    // state to track. (transferInFlight / pendingPut* / awaited*ReqId removed with backlog 999.4.)
 
     // ── Project enumeration state (Phase 4 Wave 2) ──
     // FILE_LIST by node ID returns concatenated directory entries; the dispatcher hands the
     // accumulated body to a CompletableDeferred keyed by nodeListInFlight.
-    private var pendingNodeListDeferred: CompletableDeferred<ByteArray>? = null
-    private val nodeListBuffer = java.io.ByteArrayOutputStream(512)
+    // (pendingNodeListDeferred / nodeListBuffer removed — node FILE_LIST correlates by reqId)
 
     // ── Metadata JSON round-trip state (Step 1 — active-group sync) ──
-    // The nodeId-form METADATA GET response streams pages of JSON fragments; we accumulate
-    // them into a StringBuilder and complete the deferred on the terminator page.
-    // METADATA SET posts a single frame and awaits an ack on the matching response.
-    // FILE_INFO (getNode) completes a single-shot deferred with the parsed NodeInfo.
-    //
-    // Branch guard: metadataJsonInFlight is true while getMetadataJson/setMetadata owns the
-    // METADATA dispatcher slot. When false, incoming METADATA responses fall through to the
-    // legacy greet-style parse used by queryProjectsActiveNode (Phase-4 storage queries).
-    @Volatile private var metadataJsonInFlight = false
-    private var pendingMetadataJsonDeferred: CompletableDeferred<String>? = null
-    private val metadataJsonBuffer = StringBuilder(256)
-    private var metadataJsonExpectedPage = 0
+    // (metadata GET/SET in-flight flags + deferreds removed — both now correlate by reqId via
+    //  fileWaiters; see getMetadataJson / setMetadata.)
 
-    @Volatile private var metadataSetInFlight = false
-    private var pendingMetadataSetAckDeferred: CompletableDeferred<Boolean>? = null
-
-    private var pendingNodeInfoDeferred: CompletableDeferred<SysExProtocol.NodeInfo>? = null
+    // (pendingNodeInfoDeferred removed — FILE_INFO now correlates by reqId via fileWaiters)
 
     // ── File protocol flows (for BackupManager) ──
     data class FileListEntry(val path: String, val nodeId: Int)
@@ -367,6 +340,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 groupsNodeCache.clear()
                 groupNodeNameCache.clear()
                 Log.d("EP133MIDI", "GREET: cleared structure caches (new connection)")
+                // A greet means a (re)connection — fail any file ops still awaiting on the
+                // registry so they don't hang to timeout against a device that just reset.
+                fileWaiters.failAll(IllegalStateException("device greet/reconnect"))
 
                 val parsed = SysExProtocol.parseGreetResponse(payload)
                 Log.d("EP133APP", "GREET response: $parsed")
@@ -394,332 +370,22 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 // Guard only when there is no status byte at all (payload itself is empty).
                 if (payload.isEmpty()) return
 
-                // Hardware-verified (2026-06-23): device FILE responses do NOT echo the subcommand.
-                // FILE_INIT reply unpacked body starts 0x00 (not 0x01=INIT); FILE_LIST reply starts
-                // with the page u16 (not 0x04=LIST). Routing by body[0] as a subcommand would never
-                // match and leave pendingFileInitDeferred dangling — session never opens.
-                //
-                // Fix: requests are serialised (one file op in flight at a time, gated by
-                // statsQueryInFlight / transferInFlight / ensureFileSessionInit). Determine the
-                // in-flight op from state and pass the WHOLE unpacked body to the handler.
-                val inFlightCmd = when {
-                    pendingFileInitDeferred != null              -> SysExProtocol.TE_SYSEX_FILE_INIT
-                    metadataJsonInFlight || metadataSetInFlight  -> SysExProtocol.TE_SYSEX_FILE_METADATA
-                    pendingNodeListDeferred != null              -> SysExProtocol.TE_SYSEX_FILE_LIST
-                    transferInFlight                             -> SysExProtocol.TE_SYSEX_FILE_PUT
-                    pendingGetInitDeferred != null || pendingGetPages != null -> SysExProtocol.TE_SYSEX_FILE_GET
-                    pendingNodeInfoDeferred != null              -> SysExProtocol.TE_SYSEX_FILE_INFO
-                    else                                         -> -1
-                }
-                // Extract the response reqId from the raw frame.
-                // Frame layout (no F0 — already stripped by parseMidiInput accumulation):
-                //   message[0]=F0, [1..3]=TE ID, [4]=deviceId, [5]=0x40, [6]=flags|reqIdHigh, [7]=reqIdLow
-                // reqId high bits = message[6] & 0x0F; low 7 bits = message[7] & 0x7F.
-                // This is the SAME extraction used by the existing awaitedPutReqId path (commit ba62b55).
+                // reqId-first routing (backlog 999.4): every file op registers a waiter under its
+                // unique reqId, and route() delivers each response to the waiter that owns it. An
+                // unmatched reqId is a stale or duplicate response (the device sends each response
+                // twice) and is dropped.
                 val responseReqId = ((message[6].toInt() and 0x0F) shl 7) or (message[7].toInt() and 0x7F)
-                val bodyHex = body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133MIDI", "MIDI META: FILE cmd=5 inFlightCmd=$inFlightCmd responseReqId=$responseReqId awaitedFileReqId=$awaitedFileReqId body[${body.size}] $bodyHex")
-                if (inFlightCmd == -1) {
-                    Log.w("EP133MIDI", "MIDI META: unrouted file response — no op in flight, body[${body.size}] $bodyHex")
-                    return
+                val routed = fileWaiters.route(FileResponse(responseReqId, fileStatus, body))
+                if (routed == FileWaiterRegistry.RouteResult.Unmatched) {
+                    Log.w("EP133MIDI", "MIDI META: unrouted FILE response reqId=$responseReqId status=$fileStatus — dropped")
                 }
-                // Unified reqId guard: ignore any file response whose reqId doesn't match what we
-                // are currently awaiting. This prevents a duplicate response (hardware sends each
-                // response twice due to duplicate MidiReceiver connections) from completing the
-                // NEXT op's deferred — the root cause of resolveNodeId("/sounds") returning null.
-                // awaitedFileReqId is set before every send and cleared after the awaited response.
-                if (awaitedFileReqId != -1 && responseReqId != awaitedFileReqId) {
-                    Log.w(
-                        "EP133MIDI",
-                        "MIDI META: ignoring stale/dup file response reqId=$responseReqId awaiting=$awaitedFileReqId — dropped",
-                    )
-                    return
-                }
-                // Clear awaitedFileReqId now that we matched and are about to consume the response.
-                // dispatchFileResponse completes the in-flight deferred; subsequent sends will set
-                // awaitedFileReqId again before the next send.
-                awaitedFileReqId = -1
-                dispatchFileResponse(inFlightCmd, body, responseReqId, fileStatus)
             }
         }
     }
 
-    /**
-     * Dispatch a FILE response to the matching in-flight handler. [fileCmd] is the op type
-     * determined by the caller from in-flight state (NOT from body[0] — device responses do not
-     * echo the subcommand). [body] is the WHOLE unpacked response body (no bytes stripped).
-     * [responseReqId] is the reqId extracted from the raw frame (frame[6] high bits + frame[7]).
-     *
-     * Hardware ground truth (2026-06-23):
-     *   FILE_INIT reply unpacked: `00 0C 00 00 02 00` (starts 0x00, not 0x01=INIT)
-     *   FILE_LIST reply unpacked: page-u16 then entries (starts with page word, not 0x04=LIST)
-     */
-    private fun dispatchFileResponse(fileCmd: Int, body: ByteArray, responseReqId: Int = -1, fileStatus: Int = -1) {
-        // Rename: parameter was historically called "payload" but is now always the whole body.
-        val payload = body
-        when (fileCmd) {
-            SysExProtocol.TE_SYSEX_FILE_INIT -> {
-                // Whole body passed. Session opening is what matters; chunkSize parse is
-                // approximate (parseFileInitResponse reads body[1..4], which with real HW
-                // capture `00 0C 00 00 02 00` yields a large number — tolerated). Never throw.
-                val hexDump = body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133MIDI", "MIDI META: FILE_INIT response body[${body.size}] $hexDump")
-                val chunkSize = try {
-                    SysExProtocol.parseFileInitResponse(body)
-                } catch (_: Exception) { 512 }
-                Log.d("EP133MIDI", "MIDI META: FILE_INIT negotiated chunkSize=$chunkSize (approx)")
-                deviceChunkSize = chunkSize
-                fileSessionInitialized = true
-                pendingFileInitDeferred?.complete(chunkSize)
-                pendingFileInitDeferred = null
-            }
-            SysExProtocol.TE_SYSEX_FILE_METADATA -> {
-                // Payload is already unpacked (dispatcher unpacks the full body before splitting).
-                val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133APP", "MIDI META: inbound METADATA payload[${payload.size}] $hexDump")
-
-                when {
-                    metadataJsonInFlight -> {
-                        // nodeId-form METADATA GET: accumulate JSON pages until terminator.
-                        // payload is already unpacked — use directly (no second unpack7bit call).
-                        if (SysExProtocol.isMetadataTerminator(payload)) {
-                            // Final page — may still carry a fragment before the NUL.
-                            if (payload.size > 2) {
-                                try {
-                                    val (_, fragment) = SysExProtocol.parseMetadataPage(payload)
-                                    metadataJsonBuffer.append(fragment)
-                                } catch (_: Exception) { /* ignore malformed fragment on terminator */ }
-                            }
-                            val accumulated = metadataJsonBuffer.toString()
-                            Log.d("EP133APP", "MIDI META: METADATA GET complete, accumulated JSON: $accumulated")
-                            pendingMetadataJsonDeferred?.complete(accumulated)
-                            pendingMetadataJsonDeferred = null
-                        } else {
-                            try {
-                                val (page, fragment) = SysExProtocol.parseMetadataPage(payload)
-                                if (page == metadataJsonExpectedPage) {
-                                    metadataJsonBuffer.append(fragment)
-                                    metadataJsonExpectedPage++
-                                } else {
-                                    Log.e("EP133APP", "MIDI META: unexpected metadata page $page, expected $metadataJsonExpectedPage")
-                                    pendingMetadataJsonDeferred?.completeExceptionally(
-                                        IllegalStateException("unexpected metadata page $page, expected $metadataJsonExpectedPage"),
-                                    )
-                                    pendingMetadataJsonDeferred = null
-                                }
-                            } catch (e: Exception) {
-                                Log.e("EP133APP", "MIDI META: METADATA page parse failed", e)
-                                pendingMetadataJsonDeferred?.completeExceptionally(e)
-                                pendingMetadataJsonDeferred = null
-                            }
-                        }
-                    }
-                    metadataSetInFlight -> {
-                        // nodeId-form METADATA SET ack: any response completes the round-trip.
-                        Log.d("EP133APP", "MIDI META: METADATA SET ack received")
-                        pendingMetadataSetAckDeferred?.complete(true)
-                        pendingMetadataSetAckDeferred = null
-                    }
-                    else -> {
-                        // Legacy path-form METADATA response (Phase-4 storage queries / queryProjectsActiveNode).
-                        // payload is already unpacked — parse directly as ASCII key:value text.
-                        val text = try {
-                            String(payload, Charsets.US_ASCII).trim(' ')
-                        } catch (_: Exception) { "" }
-                        val parsed = text.split(";")
-                            .filter { it.contains(":") }
-                            .associate { entry ->
-                                val idx = entry.indexOf(':')
-                                entry.substring(0, idx) to entry.substring(idx + 1)
-                            }
-                        Log.d("EP133APP", "FILE_METADATA response: $parsed")
-                        pendingMetadataDeferred?.complete(parsed)
-                        pendingMetadataDeferred = null
-                    }
-                }
-            }
-            SysExProtocol.TE_SYSEX_FILE_LIST -> {
-                // Hardware ground truth: FILE_LIST response body = [page u16 BE][entries...].
-                // No status byte — the old body[0]-as-status routing was wrong.
-                val nodeDeferred = pendingNodeListDeferred
-                if (nodeDeferred != null) {
-                    // Skip the leading page u16 (2 bytes); pass raw entry data to parseFileListEntries.
-                    val entriesBody = if (body.size > 2) body.copyOfRange(2, body.size) else ByteArray(0)
-                    nodeListBuffer.write(entriesBody)
-                    nodeDeferred.complete(nodeListBuffer.toByteArray())
-                    pendingNodeListDeferred = null
-                    nodeListBuffer.reset()
-                    return
-                }
-
-                // Legacy path-form FILE_LIST (Phase-4 queryDeviceStats /sounds listing).
-                // Body format is unverified on HW now — keep existing behaviour to avoid regressing
-                // stats path. Log the raw body for the next hardware capture session.
-                val hexDump = body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133APP", "FILE_LIST legacy path body[${body.size}] $hexDump")
-                val status = body.getOrNull(0)?.toInt()?.and(0xFF) ?: return
-                if (status == SysExProtocol.STATUS_OK || status == SysExProtocol.STATUS_SPECIFIC_SUCCESS_START) {
-                    fileListEntryCount++
-                    // Parse entry path from payload for BackupManager (path after status byte)
-                    val entryPath = if (payload.size > 1) {
-                        String(payload.copyOfRange(1, payload.size), Charsets.US_ASCII).trimEnd('\u0000')
-                    } else ""
-                    repositoryScope.launch {
-                        _fileListEntries.emit(FileListEntry(entryPath, fileListEntryCount))
-                    }
-                }
-                if (status == SysExProtocol.STATUS_OK) {
-                    pendingFileListCountDeferred?.complete(fileListEntryCount)
-                    pendingFileListCountDeferred = null
-                    fileListEntryCount = 0
-                }
-            }
-            SysExProtocol.TE_SYSEX_FILE_GET -> {
-                if (transferInFlight) {
-                    dispatchPagedGetResponse(payload)
-                } else {
-                    // Legacy Phase 2 single-chunk path — emit (echoed reqId, payload) so
-                    // BackupManager can correlate the chunk to the FILE_GET it sent.
-                    repositoryScope.launch {
-                        _fileChunks.emit(responseReqId to payload)
-                    }
-                }
-            }
-            SysExProtocol.TE_SYSEX_FILE_PUT -> {
-                if (transferInFlight) dispatchPagedPutResponse(payload, responseReqId, fileStatus)
-            }
-            SysExProtocol.TE_SYSEX_FILE_INFO -> {
-                // payload is already unpacked — use directly.
-                val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133APP", "MIDI META: inbound FILE_INFO payload[${payload.size}] $hexDump")
-
-                val deferred = pendingNodeInfoDeferred ?: return
-                try {
-                    val info = SysExProtocol.parseFileInfo(payload)
-                    Log.d("EP133APP", "MIDI META: FILE_INFO nodeId=${info.nodeId} name='${info.name}' flags=${info.flags}")
-                    deferred.complete(info)
-                } catch (e: Exception) {
-                    Log.e("EP133APP", "MIDI META: FILE_INFO parse failed", e)
-                    deferred.completeExceptionally(e)
-                }
-                pendingNodeInfoDeferred = null
-            }
-        }
-    }
-
-    /**
-     * Route a paged FILE_GET response. [payload] is the body after [FILE, GET] is stripped:
-     * `[status][...INIT-or-DATA body]`. The INIT response resolves [pendingGetInitDeferred];
-     * subsequent DATA responses stream through [pendingGetPages]. The request stays registered
-     * while status >= STATUS_SPECIFIC_SUCCESS_START and completes (channel closes) on STATUS_OK.
-     */
-    private fun dispatchPagedGetResponse(payload: ByteArray) {
-        val status = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
-        val body = if (payload.size > 1) payload.copyOfRange(1, payload.size) else ByteArray(0)
-
-        val initDeferred = pendingGetInitDeferred
-        if (initDeferred != null && !initDeferred.isCompleted) {
-            // First response after GET_INIT carries fileSize/fileName.
-            // body is already unpacked — use directly.
-            try {
-                initDeferred.complete(SysExProtocol.parseGetInitResponse(body))
-            } catch (e: IllegalArgumentException) {
-                Log.e("EP133APP", "GET INIT parse failed", e)
-                initDeferred.completeExceptionally(e)
-            }
-            return
-        }
-
-        val pages = pendingGetPages ?: return
-        if (status != SysExProtocol.STATUS_OK && status < SysExProtocol.STATUS_SPECIFIC_SUCCESS_START) {
-            // Error status (< SUCCESS_START, non-OK) — abort the transfer.
-            Log.e("EP133APP", "Paged GET aborted: status=$status")
-            pages.close(IllegalStateException("device error status $status"))
-            return
-        }
-        val data = try {
-            // body is already unpacked — parse directly.
-            SysExProtocol.parseGetDataResponse(body)
-        } catch (e: IllegalArgumentException) {
-            Log.e("EP133APP", "GET DATA parse failed", e)
-            pages.close(e)
-            return
-        }
-        pages.trySend(data)
-        if (status == SysExProtocol.STATUS_OK) {
-            // Terminal response — no more pages will follow.
-            pages.close()
-        }
-    }
-
-    /**
-     * Route a paged FILE_PUT response.
-     *
-     * Hardware-proven (2026-06-24): the device echoes the request reqId in each response.
-     * Per-page acks are matched by reqId — a mismatch means the response is stale or from
-     * a different op (e.g. a FILE_INFO status=4 fired by an unrelated event). Mismatched
-     * responses are logged and ignored so they cannot complete the wrong deferred.
-     *
-     * Protocol:
-     *   1. INIT sent → device responds with STATUS_OK or STATUS_SPECIFIC_SUCCESS_START.
-     *      This response completes [pendingPutInitDeferred] (true on success, false on error).
-     *   2. DATA pages sent one at a time, each awaited individually via [pendingPutAckDeferred].
-     *      The device responds with STATUS_OK or STATUS_SPECIFIC_SUCCESS_START per page;
-     *      both are treated as success so the caller can send the next page.
-     *   3. Final DATA (zero-length terminator) → device responds with STATUS_OK.
-     *      This is also routed through [pendingPutAckDeferred] (same machinery).
-     *
-     * Routing: if pendingPutInitDeferred is non-null, it owns the first response. Once it is
-     * cleared, each per-page deferred is freshly set by the caller before sending and consumed
-     * here (completed true on success, false/exceptionally on error).
-     *
-     * @param payload      Body of the PUT response (bytes AFTER the status — may be empty for a
-     *                     STATUS-ONLY ack such as a PUT DATA page ack from hardware).
-     * @param responseReqId reqId decoded from the raw frame by the caller (-1 if not decoded).
-     * @param fileStatus   Status byte already extracted by dispatchSysEx before unpacking the
-     *                     body. This is the authoritative status value — do NOT re-read from
-     *                     payload[0], which would be wrong when the body is empty.
-     */
-    private fun dispatchPagedPutResponse(payload: ByteArray, responseReqId: Int = -1, fileStatus: Int = -1) {
-        // Use the pre-extracted fileStatus. If caller passed -1 (legacy / direct call),
-        // fall back to payload[0] for backwards-compatibility only.
-        val status = if (fileStatus != -1) fileStatus else payload.getOrNull(0)?.toInt()?.and(0xFF) ?: return
-
-        // First response after PUT INIT: complete the init deferred.
-        // The INIT reqId is tracked by putSampleFile; we accept any response here because
-        // the INIT is the very first frame and no prior PUT responses can race against it.
-        val initAck = pendingPutInitDeferred
-        if (initAck != null) {
-            val ok = status == SysExProtocol.STATUS_OK ||
-                status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START
-            Log.d("EP133MIDI", "MIDI META: PUT INIT ack responseReqId=$responseReqId status=$status ok=$ok")
-            if (!initAck.isCompleted) {
-                if (ok) initAck.complete(true) else initAck.completeExceptionally(
-                    IllegalStateException("PUT INIT error status $status"),
-                )
-            }
-            pendingPutInitDeferred = null
-            return
-        }
-
-        // Per-page responses: validate reqId before completing the deferred.
-        // awaitedPutReqId is set by putSampleFile immediately before each sendMidi call.
-        val ack = pendingPutAckDeferred ?: return
-        if (responseReqId != -1 && awaitedPutReqId != -1 && responseReqId != awaitedPutReqId) {
-            Log.w(
-                "EP133MIDI",
-                "MIDI META: mismatched file response reqId=$responseReqId awaiting=$awaitedPutReqId — ignoring",
-            )
-            return
-        }
-        when {
-            status == SysExProtocol.STATUS_OK ||
-            status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START ->
-                if (!ack.isCompleted) ack.complete(true)
-            else ->
-                if (!ack.isCompleted) ack.complete(false)
-        }
-    }
+    // dispatchFileResponse / dispatchPagedPutResponse removed — every file response now routes by
+    // reqId through fileWaiters (see the TE_SYSEX_FILE branch in dispatchSysEx). The per-op body
+    // parsing lives in each awaiting op, not the dispatcher.
 
     /** Refresh device state from MIDIManager. */
     fun refreshDeviceState() {
@@ -784,34 +450,29 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         val firmware = greetResult["sw_version"] ?: ""
         _deviceState.value = _deviceState.value.copy(firmwareVersion = firmware)
 
-        // Step 2: FILE_METADATA on /sounds (storage bytes). Use nextFileReqId() so this
-        // path-form METADATA GET never aliases with concurrent nodeId-form ops.
-        val metaReqId = nextFileReqId()
-        val metaDeferred = CompletableDeferred<Map<String, String>>()
-        pendingMetadataDeferred = metaDeferred
-        val metaFrame = SysExProtocol.buildFileMetadataFrame(currentDeviceId, "/sounds", requestId = metaReqId)
-        midiManager.sendMidi(portId, metaFrame)
-        val metaResult = withTimeoutOrNull(3_000) { metaDeferred.await() }
-        if (metaResult != null) {
-            val used = metaResult["used_space_in_bytes"]?.toLongOrNull()
-            val total = metaResult["max_capacity"]?.toLongOrNull()
-            _deviceState.value = _deviceState.value.copy(
-                storageUsedBytes = used,
-                storageTotalBytes = total,
-            )
+        // Steps 2–3: sample count + storage from /sounds, over the reqId-correlated file ops
+        // (the same primitives the active-group walk and backup ride). The old path-form
+        // pending*Deferred fields are never completed under the inverted dispatcher, so they
+        // always timed out — that's why the Device screen showed "—" for both.
+        ensureFileSessionInitNoLock()
+        val soundsNode = resolveNodeIdInternal("/sounds")
+        if (soundsNode != null) {
+            // Sample count = entries in /sounds (named files only).
+            val body = listNodeBody(soundsNode, requestId = nextFileReqId())
+            if (body != null) {
+                val count = SysExProtocol.parseFileListEntries(body).count { it.name.isNotBlank() }
+                _deviceState.value = _deviceState.value.copy(sampleCount = count)
+            }
+            // Storage from the /sounds node metadata. The device reports max_capacity +
+            // free_space_in_bytes (hardware-verified 2026-06-27), so used = max − free.
+            val meta = getMetadataJson(soundsNode)
+            val total = meta.optLong("max_capacity", -1L).takeIf { it >= 0 }
+            val free = meta.optLong("free_space_in_bytes", -1L).takeIf { it >= 0 }
+            if (total != null) {
+                val used = if (free != null) (total - free).coerceAtLeast(0) else null
+                _deviceState.value = _deviceState.value.copy(storageUsedBytes = used, storageTotalBytes = total)
+            }
         }
-
-        // Step 3: FILE_LIST on /sounds (count samples). Use nextFileReqId().
-        // Reset the running count first: if a prior run timed out before STATUS_OK, the
-        // count was never cleared and would inflate this run's sampleCount.
-        val listReqId = nextFileReqId()
-        fileListEntryCount = 0
-        val fileListDeferred = CompletableDeferred<Int>()
-        pendingFileListCountDeferred = fileListDeferred
-        val listFrame = SysExProtocol.buildFileListFrame(currentDeviceId, "/sounds", requestId = listReqId)
-        midiManager.sendMidi(portId, listFrame)
-        val sampleCount = withTimeoutOrNull(5_000) { fileListDeferred.await() } ?: 0
-        _deviceState.value = _deviceState.value.copy(sampleCount = sampleCount)
 
         return true
     }
@@ -835,49 +496,38 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         val portId = _deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
         return fileOpMutex.withLock {
-            if (transferInFlight) throw IllegalStateException("transfer already in flight")
-            transferInFlight = true
-            val initDeferred = CompletableDeferred<SysExProtocol.GetInitResponse>()
-            val pages = Channel<SysExProtocol.GetDataResponse>(Channel.UNLIMITED)
-            pendingGetInitDeferred = initDeferred
-            pendingGetPages = pages
-            try {
-                val getInitReqId = nextFileReqId()
-                val initFrame = SysExProtocol.buildFileGetInitFrame(currentDeviceId, nodeId, requestId = getInitReqId)
-                awaitedFileReqId = getInitReqId
-                midiManager.sendMidi(portId, initFrame)
-                val init = withTimeoutOrNull(GET_INIT_TIMEOUT_MS) { initDeferred.await() }
-                    ?: throw IllegalStateException("GET INIT timed out")
-                Log.d("EP133APP", "Project GET init: ${init.fileName} ${init.fileSize} bytes")
+            // INIT: one request -> one response (OneShot via the registry).
+            val initReqId = nextFileReqId()
+            val initFrame = SysExProtocol.buildFileGetInitFrame(currentDeviceId, nodeId, requestId = initReqId)
+            val initResp = awaitFileOp(initReqId, FileOpKind.GET_INIT, portId, initFrame, GET_INIT_TIMEOUT_MS)
+                ?: throw IllegalStateException("GET INIT timed out")
+            val init = SysExProtocol.parseGetInitResponse(initResp.body)
+            Log.d("EP133APP", "Project GET init: ${init.fileName} ${init.fileSize} bytes")
 
-                val out = java.io.ByteArrayOutputStream(init.fileSize.coerceAtLeast(0))
-                val cap = init.fileSize + SysExProtocol.MAX_PAGE_BYTES
-                var page = 0
-                while (out.size() < init.fileSize) {
-                    val getDataReqId = nextFileReqId()
-                    val dataFrame = SysExProtocol.buildFileGetDataFrame(currentDeviceId, page, requestId = getDataReqId)
-                    awaitedFileReqId = getDataReqId
-                    midiManager.sendMidi(portId, dataFrame)
-                    val resp = withTimeoutOrNull(GET_PAGE_TIMEOUT_MS) { pages.receive() }
-                        ?: throw IllegalStateException("GET DATA page $page timed out")
-                    check(resp.page == page) { "unexpected page ${resp.page}, expected $page" }
-                    if (resp.data.isEmpty()) break
-                    check(out.size() + resp.data.size <= cap) {
-                        "GET overflow: ${out.size() + resp.data.size} bytes exceeds cap $cap"
-                    }
-                    out.write(resp.data)
-                    page = resp.nextPage
+            val out = java.io.ByteArrayOutputStream(init.fileSize.coerceAtLeast(0))
+            val cap = init.fileSize + SysExProtocol.MAX_PAGE_BYTES
+            var page = 0
+            while (out.size() < init.fileSize) {
+                // Each GET_DATA page is its own request -> its own response (OneShot by reqId).
+                val dataReqId = nextFileReqId()
+                val dataFrame = SysExProtocol.buildFileGetDataFrame(currentDeviceId, page, requestId = dataReqId)
+                val resp = awaitFileOp(dataReqId, FileOpKind.GET_DATA, portId, dataFrame, GET_PAGE_TIMEOUT_MS)
+                    ?: throw IllegalStateException("GET DATA page $page timed out")
+                if (resp.status != SysExProtocol.STATUS_OK &&
+                    resp.status < SysExProtocol.STATUS_SPECIFIC_SUCCESS_START
+                ) {
+                    throw IllegalStateException("GET DATA page $page device error status ${resp.status}")
                 }
-                out.toByteArray()
-            } catch (e: CancellationException) {
-                throw e
-            } finally {
-                pages.close()
-                pendingGetInitDeferred = null
-                pendingGetPages = null
-                awaitedFileReqId = -1
-                transferInFlight = false
+                val data = SysExProtocol.parseGetDataResponse(resp.body)
+                check(data.page == page) { "unexpected page ${data.page}, expected $page" }
+                if (data.data.isEmpty()) break
+                check(out.size() + data.data.size <= cap) {
+                    "GET overflow: ${out.size() + data.data.size} bytes exceeds cap $cap"
+                }
+                out.write(data.data)
+                page = data.nextPage
             }
+            out.toByteArray()
         }
     }
 
@@ -888,37 +538,37 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * the archive in `MAX_PAGE_BYTES`-sized slices, awaiting a STATUS_OK acknowledgement.
      * Archive bytes are 7-bit packed by the frame builder.
      */
+    /** True if a PUT ack FileResponse signals success (STATUS_OK or a continuation status). */
+    private fun putAckOk(resp: FileResponse?): Boolean =
+        resp != null && (resp.status == SysExProtocol.STATUS_OK ||
+            resp.status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START)
+
     suspend fun putProjectArchive(slotNodeId: Int, tarBytes: ByteArray): Boolean {
         val portId = _deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
         return fileOpMutex.withLock {
-            if (transferInFlight) throw IllegalStateException("transfer already in flight")
-            transferInFlight = true
-            val ack = CompletableDeferred<Boolean>()
-            pendingPutAckDeferred = ack
-            try {
-                val initFrame = SysExProtocol.buildFilePutInitFrame(
-                    currentDeviceId, slotNodeId, tarBytes.size, requestId = 20,
-                )
-                midiManager.sendMidi(portId, initFrame)
-
-                var page = 0
-                var offset = 0
-                while (offset < tarBytes.size) {
-                    val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, tarBytes.size)
-                    val chunk = tarBytes.copyOfRange(offset, end)
-                    val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = 21)
-                    midiManager.sendMidi(portId, dataFrame)
-                    offset = end
-                    page = (page + 1) and 0xFFFF
-                }
-                withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { ack.await() } ?: false
-            } catch (e: CancellationException) {
-                throw e
-            } finally {
-                pendingPutAckDeferred = null
-                transferInFlight = false
+            var nextReqId = PUT_INIT_REQUEST_ID
+            val initReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+            val initFrame = SysExProtocol.buildFilePutInitFrame(currentDeviceId, slotNodeId, tarBytes.size, requestId = initReqId)
+            if (!putAckOk(awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS))) {
+                return@withLock false
             }
+            var page = 0
+            var offset = 0
+            while (offset < tarBytes.size) {
+                val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, tarBytes.size)
+                val chunk = tarBytes.copyOfRange(offset, end)
+                val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = dataReqId)
+                if (!putAckOk(awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS))) {
+                    return@withLock false
+                }
+                offset = end
+                page = (page + 1) and 0xFFFF
+            }
+            val termReqId = nextReqId
+            val termFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = termReqId)
+            putAckOk(awaitFileOp(termReqId, FileOpKind.PUT_DATA, portId, termFrame, PUT_ACK_TIMEOUT_MS))
         }
     }
 
@@ -960,119 +610,78 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             ?: throw IllegalStateException("no output port")
 
         return fileOpMutex.withLock {
-        // Ensure the FILE_INIT handshake (once per connection) before resolving any node IDs.
-        // Uses the NoLock core — we already hold fileOpMutex.
-        ensureFileSessionInitNoLock()
+            // Ensure the FILE_INIT handshake (once per connection) before resolving node IDs.
+            ensureFileSessionInitNoLock()
 
-        // Resolve /sounds inside the lock so its FILE_LIST round-trips don't interleave with
-        // concurrent ops.  Delegates to resolveSoundsNodeId() so subclasses can override for tests.
-        val parent = resolveSoundsNodeId()
-        if (parent == null) {
-            Log.e("EP133APP", "putSampleFile: cannot resolve /sounds node — aborting upload of $name")
-            return@withLock false
-        }
-
-        // Compute the raw chunk size from the negotiated chunkSize. The device rejected 4096-byte
-        // chunks (STATUS=1 "unexpected page") because a 4096-byte DATA payload 7-bit-packs to
-        // ~4.7 KB — well over the device's per-message budget (512 bytes negotiated at INIT).
-        // Hardware-confirmed: ~420-byte raw chunks (within the 512-byte budget) get STATUS_OK.
-        val rawChunkSize = computeSampleChunkSize(deviceChunkSize)
-        val pageCount = if (pcmBytes.isEmpty()) 0 else (pcmBytes.size + rawChunkSize - 1) / rawChunkSize
-        Log.d("EP133APP", "putSampleFile: chunkSize=$rawChunkSize pages=$pageCount for $name (${pcmBytes.size} bytes, ch=$channels sr=$sampleRate, deviceChunkSize=$deviceChunkSize)")
-
-        // Build metadata JSON matching data/index.js prepareTeenageMeta key names.
-        val metadataJson = """{"channels":$channels,"samplerate":$sampleRate}"""
-
-        if (transferInFlight) throw IllegalStateException("transfer already in flight")
-        transferInFlight = true
-        // Hardware-verified (2026-06-24): device sends "unexpected page" if DATA frames arrive
-        // before the INIT response. Create the init deferred BEFORE sending the INIT frame so
-        // the dispatcher can complete it the moment the response arrives.
-        val initAck = CompletableDeferred<Boolean>()
-        pendingPutInitDeferred = initAck
-        // Transfer-local reqId counter. INIT uses reqId 30; each DATA page and the terminator
-        // get the next value. reqId is 14-bit (encoded as (reqId >> 7) in frame[6] low nibble
-        // and (reqId & 0x7F) in frame[7]; buildFrame encodes this correctly).
-        var nextReqId = PUT_INIT_REQUEST_ID  // 30
-        // Flag: set to true once the INIT ack is received. Used by the failure path to decide
-        // whether to send a force-close terminator (only needed after INIT is acked, so the
-        // device has an open transfer it must close to accept new PUTs).
-        var initAcked = false
-        return try {
-            // INIT: announce parent dir, fileId=0 (new file), size, filename, and metadata.
-            val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
-                currentDeviceId,
-                parentNodeId = parent,
-                fileSize = pcmBytes.size,
-                filename = name,
-                requestId = nextReqId,
-                metadataJson = metadataJson,
-            )
-            Log.d("EP133MIDI", "MIDI META: outbound PUT INIT reqId=$nextReqId name=$name size=${pcmBytes.size}")
-            awaitedFileReqId = nextReqId
-            midiManager.sendMidi(portId, initFrame)
-            nextReqId = (nextReqId + 1) and 0x3FFF
-
-            // Await the device's INIT ack before sending any DATA pages.
-            // Reference tool (data/index.js): awaits the PUT INIT response before looping DATA.
-            val initOk = withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { initAck.await() } ?: false
-            if (!initOk) {
-                Log.e("EP133APP", "putSampleFile: PUT INIT ack failed or timed out — aborting $name")
-                return false
+            val parent = resolveSoundsNodeId()
+            if (parent == null) {
+                Log.e("EP133APP", "putSampleFile: cannot resolve /sounds node — aborting upload of $name")
+                return@withLock false
             }
-            initAcked = true
-            Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name")
 
-            // DATA pages: slice pcmBytes into rawChunkSize chunks, awaiting each page's ack
-            // before sending the next. The device rejects out-of-order or rapid-fire pages
-            // (USB-MIDI has no flow control — the reference tool sends serially with await).
-            var page = 0
-            var offset = 0
-            while (offset < pcmBytes.size) {
-                val end = minOf(offset + rawChunkSize, pcmBytes.size)
-                val chunk = pcmBytes.copyOfRange(offset, end)
-                val pageAck = CompletableDeferred<Boolean>()
-                pendingPutAckDeferred = pageAck
-                awaitedPutReqId = nextReqId
-                awaitedFileReqId = nextReqId
-                val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = nextReqId)
-                Log.d("EP133MIDI", "MIDI META: outbound PUT DATA page=$page reqId=$nextReqId chunkSize=${chunk.size}")
-                midiManager.sendMidi(portId, dataFrame)
-                nextReqId = (nextReqId + 1) and 0x3FFF
-                val pageOk = withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { pageAck.await() } ?: false
-                if (!pageOk) {
-                    Log.e("EP133APP", "putSampleFile: DATA page $page ack failed or timed out — aborting $name")
-                    forceCloseTransfer(portId, page + 1, nextReqId)
-                    nextReqId = (nextReqId + 1) and 0x3FFF
-                    return false
+            // ~420-byte raw chunks (within the device's 512-byte budget) get STATUS_OK; 4096 was
+            // rejected ("unexpected page") because it 7-bit-packs past the budget.
+            val rawChunkSize = computeSampleChunkSize(deviceChunkSize)
+            val pageCount = if (pcmBytes.isEmpty()) 0 else (pcmBytes.size + rawChunkSize - 1) / rawChunkSize
+            Log.d("EP133APP", "putSampleFile: chunkSize=$rawChunkSize pages=$pageCount for $name (${pcmBytes.size} bytes, ch=$channels sr=$sampleRate, deviceChunkSize=$deviceChunkSize)")
+
+            // Metadata JSON key names match data/index.js prepareTeenageMeta.
+            val metadataJson = """{"channels":$channels,"samplerate":$sampleRate}"""
+
+            // Transfer-local reqId counter (INIT=30, then each DATA page + terminator). Each frame
+            // registers its own OneShot waiter under its reqId via awaitFileOp; only one is ever
+            // live at a time (await-then-remove), so a stale/duplicate ack can't mis-route.
+            var nextReqId = PUT_INIT_REQUEST_ID  // 30
+            var initAcked = false
+            try {
+                // INIT: announce parent dir, fileId=0 (new file), size, filename, metadata.
+                val initReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
+                    currentDeviceId,
+                    parentNodeId = parent,
+                    fileSize = pcmBytes.size,
+                    filename = name,
+                    requestId = initReqId,
+                    metadataJson = metadataJson,
+                )
+                Log.d("EP133MIDI", "MIDI META: outbound PUT INIT reqId=$initReqId name=$name size=${pcmBytes.size}")
+                if (!putAckOk(awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS))) {
+                    Log.e("EP133APP", "putSampleFile: PUT INIT ack failed or timed out — aborting $name")
+                    return@withLock false
                 }
-                offset = end
-                page = (page + 1) and 0xFFFF
-            }
+                initAcked = true
+                Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name")
 
-            // Zero-length DATA terminator (required by reference tool). Await its final ack.
-            val termAck = CompletableDeferred<Boolean>()
-            pendingPutAckDeferred = termAck
-            awaitedPutReqId = nextReqId
-            awaitedFileReqId = nextReqId
-            val terminatorFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = nextReqId)
-            Log.d("EP133MIDI", "MIDI META: outbound PUT terminator page=$page reqId=$nextReqId")
-            midiManager.sendMidi(portId, terminatorFrame)
-            nextReqId = (nextReqId + 1) and 0x3FFF
-            withTimeoutOrNull(PUT_ACK_TIMEOUT_MS) { termAck.await() } ?: false
-        } catch (e: CancellationException) {
-            if (initAcked) {
-                // Best-effort close so the device doesn't stay wedged.
-                forceCloseTransfer(portId, 0, nextReqId)
+                // DATA pages: serial, awaiting each page's ack before sending the next (USB-MIDI
+                // has no flow control; the reference tool sends serially with await).
+                var page = 0
+                var offset = 0
+                while (offset < pcmBytes.size) {
+                    val end = minOf(offset + rawChunkSize, pcmBytes.size)
+                    val chunk = pcmBytes.copyOfRange(offset, end)
+                    val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                    val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = dataReqId)
+                    Log.d("EP133MIDI", "MIDI META: outbound PUT DATA page=$page reqId=$dataReqId chunkSize=${chunk.size}")
+                    if (!putAckOk(awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS))) {
+                        Log.e("EP133APP", "putSampleFile: DATA page $page ack failed or timed out — aborting $name")
+                        val closeReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                        forceCloseTransfer(portId, page + 1, closeReqId)
+                        return@withLock false
+                    }
+                    offset = end
+                    page = (page + 1) and 0xFFFF
+                }
+
+                // Zero-length DATA terminator (required by the reference tool). Await its final ack.
+                val termReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                val terminatorFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = termReqId)
+                Log.d("EP133MIDI", "MIDI META: outbound PUT terminator page=$page reqId=$termReqId")
+                putAckOk(awaitFileOp(termReqId, FileOpKind.PUT_DATA, portId, terminatorFrame, PUT_ACK_TIMEOUT_MS))
+            } catch (e: CancellationException) {
+                // A dangling incomplete PUT wedges the device — best-effort close if INIT was acked.
+                if (initAcked) forceCloseTransfer(portId, 0, nextReqId)
+                throw e
             }
-            throw e
-        } finally {
-            pendingPutInitDeferred = null
-            pendingPutAckDeferred = null
-            awaitedPutReqId = -1
-            awaitedFileReqId = -1
-            transferInFlight = false
-        }
         } // end fileOpMutex.withLock
     }
 
@@ -1088,20 +697,11 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      */
     private suspend fun forceCloseTransfer(portId: String, terminatorPage: Int, reqId: Int) {
         try {
-            val termAck = CompletableDeferred<Boolean>()
-            pendingPutAckDeferred = termAck
-            awaitedPutReqId = reqId
-            awaitedFileReqId = reqId
             val frame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, terminatorPage, ByteArray(0), requestId = reqId)
-            Log.w("EP133MIDI", "MIDI META: force-closed incomplete transfer page=$terminatorPage reqId=$reqId")
-            midiManager.sendMidi(portId, frame)
-            withTimeoutOrNull(FORCE_CLOSE_TIMEOUT_MS) { termAck.await() }
+            Log.w("EP133MIDI", "MIDI META: force-closing incomplete transfer page=$terminatorPage reqId=$reqId")
+            awaitFileOp(reqId, FileOpKind.PUT_DATA, portId, frame, FORCE_CLOSE_TIMEOUT_MS)
         } catch (_: Exception) {
-            // Best-effort — ignore all errors, just clean up state
-        } finally {
-            pendingPutAckDeferred = null
-            awaitedPutReqId = -1
-            awaitedFileReqId = -1
+            // Best-effort — ignore all errors.
         }
     }
 
@@ -1159,23 +759,20 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private suspend fun ensureFileSessionInitNoLock(): Boolean {
         if (fileSessionInitialized) return true
         val portId = _deviceState.value.outputPortId ?: return false
-        val deferred = CompletableDeferred<Int>()
-        pendingFileInitDeferred = deferred
-        val initReqId = nextFileReqId()
-        val frame = SysExProtocol.buildFileInitFrame(currentDeviceId, requestId = initReqId)
-        val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-        Log.d("EP133MIDI", "MIDI META: outbound FILE_INIT frame[${frame.size}] reqId=$initReqId $hexDump")
-        awaitedFileReqId = initReqId
-        midiManager.sendMidi(portId, frame)
-        val chunkSize = withTimeoutOrNull(FILE_INIT_TIMEOUT_MS) { deferred.await() }
-        return if (chunkSize != null) {
-            Log.d("EP133MIDI", "FILE_INIT: session initialized, chunkSize=$chunkSize")
-            // awaitedFileReqId already cleared by dispatcher on match.
+        val reqId = nextFileReqId()
+        val frame = SysExProtocol.buildFileInitFrame(currentDeviceId, requestId = reqId)
+        Log.d("EP133MIDI", "MIDI META: outbound FILE_INIT reqId=$reqId")
+        val resp = awaitFileOp(reqId, FileOpKind.INIT, portId, frame, FILE_INIT_TIMEOUT_MS)
+        return if (resp != null) {
+            // chunkSize parse is approximate (real HW capture `00 0C 00 00 02 00` yields a large
+            // number — tolerated). Session opening is what matters; never throw.
+            val chunkSize = try { SysExProtocol.parseFileInitResponse(resp.body) } catch (_: Exception) { 512 }
+            deviceChunkSize = chunkSize
+            fileSessionInitialized = true
+            Log.d("EP133MIDI", "FILE_INIT: session initialized, chunkSize=$chunkSize (approx)")
             true
         } else {
             Log.e("EP133MIDI", "FILE_INIT: timed out — proceeding anyway (hardware may not require it)")
-            pendingFileInitDeferred = null
-            if (awaitedFileReqId == initReqId) awaitedFileReqId = -1
             // Best-effort: if the device didn't respond, mark as initialized so we don't loop.
             fileSessionInitialized = true
             false
@@ -1209,28 +806,10 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      */
     private suspend fun listNodeBody(nodeId: Int, requestId: Int): ByteArray? {
         val portId = _deviceState.value.outputPortId ?: return null
-        val deferred = CompletableDeferred<ByteArray>()
-        pendingNodeListDeferred = deferred
-        nodeListBuffer.reset()
-        return try {
-            val frame = SysExProtocol.buildFileListByNodeFrame(currentDeviceId, nodeId, requestId = requestId)
-            awaitedFileReqId = requestId
-            midiManager.sendMidi(portId, frame)
-            withTimeoutOrNull(FILE_LIST_TIMEOUT_MS) { deferred.await() }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e("EP133APP", "node FILE_LIST failed for node $nodeId", e)
-            null
-        } finally {
-            if (pendingNodeListDeferred === deferred) {
-                pendingNodeListDeferred = null
-                nodeListBuffer.reset()
-            }
-            // Clear the guard regardless: on match the dispatcher already cleared it;
-            // on timeout it is still set to the stale reqId and must be unblocked.
-            if (awaitedFileReqId == requestId) awaitedFileReqId = -1
-        }
+        val frame = SysExProtocol.buildFileListByNodeFrame(currentDeviceId, nodeId, requestId = requestId)
+        val resp = awaitFileOp(requestId, FileOpKind.LIST, portId, frame, FILE_LIST_TIMEOUT_MS) ?: return null
+        // Body = [page u16 BE][entries...]; skip the 2-byte page word to return raw entry data.
+        return if (resp.body.size > 2) resp.body.copyOfRange(2, resp.body.size) else ByteArray(0)
     }
 
     /**
@@ -1278,6 +857,34 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 )
             }
         }
+    }
+
+    /**
+     * Enumerate the EP-133 /sounds directory — every sample file as a [SysExProtocol.FileEntry]
+     * (nodeId + name + size). Used by [BackupManager]. Empty list if offline or unanswered.
+     */
+    open suspend fun listSoundEntries(): List<SysExProtocol.FileEntry> {
+        if (_deviceState.value.outputPortId == null) return emptyList()
+        return fileOpMutex.withLock {
+            ensureFileSessionInitNoLock()
+            val soundsNode = resolveNodeIdInternal("/sounds") ?: return@withLock emptyList()
+            val body = listNodeBody(soundsNode, requestId = nextFileReqId()) ?: return@withLock emptyList()
+            SysExProtocol.parseFileListEntries(body).filter { it.name.isNotBlank() }
+        }
+    }
+
+    /**
+     * Download a file node's full contents via the multi-chunk GET ([getProjectArchive]). Returns
+     * null on timeout / device error instead of throwing, so a backup can skip one bad file and
+     * keep going.
+     */
+    open suspend fun getFileBytes(nodeId: Int): ByteArray? = try {
+        getProjectArchive(nodeId)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w("EP133APP", "getFileBytes($nodeId) failed", e)
+        null
     }
 
     /**
@@ -1329,104 +936,84 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      */
     suspend fun getMetadataJson(nodeId: Int): JSONObject {
         val portId = _deviceState.value.outputPortId ?: return JSONObject()
-        metadataJsonInFlight = true
-        metadataJsonBuffer.clear()
-        metadataJsonExpectedPage = 0
-        val deferred = CompletableDeferred<String>()
-        pendingMetadataJsonDeferred = deferred
-        val metaReqId = nextFileReqId()
+        val reqId = nextFileReqId()
+        val frame = SysExProtocol.buildMetadataGetFrame(currentDeviceId, nodeId, page = 0, requestId = reqId)
+        Log.d("EP133APP", "MIDI META: outbound METADATA GET nodeId=$nodeId reqId=$reqId")
+        val resp = awaitFileOp(reqId, FileOpKind.METADATA_GET, portId, frame, METADATA_TIMEOUT_MS)
+            ?: return JSONObject()
+        // Hardware-verified (2026-06-24): the body is a 2-byte page prefix + {"active":3000} +
+        // trailing NUL. Active-group metadata fits one page; extract the outermost { ... } span
+        // and parse. (Multi-page metadata is not used by any caller.)
+        val accumulated = String(resp.body, Charsets.US_ASCII)
+        val jsonSpan = run {
+            val s = accumulated.indexOf('{')
+            val e = accumulated.lastIndexOf('}')
+            if (s >= 0 && e > s) accumulated.substring(s, e + 1) else accumulated
+        }
+        Log.d("EP133APP", "MIDI META: METADATA GET jsonSpan='$jsonSpan' for nodeId=$nodeId")
         return try {
-            val frame = SysExProtocol.buildMetadataGetFrame(currentDeviceId, nodeId, page = 0, requestId = metaReqId)
-            val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-            Log.d("EP133APP", "MIDI META: outbound METADATA GET nodeId=$nodeId reqId=$metaReqId frame[${frame.size}] $hexDump")
-            awaitedFileReqId = metaReqId
-            midiManager.sendMidi(portId, frame)
-            val accumulated = withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() }
-                ?: return JSONObject()
-            // Hardware-verified (2026-06-24): METADATA GET response body is
-            //   `00 00 7B 22 61 63 74 69 76 65 22 3A 33 30 30 30 7D 00`
-            // i.e. a 2-byte page prefix + {"active":3000} + trailing NUL. Strip the prefix
-            // and NUL by scanning for the outermost '{' ... '}' span before parsing.
-            val jsonSpan = run {
-                val s = accumulated.indexOf('{')
-                val e = accumulated.lastIndexOf('}')
-                if (s >= 0 && e > s) accumulated.substring(s, e + 1) else accumulated
-            }
-            Log.d("EP133APP", "MIDI META: METADATA GET jsonSpan='$jsonSpan' for nodeId=$nodeId")
-            // JSON-first parse on the extracted span; defensive greet fallback if that also fails.
-            try {
-                JSONObject(jsonSpan)
-            } catch (_: Exception) {
-                Log.d("EP133APP", "MIDI META: JSON parse failed, trying greet fallback for nodeId=$nodeId")
-                val greetMap = SysExProtocol.parseGreetResponse(accumulated.toByteArray(Charsets.US_ASCII))
-                val fallback = JSONObject()
-                greetMap.forEach { (k, v) -> fallback.put(k, v) }
-                fallback
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } finally {
-            metadataJsonInFlight = false
-            if (pendingMetadataJsonDeferred === deferred) pendingMetadataJsonDeferred = null
-            // Clear on timeout (dispatcher already cleared on match; on timeout it stays set).
-            if (awaitedFileReqId == metaReqId) awaitedFileReqId = -1
+            JSONObject(jsonSpan)
+        } catch (_: Exception) {
+            Log.d("EP133APP", "MIDI META: JSON parse failed, trying greet fallback for nodeId=$nodeId")
+            val greetMap = SysExProtocol.parseGreetResponse(accumulated.toByteArray(Charsets.US_ASCII))
+            JSONObject().apply { greetMap.forEach { (k, v) -> put(k, v) } }
         }
     }
 
     /**
      * Write [json] as the metadata for [nodeId] via a single METADATA SET frame (METADATA_SET = 1).
+     * Correlates the ack by reqId via [fileWaiters].
      *
-     * Awaits the ack deferred completed by [dispatchFileResponse] on the matching response.
-     *
-     * @return true if the device responded (any non-error ack), false on timeout.
+     * @return true if the device responded (any ack), false on timeout.
      */
     suspend fun setMetadata(nodeId: Int, json: String): Boolean {
         val portId = _deviceState.value.outputPortId ?: return false
-        metadataSetInFlight = true
-        val deferred = CompletableDeferred<Boolean>()
-        pendingMetadataSetAckDeferred = deferred
-        val setReqId = nextFileReqId()
-        return try {
-            val frame = SysExProtocol.buildMetadataSetFrame(currentDeviceId, nodeId, json, requestId = setReqId)
-            val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-            Log.d("EP133APP", "MIDI META: outbound METADATA SET nodeId=$nodeId json=$json reqId=$setReqId frame[${frame.size}] $hexDump")
-            awaitedFileReqId = setReqId
-            midiManager.sendMidi(portId, frame)
-            withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() } ?: false
-        } catch (e: CancellationException) {
-            throw e
-        } finally {
-            metadataSetInFlight = false
-            if (pendingMetadataSetAckDeferred === deferred) pendingMetadataSetAckDeferred = null
-            if (awaitedFileReqId == setReqId) awaitedFileReqId = -1
-        }
+        val reqId = nextFileReqId()
+        val frame = SysExProtocol.buildMetadataSetFrame(currentDeviceId, nodeId, json, requestId = reqId)
+        Log.d("EP133APP", "MIDI META: outbound METADATA SET nodeId=$nodeId json=$json reqId=$reqId")
+        return awaitFileOp(reqId, FileOpKind.METADATA_SET, portId, frame, METADATA_TIMEOUT_MS) != null
     }
 
     /**
-     * Fetch the [SysExProtocol.NodeInfo] for a specific [nodeId] via FILE_INFO (op 11).
+     * Shared spine for single-response file ops: register a [FileWaiter.OneShot] under [reqId],
+     * send [frame], and await the response the device echoes back under that reqId (routed via
+     * [fileWaiters]) up to [timeoutMs]. Always deregisters in finally. Returns null on timeout;
+     * rethrows CancellationException. The caller parses [FileResponse.body] for its own op.
      *
-     * @return Parsed [NodeInfo] or null on timeout / parse error.
+     * Routes by reqId, so it is immune to the interleaving/duplicate-response race that the old
+     * mutable-flag model hit (backlog 999.4). Does NOT acquire [fileOpMutex] — callers that need
+     * device-access serialization hold it already.
      */
-    suspend fun getNodeInfo(nodeId: Int): SysExProtocol.NodeInfo? {
-        val portId = _deviceState.value.outputPortId ?: return null
-        val deferred = CompletableDeferred<SysExProtocol.NodeInfo>()
-        pendingNodeInfoDeferred = deferred
-        val infoReqId = nextFileReqId()
+    private suspend fun awaitFileOp(
+        reqId: Int,
+        kind: FileOpKind,
+        portId: String,
+        frame: ByteArray,
+        timeoutMs: Long,
+    ): FileResponse? {
+        val waiter = FileWaiter.OneShot(reqId, kind)
+        fileWaiters.register(waiter)
         return try {
-            val frame = SysExProtocol.buildFileInfoFrame(currentDeviceId, nodeId, requestId = infoReqId)
-            val hexDump = frame.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-            Log.d("EP133APP", "MIDI META: outbound FILE_INFO nodeId=$nodeId reqId=$infoReqId frame[${frame.size}] $hexDump")
-            awaitedFileReqId = infoReqId
             midiManager.sendMidi(portId, frame)
-            withTimeoutOrNull(METADATA_TIMEOUT_MS) { deferred.await() }
+            withTimeoutOrNull(timeoutMs) { waiter.deferred.await() }
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            Log.e("EP133APP", "MIDI META: getNodeInfo failed for nodeId=$nodeId", e)
-            null
         } finally {
-            if (pendingNodeInfoDeferred === deferred) pendingNodeInfoDeferred = null
-            if (awaitedFileReqId == infoReqId) awaitedFileReqId = -1
+            fileWaiters.remove(reqId)
+        }
+    }
+
+    suspend fun getNodeInfo(nodeId: Int): SysExProtocol.NodeInfo? {
+        val portId = _deviceState.value.outputPortId ?: return null
+        val reqId = nextFileReqId()
+        val frame = SysExProtocol.buildFileInfoFrame(currentDeviceId, nodeId, requestId = reqId)
+        Log.d("EP133APP", "MIDI META: outbound FILE_INFO nodeId=$nodeId reqId=$reqId")
+        val resp = awaitFileOp(reqId, FileOpKind.INFO, portId, frame, METADATA_TIMEOUT_MS) ?: return null
+        return try {
+            SysExProtocol.parseFileInfo(resp.body)
+        } catch (e: Exception) {
+            Log.e("EP133APP", "MIDI META: FILE_INFO parse failed for nodeId=$nodeId", e)
+            null
         }
     }
 
