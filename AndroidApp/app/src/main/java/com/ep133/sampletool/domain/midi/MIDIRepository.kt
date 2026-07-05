@@ -620,9 +620,11 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      * @param pcmBytes  Raw interleaved s16 LE PCM — NO RIFF/WAV header. Must be > 0 bytes.
      * @param channels  Number of audio channels (1 = mono, 2 = stereo).
      * @param sampleRate Sample rate in Hz (always 46875 for device-format audio).
-     * @return          Device-assigned node ID (positive Int) on success, -1 if upload succeeded
-     *                  but the INIT response body was too short to parse the node ID, null on
-     *                  timeout / device error / unresolvable /sounds node.
+     * @return          Device-assigned node ID (positive Int) on success — parsed from the INIT
+     *                  response body, or resolved via `/sounds/<name>` when the body lacks it.
+     *                  Null on timeout / device error / unresolvable /sounds node, and also when
+     *                  the upload was acked but no node ID could be determined either way: callers
+     *                  bind pads to the returned ID, so an unverifiable ID must read as failure.
      * @throws IllegalStateException if no output port is connected or a transfer is in flight.
      * @throws CancellationException if the coroutine is cancelled.
      */
@@ -728,10 +730,13 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 val terminatorFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = termReqId)
                 Log.d("EP133MIDI", "MIDI META: outbound PUT terminator page=$page reqId=$termReqId")
                 if (putAckOk(awaitFileOp(termReqId, FileOpKind.PUT_DATA, portId, terminatorFrame, PUT_ACK_TIMEOUT_MS))) {
-                    // Return the device-assigned node ID when available.
-                    // Fall back to -1 (upload succeeded but node ID not in INIT response body)
-                    // so callers can distinguish "success with unknown ID" from null (failure).
-                    assignedNodeId ?: -1
+                    // Return the device-assigned node ID from the INIT response body. If the body
+                    // didn't carry one, resolve the just-created file by path instead — callers
+                    // bind pads to this ID (pad metadata "sym"), so a sentinel like -1 must never
+                    // escape here. If neither source yields an ID, report failure (null).
+                    assignedNodeId ?: resolveNodeIdInternal("/sounds/$name").also {
+                        if (it == null) Log.e("EP133APP", "putSampleFile: upload acked but no node ID for $name")
+                    }
                 } else {
                     null
                 }
