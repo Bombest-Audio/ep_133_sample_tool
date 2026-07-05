@@ -46,6 +46,33 @@ class FirmwareVersionTest {
     }
 
     @Test
+    fun parse_trailingDot_returnsNull() {
+        // Kotlin's split keeps the trailing empty token, so "2.5." → ["2","5",""];
+        // the empty part fails toIntOrNull and parse rejects it.
+        assertNull(FirmwareVersion.parse("2.5."))
+    }
+
+    @Test
+    fun parse_emptyInteriorComponent_returnsNull() {
+        assertNull(FirmwareVersion.parse("2..5"))
+    }
+
+    @Test
+    fun parse_leadingDot_returnsNull() {
+        assertNull(FirmwareVersion.parse(".2.5"))
+    }
+
+    @Test
+    fun compare_largeComponents_doesNotOverflow() {
+        // Guards the compareTo contract against subtraction overflow: a tiny version
+        // must order below a huge one even when the delta exceeds Int range.
+        val small = FirmwareVersion(listOf(0))
+        val huge = FirmwareVersion(listOf(Int.MAX_VALUE))
+        assertTrue(small < huge)
+        assertTrue(huge > small)
+    }
+
+    @Test
     fun compare_zeroPaddingRule_twoFiveGreaterThanTwoZeroFive() {
         // 2.5 → [2,5,0] padded; 2.0.5 → [2,0,5]; at index 1: 5 > 0
         val v25 = FirmwareVersion.parse("2.5")!!

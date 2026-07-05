@@ -74,6 +74,7 @@ import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.Ep133StatReadout
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -312,8 +313,10 @@ class DeviceViewModel(
             }
             val latest = try {
                 catalog.latestVersion()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.w("EP133APP", "FW check failed: $e")
+                Log.w("EP133APP", "FW check failed", e)
                 null
             }
             if (latest == null) {
