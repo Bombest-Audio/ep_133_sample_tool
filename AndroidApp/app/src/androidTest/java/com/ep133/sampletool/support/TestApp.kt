@@ -3,6 +3,7 @@ package com.ep133.sampletool.support
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
+import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.ProjectBackupManager
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.ui.EP133App
@@ -12,12 +13,13 @@ import com.ep133.sampletool.ui.projects.ProjectsViewModel
 import com.ep133.sampletool.ui.`import`.SampleImportViewModel
 
 /**
- * Everything a full-app UI test needs: the scripted repo to drive state, the ViewModels to
- * reach test seams (e.g. importStagedBytes), and recorders for the SAF/updater callbacks
- * that MainActivity would normally wire to pickers and Custom Tabs.
+ * Everything a full-app UI test needs: the repo (scripted fake or the real MIDIRepository over
+ * the device simulator), the ViewModels to reach test seams (e.g. importStagedBytes), and
+ * recorders for the SAF/updater callbacks that MainActivity would normally wire to pickers
+ * and Custom Tabs.
  */
 class TestAppContext(
-    val repo: ScriptedMIDIRepository,
+    val repo: MIDIRepository,
     val padsViewModel: PadsViewModel,
     val projectsViewModel: ProjectsViewModel,
     val deviceViewModel: DeviceViewModel,
@@ -30,12 +32,15 @@ class TestAppContext(
 }
 
 /**
- * Launch the full EP133App shell against a scripted fake — mirrors MainActivity.onCreate wiring
+ * Launch the full EP133App shell against a fake — mirrors MainActivity.onCreate wiring
  * (same ViewModel construction, same isConnected binding) minus USB, SAF pickers, and Custom
  * Tabs, which are recorded on the returned [TestAppContext] instead.
+ *
+ * Pass a plain [ScriptedMIDIRepository] to drive UI branches directly, or a real
+ * `MIDIRepository(EP133DeviceSimulator())` to run the full protocol stack end-to-end.
  */
 fun ComposeContentTestRule.launchEP133App(
-    repo: ScriptedMIDIRepository = ScriptedMIDIRepository(),
+    repo: MIDIRepository = ScriptedMIDIRepository(),
     catalog: FakeFirmwareCatalog = FakeFirmwareCatalog(),
 ): TestAppContext {
     val padsViewModel = PadsViewModel(repo)

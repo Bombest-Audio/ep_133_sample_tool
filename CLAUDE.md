@@ -38,6 +38,13 @@ The Gradle build auto-copies `data/` and `shared/MIDIBridgePolyfill.js` into ass
   override `deviceState`), `ScriptedMIDIRepository` (canned slots/uploads, records MIDI
   frames), `FakeFirmwareCatalog`, and the `launchEP133App` harness (mirrors MainActivity
   wiring; SAF/updater callbacks recorded).
+- **Device simulator (`support/sim/EP133DeviceSimulator`):** a wire-level MIDIPort fake
+  speaking the full SysEx protocol from `docs/ep133-sysex-protocol.md` (greet, FILE_INIT,
+  node-ID LIST/INFO/GET/PUT with paged acks, METADATA, the unterminated-PUT wedge).
+  `MIDIRepository(EP133DeviceSimulator())` + `launchEP133App` runs the REAL protocol
+  stack end-to-end with no hardware (see `SimulatedDeviceTest`); fault injection via
+  `failPutDataAtPage` / `wedge` / `silent`. Prefer `ScriptedMIDIRepository` for cheap UI
+  branch pinning, the simulator for protocol-touching E2E flows.
 - **Scope:** UI tests cover rendering/interaction/navigation/state branches; ViewModel and
   protocol logic belongs in `src/test` (do not duplicate).
 - **Pre-push gate:** run `scripts/install-hooks.sh` once; the hook runs unit tests +

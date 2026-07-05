@@ -28,8 +28,9 @@ abstract class BaseRobot(protected val rule: ComposeContentTestRule) {
     protected fun hasStateDescription(value: String): SemanticsMatcher =
         SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, value)
 
-    /** Block until a node with [testTag] exists (default 5s) — for scripted async flows. */
-    protected fun waitForTag(testTag: String, timeoutMillis: Long = 5_000) {
+    /** Block until a node with [testTag] exists — for async flows. 10s default: loaded
+     *  emulators (full-suite runs, CI) can stretch a sub-second recomposition past 5s. */
+    fun waitForTag(testTag: String, timeoutMillis: Long = 10_000) {
         rule.waitUntil(timeoutMillis) {
             rule.onAllNodes(
                 SemanticsMatcher.expectValue(SemanticsProperties.TestTag, testTag),
@@ -38,8 +39,8 @@ abstract class BaseRobot(protected val rule: ComposeContentTestRule) {
         }
     }
 
-    /** Block until a node showing [text] exists (default 5s). */
-    protected fun waitForText(text: String, timeoutMillis: Long = 5_000) {
+    /** Block until a node showing [text] exists (default 10s — see [waitForTag]). */
+    fun waitForText(text: String, timeoutMillis: Long = 10_000) {
         rule.waitUntil(timeoutMillis) {
             rule.onAllNodes(
                 SemanticsMatcher("has text '$text'") { node ->

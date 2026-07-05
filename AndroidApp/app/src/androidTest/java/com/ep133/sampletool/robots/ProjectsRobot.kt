@@ -9,7 +9,10 @@ import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performScrollToNode
 import com.ep133.sampletool.ui.TestTags
 
 /** Robot for the Projects screen: device slots, backup library, restore gate. */
@@ -21,13 +24,28 @@ class ProjectsRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
     }
 
     fun assertSlotCount(count: Int) = apply {
-        tag(TestTags.PROJECTS_SLOT_LIST).assertIsDisplayed()
+        // The count header is the list's first item — scroll back up in case a
+        // prior assertion scrolled to a slot below the fold.
+        rule.onNodeWithTag(TestTags.PROJECTS_SLOT_LIST).performScrollToIndex(0)
         text("$count SLOTS").assertIsDisplayed()
     }
 
+    /**
+     * Scrolls the (lazy) slot list to the slot, then asserts it. Off-screen LazyColumn items
+     * are not composed at all, so a bare tag wait would time out for slots below the fold.
+     */
     fun assertSlotVisible(nodeId: Int, name: String) = apply {
-        waitForTag(TestTags.projectSlot(nodeId))
-        tag(TestTags.projectSlot(nodeId)).assertIsDisplayed()
+        val slotTag = TestTags.projectSlot(nodeId)
+        rule.waitUntil(10_000) {
+            try {
+                rule.onNodeWithTag(TestTags.PROJECTS_SLOT_LIST)
+                    .performScrollToNode(hasTestTag(slotTag))
+                true
+            } catch (e: Throwable) {
+                false // list empty or still loading — retry
+            }
+        }
+        tag(slotTag).assertIsDisplayed()
         text(name).assertIsDisplayed()
     }
 

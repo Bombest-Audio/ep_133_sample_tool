@@ -156,7 +156,6 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private val fileWaiters = FileWaiterRegistry()
 
     private var pendingGreetDeferred: CompletableDeferred<Map<String, String>>? = null
-    private var pendingMetadataDeferred: CompletableDeferred<Map<String, String>>? = null
     private var pendingFileListCountDeferred: CompletableDeferred<Int>? = null
     private var fileListEntryCount: Int = 0
     private var currentDeviceId: Int = 0
@@ -906,8 +905,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             ensureFileSessionInitNoLock()
             val projectsNode = resolveNodeIdInternal("/projects") ?: return@withLock emptyList()
 
-            // Active-slot pointer from /projects directory metadata (NoLock).
-            val activeNode = queryProjectsActiveNodeNoLock()
+            // Active-slot pointer from /projects directory metadata, via the reqId-routed
+            // nodeId-form GET (the same round-trip getActiveGroupIndex rides).
+            val activeNode = getMetadataJson(projectsNode).optInt("active", -1).takeIf { it > 0 }
 
             val body = listNodeBody(projectsNode, requestId = nextFileReqId()) ?: return@withLock emptyList()
 
@@ -950,26 +950,10 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         null
     }
 
-    /**
-     * Read the /projects directory metadata "active" pointer (the currently-loaded slot).
-     *
-     * NoLock: must only be called from within a [fileOpMutex] locked context.
-     */
-    private suspend fun queryProjectsActiveNodeNoLock(): Int? {
-        val portId = _deviceState.value.outputPortId ?: return null
-        return try {
-            val deferred = CompletableDeferred<Map<String, String>>()
-            pendingMetadataDeferred = deferred
-            val frame = SysExProtocol.buildFileMetadataFrame(currentDeviceId, "/projects", requestId = nextFileReqId())
-            midiManager.sendMidi(portId, frame)
-            val meta = withTimeoutOrNull(FILE_LIST_TIMEOUT_MS) { deferred.await() }
-            meta?.get("active")?.toIntOrNull()
-        } catch (e: CancellationException) {
-            throw e
-        } finally {
-            pendingMetadataDeferred = null
-        }
-    }
+    // queryProjectsActiveNodeNoLock removed: it used the legacy path-string METADATA frame and
+    // a pendingMetadataDeferred that nothing completed after the reqId-first dispatcher refactor
+    // (backlog 999.4) — every listProjects() stalled its full 5 s timeout and the active pointer
+    // was always null. Caught by SimulatedDeviceTest against the wire-level device simulator.
 
     // ── Active-group sync: nodeId-form metadata round-trips (Step 1) ─────────────
     //

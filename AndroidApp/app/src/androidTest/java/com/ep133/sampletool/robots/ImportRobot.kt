@@ -30,7 +30,7 @@ class ImportRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
     }
 
     /** Wait until a staged row reaches the given state label. */
-    fun waitForRowState(name: String, stateLabel: String, timeoutMillis: Long = 5_000) = apply {
+    fun waitForRowState(name: String, stateLabel: String, timeoutMillis: Long = 10_000) = apply {
         rule.waitUntil(timeoutMillis) {
             try {
                 tag(TestTags.importRow(name)).assert(hasAnyDescendant(hasText(stateLabel)))
