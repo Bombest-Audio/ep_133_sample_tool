@@ -136,37 +136,47 @@ class BackupManager(private val midi: MIDIRepository) {
             return@flow
         }
 
-        // Parse ZIP entries (skip the device-info metadata.json).
-        val entries = mutableListOf<Pair<String, ByteArray>>()
+        // Pass 1: count restorable entries — names only, no file bytes held.
+        var total = 0
         ZipInputStream(pakBytes.inputStream()).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
-                if (!entry.isDirectory && entry.name != "metadata.json") {
-                    entries.add(entry.name to zip.readBytes())
-                }
+                if (!entry.isDirectory && entry.name != "metadata.json") total++
                 zip.closeEntry()
                 entry = zip.nextEntry
             }
         }
 
-        val total = entries.size
         if (total == 0) {
             emit(RestoreProgress.Error("Backup contains no sound files"))
             return@flow
         }
 
-        entries.forEachIndexed { index, (name, data) ->
-            emit(RestoreProgress.Progress(index, total))
-            val ok = try {
-                // Paged create-PUT with a per-page ack and a closing terminator.
-                midi.putSampleFile(name = name, pcmBytes = data)
-            } catch (e: Exception) {
-                Log.w(TAG, "restore failed on '$name'", e)
-                false
-            }
-            if (!ok) {
-                emit(RestoreProgress.Error("Restore failed on '$name'"))
-                return@flow
+        // Pass 2: decompress and upload ONE entry at a time, so only a single file's
+        // bytes are in memory at once (PCM blobs can be several MB each).
+        var index = 0
+        ZipInputStream(pakBytes.inputStream()).use { zip ->
+            var entry = zip.nextEntry
+            while (entry != null) {
+                if (!entry.isDirectory && entry.name != "metadata.json") {
+                    val name = entry.name
+                    emit(RestoreProgress.Progress(index, total))
+                    val data = zip.readBytes()
+                    val ok = try {
+                        // Paged create-PUT with a per-page ack and a closing terminator.
+                        midi.putSampleFile(name = name, pcmBytes = data)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "restore failed on '$name'", e)
+                        false
+                    }
+                    if (!ok) {
+                        emit(RestoreProgress.Error("Restore failed on '$name'"))
+                        return@flow
+                    }
+                    index++
+                }
+                zip.closeEntry()
+                entry = zip.nextEntry
             }
         }
 
