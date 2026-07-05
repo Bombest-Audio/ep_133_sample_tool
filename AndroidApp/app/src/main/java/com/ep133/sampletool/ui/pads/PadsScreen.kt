@@ -177,9 +177,11 @@ fun PadsScreen(viewModel: PadsViewModel) {
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            // Refresh immediately on resume so the UI never shows a stale active group,
+            // then keep polling between ticks.
             while (true) {
-                delay(1500)
                 viewModel.refreshActiveGroupFromDevice()
+                delay(1500)
             }
         }
     }
