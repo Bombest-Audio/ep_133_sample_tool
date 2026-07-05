@@ -29,6 +29,7 @@ import com.ep133.sampletool.ui.theme.Ep133Sku
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -110,7 +111,14 @@ fun EP133App(
                     Modifier
                         .clip(BadgeShape)
                         .background(t.accent, BadgeShape)
-                        .clickable { sku = if (sku == Ep133Sku.EP133) Ep133Sku.EP1320 else Ep133Sku.EP133 }
+                        .clickable(
+                            onClickLabel = if (sku == Ep133Sku.EP133) {
+                                "Switch to the EP-1320 color theme"
+                            } else {
+                                "Switch to the EP-133 color theme"
+                            },
+                            role = Role.Button,
+                        ) { sku = if (sku == Ep133Sku.EP133) Ep133Sku.EP1320 else Ep133Sku.EP133 }
                         .padding(horizontal = 7.dp, vertical = 4.dp),
                     color = t.onAccent,
                     fontFamily = MonoFont,
@@ -131,7 +139,14 @@ fun EP133App(
                     when (themeMode) { 1 -> "☀"; 2 -> "☾"; else -> "◐" },
                     Modifier
                         .clip(BadgeShape)
-                        .clickable { themeMode = (themeMode + 1) % 3 }
+                        .clickable(
+                            onClickLabel = when (themeMode) {
+                                1 -> "Light theme active — switch to dark theme"
+                                2 -> "Dark theme active — follow the system theme"
+                                else -> "Following the system theme — switch to light theme"
+                            },
+                            role = Role.Button,
+                        ) { themeMode = (themeMode + 1) % 3 }
                         .padding(horizontal = 8.dp, vertical = 3.dp),
                     color = t.text2,
                     fontSize = 14.sp,
