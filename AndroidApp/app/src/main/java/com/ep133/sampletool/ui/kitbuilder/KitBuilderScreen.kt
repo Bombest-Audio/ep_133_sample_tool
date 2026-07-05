@@ -292,8 +292,10 @@ class KitBuilderViewModel(
                 setDataSource(context, sample.uri)
                 setOnCompletionListener { stopAudition() }
                 setOnErrorListener { _, _, _ -> stopAudition(); true }
-                prepare()
-                start()
+                // prepare() blocks — SAF documents can be slow (cloud-backed providers), so
+                // prepare off the main thread and start from the callback.
+                setOnPreparedListener { it.start() }
+                prepareAsync()
             }
             _globals.update { it.copy(auditioningUri = sample.uri) }
         } catch (e: Exception) {
