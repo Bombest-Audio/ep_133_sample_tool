@@ -126,6 +126,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        // Drop any queued reacquire/refresh callbacks — they must not fire after the port is
+        // released, or they'd fight the foreground owner for the exclusive USB-MIDI port.
+        mainHandler.removeCallbacksAndMessages(null)
         // Release the exclusive USB-MIDI port so the foreground owner can claim it. Re-acquired
         // in onStart. (See SampleManagerActivity for the matching half.)
         midiManager.releasePorts()

@@ -55,6 +55,9 @@ class SampleManagerActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        // Drop any queued reacquire retries — they must not fire after the port is released,
+        // or they'd fight MainActivity for the exclusive USB-MIDI port.
+        mainHandler.removeCallbacksAndMessages(null)
         // Hand the port back so the native UI (MainActivity) can re-claim it. Re-acquired in onStart.
         midiManager.releasePorts()
     }
