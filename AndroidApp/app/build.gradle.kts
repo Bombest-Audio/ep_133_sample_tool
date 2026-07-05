@@ -101,6 +101,19 @@ android {
             // tests that call through real MIDIRepository paths that contain Log.d/Log.w.
             isReturnDefaultValues = true
         }
+
+        managedDevices {
+            devices {
+                // Headless emulator for UI tests: `./gradlew :app:pixel2Api33DebugAndroidTest`.
+                // aosp-atd is the test-optimized image (no launcher/animations, faster boot);
+                // ATD tops out below API 34, hence 33. First run downloads the system image.
+                create<com.android.build.api.dsl.ManagedVirtualDevice>("pixel2Api33") {
+                    device = "Pixel 2"
+                    apiLevel = 33
+                    systemImageSource = "aosp-atd"
+                }
+            }
+        }
     }
 }
 
