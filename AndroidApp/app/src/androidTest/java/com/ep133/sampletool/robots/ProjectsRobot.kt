@@ -35,10 +35,10 @@ class ProjectsRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
     }
 
     fun clickBackupOnSlot(nodeId: Int) = apply {
+        // Merged tree: the clickable row merges its "BACKUP" label into one node.
         rule.onNode(
             hasText("BACKUP") and hasClickAction() and
                 hasAnyAncestor(hasTestTag(TestTags.projectSlot(nodeId))),
-            useUnmergedTree = true,
         ).performClick()
     }
 
@@ -65,6 +65,5 @@ class ProjectsRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
     private fun actionIn(backupName: String, label: String) = rule.onNode(
         hasText(label) and hasClickAction() and
             hasAnyAncestor(hasTestTag(TestTags.backupCard(backupName))),
-        useUnmergedTree = true,
     )
 }

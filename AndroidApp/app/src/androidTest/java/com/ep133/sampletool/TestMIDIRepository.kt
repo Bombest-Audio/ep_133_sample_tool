@@ -4,7 +4,6 @@ import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.model.DeviceState
 import com.ep133.sampletool.domain.model.PermissionState
 import com.ep133.sampletool.midi.MIDIPort
-import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * Fake MIDIRepository for UI tests — no real MIDI hardware needed.
@@ -19,13 +18,16 @@ open class TestMIDIRepository(
     port: MIDIPort = NoOpMIDIPort(),
 ) : MIDIRepository(port) {
 
-    private val _testDeviceState = MutableStateFlow(initialState)
-
-    override val deviceState get() = _testDeviceState
+    init {
+        // Seed the BASE state — noteOn/noteOff and the import preflight read the base
+        // _deviceState directly, so an overridden deviceState val would leave them blind
+        // to the test state (the port-null guard would silently drop every send).
+        _deviceState.value = initialState
+    }
 
     /** Drive a device-state transition mid-test (connect, permission change, stats update…). */
     fun updateDeviceState(transform: (DeviceState) -> DeviceState) {
-        _testDeviceState.value = transform(_testDeviceState.value)
+        _deviceState.value = transform(_deviceState.value)
     }
 
     // Inert overrides: the real implementations send SysEx and await replies with multi-second

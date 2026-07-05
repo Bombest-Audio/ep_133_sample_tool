@@ -41,6 +41,11 @@ class ImportRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
         }
     }
 
+    /** Assert a row's foot label shows this error message (unique within the row). */
+    fun assertRowError(name: String, message: String) = apply {
+        tag(TestTags.importRow(name)).assert(hasAnyDescendant(hasText(message)))
+    }
+
     fun assertBatchLabel(label: String) = apply {
         text(label).assertIsDisplayed()
     }

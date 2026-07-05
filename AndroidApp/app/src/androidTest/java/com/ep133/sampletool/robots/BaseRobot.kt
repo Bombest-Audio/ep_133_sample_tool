@@ -19,7 +19,7 @@ import androidx.compose.ui.test.onNodeWithText
 abstract class BaseRobot(protected val rule: ComposeContentTestRule) {
 
     protected fun tag(testTag: String): SemanticsNodeInteraction =
-        rule.onNodeWithTag(testTag, useUnmergedTree = true)
+        rule.onNodeWithTag(testTag)
 
     protected fun text(text: String): SemanticsNodeInteraction =
         rule.onNodeWithText(text)

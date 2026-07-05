@@ -2,6 +2,7 @@ package com.ep133.sampletool.robots
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isPopup
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
@@ -18,8 +19,9 @@ class DeviceRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
     }
 
     fun assertPermissionAction(label: String) = apply {
+        // Ghost buttons render their label uppercased — match case-insensitively.
         tag(TestTags.DEVICE_PERMISSION_ACTION).assertIsDisplayed()
-        text(label).assertIsDisplayed()
+        rule.onNode(hasText(label, ignoreCase = true)).assertIsDisplayed()
     }
 
     fun clickPermissionAction() = apply {
@@ -34,6 +36,14 @@ class DeviceRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
 
     fun assertStatValue(value: String) = apply {
         text(value).assertIsDisplayed()
+    }
+
+    /** Assert a readout value inside the stats grid (disambiguates from the connection card). */
+    fun assertStatInGrid(value: String) = apply {
+        rule.onNode(
+            hasText(value) and hasAnyAncestor(hasTestTag(TestTags.DEVICE_STATS_GRID)),
+            useUnmergedTree = true,
+        ).assertIsDisplayed()
     }
 
     // ── Firmware banner ──
@@ -73,11 +83,11 @@ class DeviceRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
     // ── Backup / restore ──
 
     fun clickBackup() = apply {
-        text("Backup").performClick()
+        text("BACKUP").performClick() // Ep133PrimaryButton renders labels uppercase
     }
 
     fun clickRestore() = apply {
-        text("Restore").performClick()
+        text("RESTORE").performClick() // Ep133GhostButton renders labels uppercase
     }
 
     fun assertRestoreConfirmVisible() = apply {
