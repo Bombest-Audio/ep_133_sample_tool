@@ -21,6 +21,7 @@ class ProjectsRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
     }
 
     fun assertSlotCount(count: Int) = apply {
+        tag(TestTags.PROJECTS_SLOT_LIST).assertIsDisplayed()
         text("$count SLOTS").assertIsDisplayed()
     }
 
