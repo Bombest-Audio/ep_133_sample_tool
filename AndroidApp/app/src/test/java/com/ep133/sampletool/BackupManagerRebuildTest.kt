@@ -59,9 +59,9 @@ class BackupManagerRebuildTest {
             pcmBytes: ByteArray,
             channels: Int,
             sampleRate: Int,
-        ): Boolean {
+        ): Int? {
             restored[name] = pcmBytes
-            return true
+            return 42  // fake node ID
         }
     }
 

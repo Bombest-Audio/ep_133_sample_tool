@@ -48,17 +48,18 @@ import com.ep133.sampletool.ui.projects.ProjectsScreen
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
 import com.ep133.sampletool.ui.theme.EP133Theme
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
-import com.ep133.sampletool.ui.`import`.SampleImportScreen
-import com.ep133.sampletool.ui.`import`.SampleImportViewModel
+import com.ep133.sampletool.ui.kit.KitScreen
+import com.ep133.sampletool.ui.kit.KitViewModel
+import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 
 private val MonoFont = FontFamily.Monospace
 private val BadgeShape = RoundedCornerShape(3.dp)
 
 private enum class NavRoute(val route: String, val label: String) {
     PADS("pads", "PADS"),
+    KIT("kit", "SAMPLES"),
     PROJECTS("projects", "PROJ"),
     DEVICE("device", "DEVICE"),
-    IMPORT("import", "IMPORT"),
 }
 
 /**
@@ -71,7 +72,8 @@ fun EP133App(
     padsViewModel: PadsViewModel,
     projectsViewModel: ProjectsViewModel,
     deviceViewModel: DeviceViewModel,
-    sampleImportViewModel: SampleImportViewModel,
+    kitViewModel: KitViewModel,
+    kitBuilderViewModel: KitBuilderViewModel,
     isConnected: Boolean = false,
 ) {
     // Theme state lives above EP133Theme so the header controls can re-theme the whole app.
@@ -180,8 +182,8 @@ fun EP133App(
                     composable(NavRoute.DEVICE.route) {
                         DeviceScreen(viewModel = deviceViewModel)
                     }
-                    composable(NavRoute.IMPORT.route) {
-                        SampleImportScreen(sampleImportViewModel)
+                    composable(NavRoute.KIT.route) {
+                        KitScreen(kitViewModel, kitBuilderViewModel)
                     }
                 }
             }

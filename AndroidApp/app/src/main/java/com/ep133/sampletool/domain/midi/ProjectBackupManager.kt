@@ -50,11 +50,23 @@ data class BackupItem(val file: File, val name: String, val timestamp: Long)
  */
 class ProjectBackupManager(private val midi: MIDIRepository) {
 
-    /** Backup file name: `EP133-P{NN}-{timestamp}.tar` (reuses BackupManager's date format). */
-    fun suggestedProjectFilename(slot: MIDIRepository.ProjectSlot): String {
+    /**
+     * Backup file name: `[{customName}-]EP133-P{NN}-{timestamp}.tar`. An optional app-side
+     * [customName] (see ProjectNameStore) is sanitized to `[A-Za-z0-9_ ]`, trimmed to 40 chars,
+     * spaces → underscores, and prefixed so the exported file carries the user's project name.
+     */
+    fun suggestedProjectFilename(slot: MIDIRepository.ProjectSlot, customName: String? = null): String {
         val fmt = SimpleDateFormat("yyyy-MM-dd-HHmm", Locale.US)
         val slotIndex = slotIndexOf(slot.name)
-        return "EP133-P%02d-%s.tar".format(slotIndex, fmt.format(Date()))
+        val prefix = customName
+            ?.replace(Regex("[^A-Za-z0-9_ ]"), "")
+            ?.trim()
+            ?.take(40)
+            ?.replace(' ', '_')
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { "$it-" }
+            .orEmpty()
+        return "${prefix}EP133-P%02d-%s.tar".format(slotIndex, fmt.format(Date()))
     }
 
     /**
@@ -64,7 +76,11 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
      * `getExternalFilesDir("backups")` (falling back to internal `filesDir/backups` if external
      * storage is unavailable — Pitfall 6). Emits Progress → Done(file), or Error on failure.
      */
-    fun backupProject(slot: MIDIRepository.ProjectSlot, context: Context): Flow<ProjectBackupProgress> = flow {
+    fun backupProject(
+        slot: MIDIRepository.ProjectSlot,
+        context: Context,
+        customName: String? = null,
+    ): Flow<ProjectBackupProgress> = flow {
         if (midi.deviceState.value.outputPortId == null) {
             emit(ProjectBackupProgress.Error("No EP-133 connected"))
             return@flow
@@ -84,7 +100,7 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
         val file = try {
             withContext(Dispatchers.IO) {
                 val dir = backupsDir(context)
-                val out = File(dir, suggestedProjectFilename(slot))
+                val out = File(dir, suggestedProjectFilename(slot, customName))
                 out.writeBytes(archive)   // opaque blob — written as-is
                 out
             }

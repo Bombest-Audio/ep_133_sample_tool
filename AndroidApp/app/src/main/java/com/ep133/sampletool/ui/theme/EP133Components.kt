@@ -23,6 +23,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ep133.sampletool.domain.model.PadChannel
 
 /**
  * The EP-133 redesign component kit — the Compose mirror of the Claude Design system's component
@@ -107,17 +108,19 @@ fun Ep133GroupChip(
     label: String,
     selected: Boolean,
     modifier: Modifier = Modifier,
+    subLabel: String? = null,
     onClick: () -> Unit,
 ) {
     val t = LocalEP133Tokens.current
-    Box(
+    Column(
         modifier = modifier
             .clip(Radius)
             .background(if (selected) t.accent else t.inset, Radius)
             .border(1.dp, if (selected) t.accent else t.rule, Radius)
             .clickable { onClick() }
-            .padding(vertical = 9.dp, horizontal = 14.dp),
-        contentAlignment = Alignment.Center,
+            .padding(vertical = if (subLabel != null) 6.dp else 9.dp, horizontal = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(1.dp),
     ) {
         Text(
             label,
@@ -126,6 +129,85 @@ fun Ep133GroupChip(
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
         )
+        if (subLabel != null) {
+            Text(
+                subLabel,
+                color = if (selected) t.onAccent.copy(alpha = 0.75f) else t.text3,
+                fontFamily = Mono,
+                fontSize = 7.5.sp,
+                letterSpacing = 0.8.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    }
+}
+
+// ── Group + choke bar — the shared A/B/C/D picker + choke toggle ───────────────
+/**
+ * The A/B/C/D group picker plus the CHOKE GROUP toggle, as one block. Both the Loop Chopper and
+ * the Kit Builder target a group and can choke it, so they share this control (identical placement
+ * and styling) rather than each rolling its own. The choke toggle writes `sound.mutegroup` so pads
+ * in the group cut each other off.
+ */
+@Composable
+fun Ep133GroupChokeBar(
+    group: PadChannel,
+    onGroupChange: (PadChannel) -> Unit,
+    chokeOn: Boolean,
+    onChokeChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    tagFor: ((PadChannel) -> String?)? = null,
+) {
+    val t = LocalEP133Tokens.current
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        // A | B | C | D — one chip per group, equal width, each tagged with its designation.
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            PadChannel.entries.forEach { ch ->
+                Ep133GroupChip(
+                    label = ch.name,
+                    selected = group == ch,
+                    modifier = Modifier.weight(1f),
+                    subLabel = tagFor?.invoke(ch),
+                    onClick = { onGroupChange(ch) },
+                )
+            }
+        }
+        // Choke toggle — full-width row, tap anywhere to flip.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(Radius)
+                .background(t.inset, Radius)
+                .border(1.dp, t.rule, Radius)
+                .clickable { onChokeChange(!chokeOn) }
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "CHOKE GROUP",
+                    fontFamily = Mono, fontSize = 10.5.sp, fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.6.sp, color = t.text,
+                )
+                Text(
+                    "pads in the group cut each other off",
+                    fontFamily = Mono, fontSize = 8.5.sp, color = t.text3,
+                )
+            }
+            Box(
+                Modifier
+                    .clip(Radius)
+                    .background(if (chokeOn) t.accent else t.chrome, Radius)
+                    .padding(horizontal = 13.dp, vertical = 5.dp),
+            ) {
+                Text(
+                    if (chokeOn) "ON" else "OFF",
+                    fontFamily = Mono, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.8.sp,
+                    color = if (chokeOn) t.onAccent else t.text2,
+                )
+            }
+        }
     }
 }
 

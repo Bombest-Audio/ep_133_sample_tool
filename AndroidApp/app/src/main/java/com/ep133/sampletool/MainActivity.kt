@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.util.Log
 import android.hardware.usb.UsbManager
 import android.media.midi.MidiManager
 import android.net.Uri
@@ -19,12 +20,15 @@ import androidx.core.view.WindowCompat
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.ProjectBackupManager
 import com.ep133.sampletool.domain.midi.SampleImportManager
+import com.ep133.sampletool.domain.project.PrefsProjectNameStore
 import com.ep133.sampletool.midi.MIDIManager
 import com.ep133.sampletool.ui.EP133App
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
-import com.ep133.sampletool.ui.`import`.SampleImportViewModel
+import com.ep133.sampletool.ui.kit.GroupSession
+import com.ep133.sampletool.ui.kit.KitViewModel
+import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 
@@ -62,10 +66,15 @@ class MainActivity : ComponentActivity() {
 
         val padsViewModel = PadsViewModel(midiRepo)
         val projectBackupManager = ProjectBackupManager(midiRepo)
-        val projectsViewModel = ProjectsViewModel(midiRepo, projectBackupManager)
+        val projectNameStore = PrefsProjectNameStore(this)
+        val projectsViewModel = ProjectsViewModel(midiRepo, projectBackupManager, projectNameStore)
         val deviceViewModel = DeviceViewModel(midiRepo)
         val sampleImportManager = SampleImportManager(midiRepo)
-        val sampleImportViewModel = SampleImportViewModel(midiRepo, sampleImportManager)
+        // ONE GroupSession shared by the chopper and the Kit Builder — group selection, per-group
+        // CHOP/KIT designation, and choke are a single source of truth, persisted across launches.
+        val groupSession = GroupSession(getSharedPreferences("ep133_group_session", MODE_PRIVATE))
+        val kitViewModel = KitViewModel(midiRepo, sampleImportManager, groupSession)
+        val kitBuilderViewModel = KitBuilderViewModel(midiRepo, sampleImportManager, groupSession)
 
         // SAF launchers — MUST be registered before setContent (Activity lifecycle constraint).
         // See STATE.md decision: "SAF launchers must be registered before setContent() in MainActivity"
@@ -78,13 +87,34 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.OpenDocument(),
         ) { uri: Uri? -> uri?.let { deviceViewModel.onRestoreUriSelected(it, this) } }
 
-        val importLauncher = registerForActivityResult(
+        // Kit SAF launchers: single-file picker for chop mode, multi-file picker for kit mode.
+        val kitLoopLauncher = registerForActivityResult(
+            ActivityResultContracts.OpenDocument(),
+        ) { uri: Uri? -> uri?.let { kitViewModel.onLoopFilePicked(it) } }
+
+        val kitFilesLauncher = registerForActivityResult(
             ActivityResultContracts.OpenMultipleDocuments(),
-        ) { uris: List<Uri> -> sampleImportViewModel.onFilesPicked(uris, this) }
+        ) { uris: List<Uri> -> kitViewModel.onKitFilesPicked(uris, this) }
+
+        // Kit Builder: whole-folder pack picker. Persist the grant so pack URIs stay readable
+        // across sessions (audition + load happen well after the picker callback returns).
+        val packLauncher = registerForActivityResult(
+            ActivityResultContracts.OpenDocumentTree(),
+        ) { uri: Uri? ->
+            uri?.let {
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        it, Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                } catch (e: SecurityException) {
+                    Log.w("EP133", "takePersistableUriPermission failed", e)
+                }
+                kitBuilderViewModel.onPackPicked(it, this)
+            }
+        }
 
         deviceViewModel.onRequestBackup = { name -> backupLauncher.launch(name) }
         deviceViewModel.onRequestRestore = { restoreLauncher.launch(arrayOf("*/*")) }
-        sampleImportViewModel.onRequestPick = { importLauncher.launch(arrayOf("audio/*")) }
         deviceViewModel.onOpenFirmwareUpdater = {
             try {
                 val customTabsIntent = CustomTabsIntent.Builder().build()
@@ -93,6 +123,9 @@ class MainActivity : ComponentActivity() {
                 deviceViewModel.showSnackbar("No browser available to open the updater")
             }
         }
+        kitViewModel.onRequestLoopPick = { kitLoopLauncher.launch(arrayOf("audio/*")) }
+        kitViewModel.onRequestKitPick = { kitFilesLauncher.launch(arrayOf("audio/*")) }
+        kitBuilderViewModel.onRequestPackPick = { packLauncher.launch(null) }
 
         setContent {
             val deviceState by midiRepo.deviceState.collectAsState()
@@ -100,7 +133,8 @@ class MainActivity : ComponentActivity() {
                 padsViewModel = padsViewModel,
                 projectsViewModel = projectsViewModel,
                 deviceViewModel = deviceViewModel,
-                sampleImportViewModel = sampleImportViewModel,
+                kitViewModel = kitViewModel,
+                kitBuilderViewModel = kitBuilderViewModel,
                 isConnected = deviceState.connected,
             )
         }

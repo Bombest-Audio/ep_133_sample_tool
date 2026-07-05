@@ -162,14 +162,14 @@ class BackupManager(private val midi: MIDIRepository) {
                     val name = entry.name
                     emit(RestoreProgress.Progress(index, total))
                     val data = zip.readBytes()
-                    val ok = try {
+                    val nodeId = try {
                         // Paged create-PUT with a per-page ack and a closing terminator.
                         midi.putSampleFile(name = name, pcmBytes = data)
                     } catch (e: Exception) {
                         Log.w(TAG, "restore failed on '$name'", e)
-                        false
+                        null
                     }
-                    if (!ok) {
+                    if (nodeId == null) {
                         emit(RestoreProgress.Error("Restore failed on '$name'"))
                         return@flow
                     }

@@ -86,12 +86,12 @@ private class SampleImportFakeMIDIRepo(
         pcmBytes: ByteArray,
         channels: Int,
         sampleRate: Int,
-    ): Boolean {
+    ): Int? {
         lastChannels = channels
         lastSampleRate = sampleRate
         val portId = deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
-        val parent = resolveNodeId("/sounds") ?: return false
+        val parent = resolveNodeId("/sounds") ?: return null
 
         val metaJson = """{"channels":$channels,"samplerate":$sampleRate}"""
         lastMetadataJson = metaJson
@@ -118,7 +118,7 @@ private class SampleImportFakeMIDIRepo(
 
         spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, ByteArray(0), requestId = 31))
 
-        return true
+        return soundsNodeId  // fake: return the /sounds node id as the assigned node id
     }
 }
 
@@ -342,8 +342,8 @@ class PutInitAckGateTest {
         val wavBytes = ByteArray(100) { 42 }
         val result = repo.putSampleFile("snare.wav", wavBytes)
 
-        // Should return false (timeout on init ack)
-        assertFalse("putSampleFile must return false when INIT ack times out", result)
+        // Should return null (timeout on init ack)
+        assertNull("putSampleFile must return null when INIT ack times out", result)
         // Only the INIT frame should have been sent — NO DATA frames.
         assertEquals(
             "Only the INIT frame must be sent when INIT ack is not received; no DATA frames",
@@ -407,7 +407,7 @@ class PutInitAckGateTest {
         val repo = AckSimRepo(autoReplyPort)
         val result = repo.putSampleFile("hi-hat.wav", wavBytes)
 
-        assertTrue("putSampleFile must return true when device acks correctly", result)
+        assertNotNull("putSampleFile must return a nodeId when device acks correctly", result)
         assertEquals(
             "INIT + 1 DATA + 1 terminator = $totalExpected frames",
             totalExpected, sentFrames.size,
@@ -686,10 +686,10 @@ class PerPageAckGatingTest {
             pcmBytes: ByteArray,
             channels: Int,
             sampleRate: Int,
-        ): Boolean {
+        ): Int? {
             val portId = deviceState.value.outputPortId
                 ?: throw IllegalStateException("no output port")
-            val parent = resolveNodeId("/sounds") ?: return false
+            val parent = resolveNodeId("/sounds") ?: return null
 
             val metaJson = """{"channels":$channels,"samplerate":$sampleRate}"""
             val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
@@ -712,7 +712,7 @@ class PerPageAckGatingTest {
                 page = (page + 1) and 0xFFFF
             }
             spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, ByteArray(0), requestId = 31))
-            return true
+            return soundsNodeId  // fake node ID
         }
     }
 
@@ -819,10 +819,10 @@ private class UniqueReqIdFakeRepo(
         pcmBytes: ByteArray,
         channels: Int,
         sampleRate: Int,
-    ): Boolean {
+    ): Int? {
         val portId = deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
-        val parent = resolveNodeId("/sounds") ?: return false
+        val parent = resolveNodeId("/sounds") ?: return null
         val metaJson = """{"channels":$channels,"samplerate":$sampleRate}"""
 
         // Mirror the real putSampleFile reqId scheme: start at PUT_INIT_REQUEST_ID,
@@ -855,7 +855,7 @@ private class UniqueReqIdFakeRepo(
         // Terminator
         spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, ByteArray(0), requestId = nextReqId))
 
-        return true
+        return 7  // fake node ID (matches resolveNodeId("/sounds") = 7)
     }
 }
 

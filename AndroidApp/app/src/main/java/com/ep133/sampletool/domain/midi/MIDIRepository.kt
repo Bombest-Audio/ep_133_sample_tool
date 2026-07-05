@@ -543,6 +543,30 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         resp != null && (resp.status == SysExProtocol.STATUS_OK ||
             resp.status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START)
 
+    /**
+     * Printable ASCII text from a device error response body, or null if there is none.
+     * The EP-133 returns a human-readable reason on rejection (e.g. "not enough space");
+     * surfacing it beats a generic "upload rejected" message.
+     */
+    private fun deviceErrorText(resp: FileResponse?): String? {
+        val body = resp?.body ?: return null
+        if (body.isEmpty()) return null
+        val text = String(body, Charsets.US_ASCII).filter { it.code in 32..126 }.trim()
+        return text.ifBlank { null }
+    }
+
+    /**
+     * Free device sample storage in bytes from the latest device stats, or null if unknown.
+     * Callers use this to preflight an upload before writing a partial batch the device would
+     * reject once /sounds fills.
+     */
+    fun availableStorageBytes(): Long? {
+        val s = _deviceState.value
+        val used = s.storageUsedBytes ?: return null
+        val total = s.storageTotalBytes ?: return null
+        return (total - used).coerceAtLeast(0L)
+    }
+
     suspend fun putProjectArchive(slotNodeId: Int, tarBytes: ByteArray): Boolean {
         val portId = _deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
@@ -589,14 +613,18 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *     [SysExProtocol.buildFilePutDataFrame] (existing, unchanged).
      *  5. Send a zero-length DATA frame as the terminator (reference: "sendSysExFileRequest
      *     serial, new SysExFilePutDataRequest(page, new Uint8Array(0))").
-     *  6. Await STATUS_OK via [pendingPutAckDeferred] / [dispatchPagedPutResponse] (same
-     *     machinery as [putProjectArchive]).
+     *  6. Await STATUS_OK; on success return the device-assigned node ID parsed from the INIT
+     *     response body[0..1] (u16 BE, hardware-verified 2026-06-29 — test upload returned 193).
      *
      * @param name      Sanitized basename + ".wav" (caller must ensure no path separators).
      * @param pcmBytes  Raw interleaved s16 LE PCM — NO RIFF/WAV header. Must be > 0 bytes.
      * @param channels  Number of audio channels (1 = mono, 2 = stereo).
      * @param sampleRate Sample rate in Hz (always 46875 for device-format audio).
-     * @return          true if the device acknowledged STATUS_OK; false on timeout or error.
+     * @return          Device-assigned node ID (positive Int) on success — parsed from the INIT
+     *                  response body, or resolved via `/sounds/<name>` when the body lacks it.
+     *                  Null on timeout / device error / unresolvable /sounds node, and also when
+     *                  the upload was acked but no node ID could be determined either way: callers
+     *                  bind pads to the returned ID, so an unverifiable ID must read as failure.
      * @throws IllegalStateException if no output port is connected or a transfer is in flight.
      * @throws CancellationException if the coroutine is cancelled.
      */
@@ -605,7 +633,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         pcmBytes: ByteArray,
         channels: Int = 1,
         sampleRate: Int = 46875,
-    ): Boolean {
+    ): Int? {
         val portId = _deviceState.value.outputPortId
             ?: throw IllegalStateException("no output port")
 
@@ -616,7 +644,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             val parent = resolveSoundsNodeId()
             if (parent == null) {
                 Log.e("EP133APP", "putSampleFile: cannot resolve /sounds node — aborting upload of $name")
-                return@withLock false
+                return@withLock null
             }
 
             // ~420-byte raw chunks (within the device's 512-byte budget) get STATUS_OK; 4096 was
@@ -625,14 +653,21 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             val pageCount = if (pcmBytes.isEmpty()) 0 else (pcmBytes.size + rawChunkSize - 1) / rawChunkSize
             Log.d("EP133APP", "putSampleFile: chunkSize=$rawChunkSize pages=$pageCount for $name (${pcmBytes.size} bytes, ch=$channels sr=$sampleRate, deviceChunkSize=$deviceChunkSize)")
 
-            // Metadata JSON key names match data/index.js prepareTeenageMeta.
-            val metadataJson = """{"channels":$channels,"samplerate":$sampleRate}"""
+            // Metadata JSON must match the hardware-verified upload (the Python spike that
+            // successfully uploaded + played samples): channels/samplerate alone get the PUT INIT
+            // rejected — the device needs the sample `format`, a `name`, and a `sound.playmode`.
+            val metaName = name.substringBeforeLast('.', name)
+            val metadataJson =
+                """{"channels":$channels,"samplerate":$sampleRate,"format":"s16","name":"$metaName","sound.playmode":"oneshot"}"""
 
             // Transfer-local reqId counter (INIT=30, then each DATA page + terminator). Each frame
             // registers its own OneShot waiter under its reqId via awaitFileOp; only one is ever
             // live at a time (await-then-remove), so a stale/duplicate ack can't mis-route.
             var nextReqId = PUT_INIT_REQUEST_ID  // 30
             var initAcked = false
+            // Device-assigned node ID, parsed from the PUT INIT response body[0..1] u16 BE.
+            // Hardware-verified (2026-06-29): a 0.3s test upload returned nodeId 193 via this path.
+            var assignedNodeId: Int? = null
             try {
                 // INIT: announce parent dir, fileId=0 (new file), size, filename, metadata.
                 val initReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
@@ -645,9 +680,24 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                     metadataJson = metadataJson,
                 )
                 Log.d("EP133MIDI", "MIDI META: outbound PUT INIT reqId=$initReqId name=$name size=${pcmBytes.size}")
-                if (!putAckOk(awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS))) {
-                    Log.e("EP133APP", "putSampleFile: PUT INIT ack failed or timed out — aborting $name")
-                    return@withLock false
+                val initResp = awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS)
+                if (!putAckOk(initResp)) {
+                    val devMsg = deviceErrorText(initResp)
+                    Log.e("EP133APP", "putSampleFile: PUT INIT rejected for $name — ${devMsg ?: "no ack (timeout)"}")
+                    // Surface the device's own reason (e.g. "not enough space") to the caller;
+                    // fall back to null only when the device said nothing (genuine timeout).
+                    if (devMsg != null) throw java.io.IOException(devMsg)
+                    return@withLock null
+                }
+                // Parse device-assigned node ID from body[0..1] as unsigned 16-bit big-endian.
+                // Hardware-verified (2026-06-29): body carries the new file's node ID so callers
+                // can use it directly for pad-metadata assignment without a subsequent FILE_LIST.
+                if (initResp != null && initResp.body.size >= 2) {
+                    assignedNodeId = ((initResp.body[0].toInt() and 0xFF) shl 8) or
+                        (initResp.body[1].toInt() and 0xFF)
+                    Log.d("EP133APP", "putSampleFile: device assigned nodeId=$assignedNodeId for $name")
+                } else {
+                    Log.w("EP133APP", "putSampleFile: PUT INIT response body too short to parse nodeId — body=${initResp?.body?.size ?: 0} bytes")
                 }
                 initAcked = true
                 Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name")
@@ -662,11 +712,14 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                     val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
                     val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = dataReqId)
                     Log.d("EP133MIDI", "MIDI META: outbound PUT DATA page=$page reqId=$dataReqId chunkSize=${chunk.size}")
-                    if (!putAckOk(awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS))) {
-                        Log.e("EP133APP", "putSampleFile: DATA page $page ack failed or timed out — aborting $name")
+                    val dataResp = awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS)
+                    if (!putAckOk(dataResp)) {
+                        val devMsg = deviceErrorText(dataResp)
+                        Log.e("EP133APP", "putSampleFile: DATA page $page rejected for $name — ${devMsg ?: "no ack (timeout)"}")
                         val closeReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
                         forceCloseTransfer(portId, page + 1, closeReqId)
-                        return@withLock false
+                        if (devMsg != null) throw java.io.IOException(devMsg)
+                        return@withLock null
                     }
                     offset = end
                     page = (page + 1) and 0xFFFF
@@ -676,7 +729,17 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
                 val termReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
                 val terminatorFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = termReqId)
                 Log.d("EP133MIDI", "MIDI META: outbound PUT terminator page=$page reqId=$termReqId")
-                putAckOk(awaitFileOp(termReqId, FileOpKind.PUT_DATA, portId, terminatorFrame, PUT_ACK_TIMEOUT_MS))
+                if (putAckOk(awaitFileOp(termReqId, FileOpKind.PUT_DATA, portId, terminatorFrame, PUT_ACK_TIMEOUT_MS))) {
+                    // Return the device-assigned node ID from the INIT response body. If the body
+                    // didn't carry one, resolve the just-created file by path instead — callers
+                    // bind pads to this ID (pad metadata "sym"), so a sentinel like -1 must never
+                    // escape here. If neither source yields an ID, report failure (null).
+                    assignedNodeId ?: resolveNodeIdInternal("/sounds/$name").also {
+                        if (it == null) Log.e("EP133APP", "putSampleFile: upload acked but no node ID for $name")
+                    }
+                } else {
+                    null
+                }
             } catch (e: CancellationException) {
                 // A dangling incomplete PUT wedges the device — best-effort close if INIT was acked.
                 if (initAcked) forceCloseTransfer(portId, 0, nextReqId)
@@ -1155,6 +1218,223 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             } catch (e: Exception) {
                 Log.e("EP133APP", "MIDI META: setActiveGroup($index) failed", e)
                 false
+            }
+        }
+    }
+
+    // ── Pad-assignment (hardware-verified 2026-06-29) ─────────────────────────────
+    //
+    // Each pad in the active project is a FILE node at:
+    //   active-project → groups/<letter> → "<gridIndex+1 zero-padded>"
+    // A pad's metadata JSON IS its sound binding: writing the verified JSON below
+    // with sym=<sampleNodeId> makes the device play that sample when the pad is hit.
+
+    /**
+     * Bind a sample to a pad on the active project via a single METADATA SET.
+     *
+     * Pad node resolution (hardware-verified 2026-06-29):
+     *   /projects → active-project node → FILE_INFO → project name →
+     *   /projects/<name>/groups/<group.name> → list children → pick entry
+     *   named "%02d".format(gridIndex + 1)
+     *
+     * Writes the hardware-verified pad metadata JSON (any field deviation may cause
+     * the device to silently ignore the assignment):
+     * ```
+     * {"sym":<sampleNodeId>,"sample.start":<start>,"sample.end":<end>,
+     *  "sound.playmode":"<playmode>","sound.amplitude":100,"sound.pan":0,
+     *  "sound.pitch":0.00,"envelope.attack":0,"envelope.release":255,
+     *  "sound.mutegroup":false,"time.mode":"off","midi.channel":0}
+     * ```
+     *
+     * @param group         Target pad group (A/B/C/D).
+     * @param gridIndex     Display-order pad index within the group (0..11, top-left to bottom-right,
+     *                      matching [EP133Pads.GRID_ORDER]).
+     * @param sampleNodeId  Device-assigned node ID of the uploaded sample (from [putSampleFile]).
+     * @param sampleStart   Start frame (0-based, inclusive).  Use 0 to start from the beginning.
+     * @param sampleEnd     End frame (exclusive).  Use total frame count to play the full sample.
+     * @param playmode      EP-133 playmode string (default "oneshot").
+     * @return              true if the device acknowledged the METADATA SET; false on error or
+     *                      if the pad node cannot be resolved (logged with details).
+     */
+    open suspend fun assignSampleToPad(
+        group: PadChannel,
+        gridIndex: Int,
+        sampleNodeId: Int,
+        sampleStart: Int,
+        sampleEnd: Int,
+        playmode: String = "oneshot",
+        muteGroup: Boolean = false,
+    ): Boolean {
+        if (_deviceState.value.outputPortId == null) return false
+        return fileOpMutex.withLock {
+            ensureFileSessionInitNoLock()
+            try {
+                val padNodeId = resolvePadNodeIdNoLock(group, gridIndex) ?: return@withLock false
+
+                // Build and write the hardware-verified pad metadata JSON.
+                val json = buildPadAssignmentJson(sampleNodeId, sampleStart, sampleEnd, playmode, muteGroup)
+                Log.d("EP133APP", "assignSampleToPad: group=${group.name} gridIndex=$gridIndex padNode=$padNodeId json=$json")
+                setMetadata(padNodeId, json)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("EP133APP", "assignSampleToPad(${group.name}[$gridIndex]) failed", e)
+                false
+            }
+        }
+    }
+
+    /**
+     * Build the hardware-verified pad assignment metadata JSON.
+     *
+     * Shape verified on real device (2026-06-29): device accepted and played the sample
+     * after receiving a METADATA SET with exactly these keys and types.
+     *
+     * @param sampleNodeId  Device-assigned node ID from [putSampleFile] (the `sym` field).
+     * @param sampleStart   Start frame (0 = beginning of sample).
+     * @param sampleEnd     End frame (total frame count = full sample).
+     * @param playmode      EP-133 playmode string (e.g. "oneshot", "loop").
+     */
+    internal fun buildPadAssignmentJson(
+        sampleNodeId: Int,
+        sampleStart: Int,
+        sampleEnd: Int,
+        playmode: String,
+        muteGroup: Boolean = false,
+    ): String = """{"sym":$sampleNodeId,"sample.start":$sampleStart,"sample.end":$sampleEnd,"sound.playmode":"$playmode","sound.amplitude":100,"sound.pan":0,"sound.pitch":0.00,"envelope.attack":0,"envelope.release":255,"sound.mutegroup":$muteGroup,"time.mode":"off","midi.channel":0}"""
+
+    /**
+     * Metadata for an empty (unbound) pad — the device's own representation. Hardware-verified:
+     * an empty pad's FILE_METADATA GET returns exactly `{"sym":0}` (see pad dumps), so SET-ting
+     * it back unbinds the pad.
+     */
+    private val padEmptyJson = """{"sym":0}"""
+
+    /**
+     * Resolve a pad node id at `/projects/<active>/groups/<X>/<NN>` inside a [fileOpMutex]-locked
+     * context. Shared by [assignSampleToPad] and [clearPad].
+     */
+    private suspend fun resolvePadNodeIdNoLock(group: PadChannel, gridIndex: Int): Int? {
+        val projectsNode = resolveNodeIdInternal("/projects") ?: run {
+            Log.w("EP133APP", "resolvePadNode: cannot resolve /projects"); return null
+        }
+        val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1).takeIf { it >= 0 } ?: run {
+            Log.w("EP133APP", "resolvePadNode: no active project in /projects metadata"); return null
+        }
+        val projName = getNodeInfo(activeProjNodeId)?.name ?: run {
+            Log.w("EP133APP", "resolvePadNode: cannot get project name for nodeId=$activeProjNodeId"); return null
+        }
+        val groupDirPath = "/projects/$projName/groups/${group.name}"
+        val groupDirNode = resolveNodeIdInternal(groupDirPath) ?: run {
+            Log.w("EP133APP", "resolvePadNode: cannot resolve $groupDirPath"); return null
+        }
+        val body = listNodeBody(groupDirNode, requestId = nextFileReqId()) ?: run {
+            Log.w("EP133APP", "resolvePadNode: FILE_LIST for $groupDirPath returned null"); return null
+        }
+        // Pad node name = "%02d".format(gridIndex + 1) per hardware-verified naming.
+        val padName = "%02d".format(gridIndex + 1)
+        return SysExProtocol.parseFileListEntries(body).firstOrNull { it.name == padName }?.nodeId ?: run {
+            Log.w("EP133APP", "resolvePadNode: pad '$padName' not found in $groupDirPath"); return null
+        }
+    }
+
+    /**
+     * Unbind a pad on the device: write the empty-pad metadata (`{"sym":0}`) to the pad node so it
+     * plays nothing. Returns false if there's no output port or the pad can't be resolved.
+     */
+    open suspend fun clearPad(group: PadChannel, gridIndex: Int): Boolean {
+        if (_deviceState.value.outputPortId == null) return false
+        return fileOpMutex.withLock {
+            ensureFileSessionInitNoLock()
+            try {
+                val padNodeId = resolvePadNodeIdNoLock(group, gridIndex) ?: return@withLock false
+                Log.d("EP133APP", "clearPad: group=${group.name} gridIndex=$gridIndex padNode=$padNodeId")
+                setMetadata(padNodeId, padEmptyJson)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("EP133APP", "clearPad(${group.name}[$gridIndex]) failed", e)
+                false
+            }
+        }
+    }
+
+    /**
+     * Clear a project slot: reset every pad in all four groups to empty (`{"sym":0}`). The slot
+     * itself always survives — project directories carry no DELETE capability (flags `0x0e`), so
+     * "clearing" means emptying its pads, not removing the numbered slot.
+     *
+     * @return the number of pads emptied, or -1 on failure / no output port.
+     */
+    open suspend fun clearProject(projectName: String): Int {
+        if (_deviceState.value.outputPortId == null) return -1
+        return fileOpMutex.withLock {
+            ensureFileSessionInitNoLock()
+            try {
+                var cleared = 0
+                for (group in PadChannel.entries) {
+                    val groupDir = resolveNodeIdInternal("/projects/$projectName/groups/${group.name}")
+                        ?: continue
+                    val body = listNodeBody(groupDir, requestId = nextFileReqId()) ?: continue
+                    val padNodes = SysExProtocol.parseFileListEntries(body)
+                        .filter { it.name.length == 2 && it.name.all(Char::isDigit) }  // pad dirs 01..12
+                        .map { it.nodeId }
+                    for (padNode in padNodes) {
+                        if (setMetadata(padNode, padEmptyJson)) cleared++
+                    }
+                }
+                Log.d("EP133APP", "clearProject($projectName): emptied $cleared pads")
+                cleared
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("EP133APP", "clearProject($projectName) failed", e)
+                -1
+            }
+        }
+    }
+
+    /**
+     * Read which sample is bound to each pad of [group] in the active project.
+     *
+     * Returns gridIndex (0-based, 0..11) → sample display name for every OCCUPIED pad — a pad whose
+     * metadata `sym` is non-zero (an empty pad is `{"sym":0}`). Empty pads are omitted. Names have
+     * their extension stripped; if the sample node can't be named, falls back to `"sample"`.
+     *
+     * This lets the Kit Builder canvas mirror what's actually on the device instead of showing a
+     * blank staging grid. Resolves the group dir + pad list once, then a METADATA GET per pad (plus
+     * a FILE_INFO per occupied pad to name it). Returns an empty map when offline or on error.
+     */
+    open suspend fun readGroupPadState(group: PadChannel): Map<Int, String> {
+        if (_deviceState.value.outputPortId == null) return emptyMap()
+        return fileOpMutex.withLock {
+            ensureFileSessionInitNoLock()
+            try {
+                val projectsNode = resolveNodeIdInternal("/projects") ?: return@withLock emptyMap()
+                val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
+                    .takeIf { it >= 0 } ?: return@withLock emptyMap()
+                val projName = getNodeInfo(activeProjNodeId)?.name ?: return@withLock emptyMap()
+                val groupDir = resolveNodeIdInternal("/projects/$projName/groups/${group.name}")
+                    ?: return@withLock emptyMap()
+                val body = listNodeBody(groupDir, requestId = nextFileReqId()) ?: return@withLock emptyMap()
+                val padEntries = SysExProtocol.parseFileListEntries(body)
+                    .filter { it.name.length == 2 && it.name.all(Char::isDigit) }  // pad dirs 01..12
+                val result = LinkedHashMap<Int, String>()
+                for (entry in padEntries) {
+                    val gridIndex = (entry.name.toIntOrNull() ?: continue) - 1
+                    if (gridIndex !in 0 until 12) continue
+                    val sym = getMetadataJson(entry.nodeId).optInt("sym", 0)
+                    if (sym == 0) continue
+                    val name = getNodeInfo(sym)?.name?.substringBeforeLast('.') ?: "sample"
+                    result[gridIndex] = name
+                }
+                Log.d("EP133APP", "readGroupPadState(${group.name}): ${result.size} occupied pads")
+                result
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("EP133APP", "readGroupPadState(${group.name}) failed", e)
+                emptyMap()
             }
         }
     }
