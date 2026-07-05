@@ -288,10 +288,21 @@ class KitViewModel(
     private fun runChop(group: PadChannel, uri: Uri, rawName: String, context: Context) {
         val sliceCount = resolvedSliceCountFor(group)
         val chokeOn = session.chokeFor(group)
-        val safeName = manager.sanitizeName(rawName) ?: rawName
 
         // Seed N rows — one per slice (no separate upload row; each row covers its own upload+assign).
         val sliceLabels = (0 until sliceCount).map { i -> "slice ${group.name}${i + 1}" }
+
+        // A null sanitized name means no safe ASCII device filename can be derived — fail up
+        // front rather than feeding the raw name into putSampleFile (same contract as
+        // SampleImportManager.importSample).
+        val safeName = manager.sanitizeName(rawName)
+        if (safeName == null) {
+            val msg = "Unusable file name — rename the file using letters or digits"
+            setItems(group, sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) })
+            _snackbarMessage.value = msg
+            return
+        }
+
         setItems(group, sliceLabels.map { KitResultItem(it) })
 
         viewModelScope.launch {
@@ -436,7 +447,14 @@ class KitViewModel(
                     return@launch
                 }
 
-                val safeName = manager.sanitizeName(rawName) ?: rawName
+                // Null sanitized name = no safe device filename derivable — error this item
+                // rather than uploading the raw name.
+                val safeName = manager.sanitizeName(rawName)
+                if (safeName == null) {
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Unusable file name") }
+                    _snackbarMessage.value = "Unusable file name: $rawName — rename it using letters or digits"
+                    return@launch
+                }
                 val frames = converted.pcm.size / 2 / converted.channels
 
                 // Upload + assign serialized via deviceMutex.
@@ -498,9 +516,18 @@ class KitViewModel(
         val group = session.selected.value
         val sliceCount = resolvedSliceCountFor(group)
         val chokeOn = session.chokeFor(group)
-        val safeName = manager.sanitizeName(name) ?: name
 
         val sliceLabels = (0 until sliceCount).map { i -> "slice ${group.name}${i + 1}" }
+
+        // Same contract as runChop: a null sanitized name is an error, not a fallback.
+        val safeName = manager.sanitizeName(name)
+        if (safeName == null) {
+            val msg = "Unusable file name — rename the file using letters or digits"
+            setItems(group, sliceLabels.map { KitResultItem(it, KitItemState.Error, msg) })
+            _snackbarMessage.value = msg
+            return
+        }
+
         setItems(group, sliceLabels.map { KitResultItem(it) })
 
         viewModelScope.launch {
@@ -582,9 +609,14 @@ class KitViewModel(
 
         capped.forEachIndexed { i, triple ->
             val (rawName, pcm, channels) = triple
-            val safeName = manager.sanitizeName(rawName) ?: rawName
             val frames = pcm.size / 2 / channels
             viewModelScope.launch {
+                // Same contract as onKitFilesPicked: a null sanitized name is an error, not a fallback.
+                val safeName = manager.sanitizeName(rawName)
+                if (safeName == null) {
+                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Unusable file name") }
+                    return@launch
+                }
                 updateItem(group, i) { it.copy(state = KitItemState.Working) }
 
                 val sampleNodeId: Int? = try {
