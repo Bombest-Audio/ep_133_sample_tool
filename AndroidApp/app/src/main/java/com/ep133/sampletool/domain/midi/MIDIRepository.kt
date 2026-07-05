@@ -419,7 +419,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *
      * Returns true if GREET succeeded; false on timeout or no output port.
      */
-    suspend fun queryDeviceStats(): Boolean {
+    open suspend fun queryDeviceStats(): Boolean {
         val portId = _deviceState.value.outputPortId ?: return false
         // Guard against overlapping queries (e.g. rapid disconnect/reconnect). Two concurrent
         // runs would race on the shared pending-deferred fields and could call complete() twice
@@ -1104,7 +1104,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *
      * @return Group index 0–3, or null if the device is disconnected / no active project.
      */
-    suspend fun getActiveGroupIndex(): Int? {
+    open suspend fun getActiveGroupIndex(): Int? {
         Log.d("EP133APP", "MIDI META: getActiveGroupIndex() called, outputPort=${_deviceState.value.outputPortId}")
         if (_deviceState.value.outputPortId == null) return null
         // Poll guard: return immediately if a poll is already running. This prevents a
@@ -1201,7 +1201,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *
      * @return true if the SET ack was received, false on error or timeout.
      */
-    suspend fun setActiveGroup(index: Int): Boolean {
+    open suspend fun setActiveGroup(index: Int): Boolean {
         val channel = PadChannel.entries.getOrNull(index) ?: return false
         if (_deviceState.value.outputPortId == null) return false
         return fileOpMutex.withLock {

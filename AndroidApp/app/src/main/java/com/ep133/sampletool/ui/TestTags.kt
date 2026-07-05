@@ -32,6 +32,8 @@ object TestTags {
     const val DEVICE_FIRMWARE_BANNER = "device_firmware_banner"
     const val DEVICE_STATS_GRID = "device_stats_grid"
     const val DEVICE_RESTORE_CONFIRM_DIALOG = "device_restore_confirm_dialog"
+    const val DEVICE_SCALE_DROPDOWN = "device_scale_dropdown"
+    const val DEVICE_ROOT_DROPDOWN = "device_root_dropdown"
 
     // Projects
     const val PROJECTS_SLOT_LIST = "projects_slot_list"

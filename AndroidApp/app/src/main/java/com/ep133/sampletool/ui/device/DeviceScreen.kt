@@ -699,7 +699,7 @@ private fun ScaleModeSelector(
                             ?.let(onScaleSelect)
                     }
                 },
-                modifier = Modifier.weight(2f),
+                modifier = Modifier.weight(2f).testTag(TestTags.DEVICE_SCALE_DROPDOWN),
             )
 
             ScaleDropdown(
@@ -707,7 +707,7 @@ private fun ScaleModeSelector(
                 selectedText = selectedRoot,
                 options = EP133Scales.ROOT_NOTES,
                 onSelect = onRootSelect,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).testTag(TestTags.DEVICE_ROOT_DROPDOWN),
             )
         }
     }
