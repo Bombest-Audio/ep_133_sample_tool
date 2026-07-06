@@ -2,19 +2,34 @@
 
 | Field | Value |
 |-------|-------|
-| Commit SHA | `8a6677d` |
-| Commit date | 2026-07-05T20:49:15-07:00 |
+| Commit SHA | `e39e738` |
+| Commit date | 2026-07-05T21:56:40-07:00 |
 | Branch | `android-ui-test-framework` |
-| Dashboard generated at | 2026-07-06T04:56:00Z |
+| Dashboard generated at | 2026-07-06T06:15:39Z |
 
 ## Test Suite Summary
 
 | Suite | Test Classes | Test Methods | Result |
 |-------|--------------|---------------|--------|
 | Unit tests (`src/test`, `:app:testDebugUnitTest`) | 43 | 274 (0 failures, 0 errors, 13 skipped) | BUILD SUCCESSFUL |
-| androidTest (instrumented, `src/androidTest`) | 10 | 79 (0 failures, 0 errors, 0 skipped) | BUILD SUCCESSFUL |
+| androidTest (instrumented, `src/androidTest`, physical Pixel 10) | 10 | 79 (79 failures, 0 errors, 0 skipped) | BUILD FAILED |
 
-**Note:** The instrumented/androidTest suite WAS executed in this environment on 2026-07-06T04:52Z against the connected device `emulator-5554` (adb reported `device` state), via `./gradlew :app:connectedDebugAndroidTest`. Gradle ran the suite against AVD target `ep133_test(AVD) - 15` and completed in 1m 55s (BUILD SUCCESSFUL). All 79 test methods across the 10 instrumented test classes (`AppNavigationTest`, `DeviceScreenTest`, `FirmwareBannerTest`, `KitBuilderScreenTest`, `KitScreenTest`, `PadsScreenTest`, `ProjectsScreenTest`, `SampleImportScreenTest`, `ScaleLockFlowTest`, `SimulatedDeviceTest`) passed — 0 failures, 0 errors, 0 skipped. Stale output directories (`androidTest-results/connected`, `reports/androidTests/connected`) were deleted before this run so the JUnit XML parsed below is guaranteed fresh, not a residual from an earlier session.
+**Note (physical-device run, current):** The instrumented/androidTest suite was executed on 2026-07-06T06:12Z against the connected **physical** device `5C060DLCR000Y0` (Pixel 10, Android 17 / API 37, USB-attached, `adb devices -l` reports `usb:0-1 product:frankel model:Pixel_10 device:frankel`), scoped via `ANDROID_SERIAL=5C060DLCR000Y0 ./gradlew :app:connectedDebugAndroidTest`. A second device, `emulator-5554` (Pixel_Tablet AVD), was simultaneously connected but **did not participate** — confirmed explicitly (not assumed): the Gradle log shows `Starting 79 tests on Pixel 10 - 17` and contains zero mentions of `emulator-5554`/`Pixel_Tablet`/`emu64a` anywhere in the full build output, and only one device-named output directory was produced (`androidTest-results/connected/debug/Pixel 10 - 17/`) with no sibling tablet/emulator directory. Stale output directories were deleted before this run so the JUnit XML parsed is guaranteed fresh.
+
+**Result: BUILD FAILED — all 79 test methods failed on real hardware**, across all 10 instrumented test classes (`AppNavigationTest` 7/7, `DeviceScreenTest` 11/11, `FirmwareBannerTest` 5/5, `KitBuilderScreenTest` 8/8, `KitScreenTest` 17/17, `PadsScreenTest` 7/7, `ProjectsScreenTest` 7/7, `SampleImportScreenTest` 6/6, `ScaleLockFlowTest` 3/3, `SimulatedDeviceTest` 8/8 — all failing). This is reported honestly rather than hidden: every single failure shares the identical root cause, verified verbatim from the JUnit XML:
+
+```
+java.lang.RuntimeException: java.util.concurrent.ExecutionException: java.lang.RuntimeException: java.lang.NoSuchMethodException: android.hardware.input.InputManager.getInstance []
+  at androidx.test.espresso.Espresso.onIdle(Espresso.java:18)
+  at androidx.compose.ui.test.junit4.EspressoLink_androidKt.runEspressoOnIdle(EspressoLink.android.kt:92)
+  ...
+Caused by: java.lang.NoSuchMethodException: android.hardware.input.InputManager.getInstance []
+  at androidx.test.espresso.base.InputManagerEventInjectionStrategy.initialize(InputManagerEventInjectionStrategy.java:5)
+```
+
+This is a **framework/environment incompatibility**, not an application logic bug: Espresso's `InputManagerEventInjectionStrategy` reflects on the internal static method `android.hardware.input.InputManager.getInstance()`, which no longer exists in this signature on Android 17 (API 37) — a very recent OS release. Every Compose UI test that reaches `onIdle()` (i.e. all of them, since `createComposeRule()`/`AndroidComposeTestRule` drives idling through Espresso under the hood) fails identically regardless of what the test itself asserts. The prior emulator run below used an older AVD image (API 15 target) where this reflection path still resolves, which is why it passed. **Likely fix path (not yet applied):** bump `androidx.test.espresso:espresso-core` / `androidx.compose.ui:ui-test-junit4` to versions with Android 15+/16+ reflection compatibility, or pin CI/local physical-device runs to an OS image where the older Espresso version still works, pending upstream Espresso support for the newer `InputManager` API shape.
+
+**Historical note (prior run, superseded as the current result):** The instrumented/androidTest suite was previously executed on 2026-07-06T04:52Z against the emulator `emulator-5554` (AVD target `ep133_test(AVD) - 15`, commit `e39e738`) via the same unscoped command, and all 79 tests passed (0 failures, 0 errors, 0 skipped, BUILD SUCCESSFUL, 1m 55s). That result is preserved here for the record but is no longer the current/primary result now that a physical-device run has surfaced a real hardware-specific incompatibility the emulator could not catch.
 
 ## Android Version(s) Tested
 
@@ -23,6 +38,7 @@
 | `compileSdk` | 34 |
 | `minSdk` | 29 |
 | `targetSdk` | 34 |
+| Physical device tested (androidTest, current) | Pixel 10, Android 17 (`ro.build.version.release`), API 37 (`ro.build.version.sdk`), serial `5C060DLCR000Y0`, USB-attached |
 | Headless UI-test managed device | Pixel 2, API 33 (`aosp-atd` system image, via `./gradlew :app:pixel2Api33DebugAndroidTest`) |
 
 ## Coverage Gap Report (scripts/ui-test-coverage.sh output)
@@ -139,10 +155,18 @@ for f in files:
 print(len(files), total_tests, total_failures, total_errors, total_skipped)
 PY
 
-# androidTest suite (real, executed against connected device emulator-5554)
+# androidTest suite (real, executed against a specific connected device)
+# IMPORTANT: if multiple devices/emulators are attached simultaneously (check with
+# `adb devices -l` first), an unscoped `connectedDebugAndroidTest` fans out to ALL of
+# them. Scope to a single physical/virtual device with ANDROID_SERIAL:
 # Clear stale output first so results are guaranteed fresh:
 rm -rf AndroidApp/app/build/outputs/androidTest-results/connected AndroidApp/app/build/reports/androidTests/connected
-cd AndroidApp && ./gradlew :app:connectedDebugAndroidTest
+cd AndroidApp && ANDROID_SERIAL=5C060DLCR000Y0 ./gradlew :app:connectedDebugAndroidTest
+# Verify scoping worked (don't just assume ANDROID_SERIAL took effect): the Gradle log
+# should show "Starting N tests on <only-your-device>" and the output directory should
+# contain exactly one device-named subdirectory, not one per attached device.
+# grep -i "Starting.*tests on" for confirmation; grep -ci "emulator-5554\|Pixel_Tablet"
+# on the full log should be 0 if you intended to exclude the emulator.
 
 # Parse authoritative instrumented-test XML results (recursive glob -- AGP may
 # nest output under a device-specific subdirectory, e.g. "ep133_test(AVD) - 15/testlog/")
