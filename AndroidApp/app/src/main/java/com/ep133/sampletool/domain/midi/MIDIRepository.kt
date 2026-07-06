@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * - [queryDeviceStats] for firmware version, storage, and sample count (D-12)
  * - [selectedScale] and [selectedRootNote] as shared state flows (D-17)
  */
-open class MIDIRepository(private val midiManager: MIDIPort) {
+open class MIDIRepository(private var midiManager: MIDIPort) {
 
     /**
      * Serialises all device file operations so that only one file op can hold the shared mutable
@@ -408,6 +408,36 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             outputPorts = devices.outputs.map { MidiPort(it.id, it.name) },
             permissionState = permState,
         )
+    }
+
+    /**
+     * Swap the underlying MIDI port at runtime (debug-only Simulated EP-133 toggle seam).
+     *
+     * Detaches the old port's callbacks, resets per-connection session state so the new
+     * port gets a fresh handshake, rewires callbacks, and re-enumerates the new port.
+     * Does NOT close either port — the caller (MainActivity) owns port lifecycles, so
+     * the real MIDIManager survives a round trip to the simulator and back.
+     */
+    fun swapPort(newPort: MIDIPort) {
+        Log.i(
+            "EP133APP",
+            "swapPort: ${midiManager.javaClass.simpleName} -> ${newPort.javaClass.simpleName}",
+        )
+        // Detach the old port so stale callbacks can't mutate state after the swap.
+        midiManager.onMidiReceived = null
+        midiManager.onDevicesChanged = null
+        midiManager.closeAllListeners()
+        midiManager = newPort
+        // Reset per-connection session state: the new port needs a fresh FILE_INIT
+        // handshake, and stale firmware/stats/port ids must not leak across ports.
+        fileSessionInitialized = false
+        groupsNodeCache.clear()
+        groupNodeNameCache.clear()
+        _deviceState.value = DeviceState()
+        // Rewire exactly as the init block does, then enumerate the new port.
+        newPort.onDevicesChanged = { updateDeviceStateOnly() }
+        newPort.onMidiReceived = { _, data -> parseMidiInput(data) }
+        refreshDeviceState()
     }
 
     /**

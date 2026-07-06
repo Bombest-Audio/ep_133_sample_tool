@@ -157,6 +157,14 @@ class DeviceViewModel(
     // Firmware updater callback — set by MainActivity (mirrors SAF pattern); Wave 3 wires the Custom Tab
     var onOpenFirmwareUpdater: (() -> Unit)? = null
 
+    // Simulated EP-133 toggle — set by MainActivity ONLY when SimulatedPortProvider.available
+    // (debug builds). Null in release, which hides the toggle UI entirely.
+    var onSimToggle: ((Boolean) -> Unit)? = null
+    val simToggleAvailable: Boolean get() = onSimToggle != null
+
+    private val _simModeActive = MutableStateFlow(false)
+    val simModeActive: StateFlow<Boolean> = _simModeActive.asStateFlow()
+
     fun triggerBackup() {
         if (_isBackupInProgress.value || _isRestoreInProgress.value) return
         val name = BackupManager(midi).suggestedBackupFilename()
@@ -278,6 +286,22 @@ class DeviceViewModel(
     /** Invokes the firmware updater callback wired by MainActivity (Wave 3). */
     fun openFirmwareUpdater() {
         onOpenFirmwareUpdater?.invoke()
+    }
+
+    /**
+     * Flip between the real USB port and the simulated EP-133 (debug builds only).
+     *
+     * loadStats() is called explicitly rather than relying on the connected LaunchedEffect:
+     * swapPort resets and re-sets deviceState synchronously, so StateFlow conflation can
+     * swallow the false→true edge. loadStats/queryDeviceStats early-return safely when
+     * disconnected, so the disable path is harmless.
+     */
+    fun setSimulatedMode(enabled: Boolean) {
+        val toggle = onSimToggle ?: return
+        if (enabled == _simModeActive.value) return
+        toggle(enabled)
+        _simModeActive.value = enabled
+        loadStats()
     }
 
     /** Query firmware / storage / sample count. Called when the Device screen opens connected. */
