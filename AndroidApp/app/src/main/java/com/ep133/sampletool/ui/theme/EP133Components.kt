@@ -19,11 +19,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ep133.sampletool.domain.model.PadChannel
+import com.ep133.sampletool.ui.TestTags
 
 /**
  * The EP-133 redesign component kit — the Compose mirror of the Claude Design system's component
@@ -157,6 +159,7 @@ fun Ep133GroupChokeBar(
     onChokeChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
     tagFor: ((PadChannel) -> String?)? = null,
+    testTagFor: ((PadChannel) -> String)? = null,
 ) {
     val t = LocalEP133Tokens.current
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -166,7 +169,9 @@ fun Ep133GroupChokeBar(
                 Ep133GroupChip(
                     label = ch.name,
                     selected = group == ch,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).then(
+                        testTagFor?.let { Modifier.testTag(it(ch)) } ?: Modifier,
+                    ),
                     subLabel = tagFor?.invoke(ch),
                     onClick = { onGroupChange(ch) },
                 )
@@ -180,7 +185,8 @@ fun Ep133GroupChokeBar(
                 .background(t.inset, Radius)
                 .border(1.dp, t.rule, Radius)
                 .clickable { onChokeChange(!chokeOn) }
-                .padding(horizontal = 12.dp, vertical = 9.dp),
+                .padding(horizontal = 12.dp, vertical = 9.dp)
+                .testTag(TestTags.GROUP_CHOKE_TOGGLE),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {

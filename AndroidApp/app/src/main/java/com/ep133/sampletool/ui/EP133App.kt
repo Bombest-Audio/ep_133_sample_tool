@@ -29,6 +29,7 @@ import com.ep133.sampletool.ui.theme.Ep133Sku
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -55,11 +56,11 @@ import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 private val MonoFont = FontFamily.Monospace
 private val BadgeShape = RoundedCornerShape(3.dp)
 
-private enum class NavRoute(val route: String, val label: String) {
-    PADS("pads", "PADS"),
-    KIT("kit", "SAMPLES"),
-    PROJECTS("projects", "PROJ"),
-    DEVICE("device", "DEVICE"),
+private enum class NavRoute(val route: String, val label: String, val tag: String) {
+    PADS("pads", "PADS", TestTags.NAV_PADS),
+    KIT("kit", "SAMPLES", TestTags.NAV_KIT),
+    PROJECTS("projects", "PROJ", TestTags.NAV_PROJECTS),
+    DEVICE("device", "DEVICE", TestTags.NAV_DEVICE),
 }
 
 /**
@@ -111,6 +112,7 @@ fun EP133App(
                 Text(
                     if (sku == Ep133Sku.EP133) "EP·133" else "EP·1320",
                     Modifier
+                        .testTag(TestTags.HEADER_SKU_BADGE)
                         .clip(BadgeShape)
                         .background(t.accent, BadgeShape)
                         .clickable(
@@ -129,7 +131,7 @@ fun EP133App(
                 )
                 Text(
                     currentRoute.label,
-                    Modifier.padding(start = 9.dp).weight(1f),
+                    Modifier.testTag(TestTags.HEADER_TITLE).padding(start = 9.dp).weight(1f),
                     color = t.text2,
                     fontFamily = MonoFont,
                     fontSize = 11.sp,
@@ -140,6 +142,7 @@ fun EP133App(
                 Text(
                     when (themeMode) { 1 -> "☀"; 2 -> "☾"; else -> "◐" },
                     Modifier
+                        .testTag(TestTags.HEADER_THEME_TOGGLE)
                         .clip(BadgeShape)
                         .clickable(
                             onClickLabel = when (themeMode) {
@@ -156,6 +159,7 @@ fun EP133App(
                 Spacer(Modifier.width(8.dp))
                 val dot = if (isConnected) t.live else t.text3
                 Row(
+                    Modifier.testTag(TestTags.HEADER_CONNECTION),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
@@ -199,6 +203,7 @@ fun EP133App(
                     val selected = currentRoute == item
                     Box(
                         Modifier
+                            .testTag(item.tag)
                             .weight(1f)
                             .clickable {
                                 navController.navigate(item.route) {

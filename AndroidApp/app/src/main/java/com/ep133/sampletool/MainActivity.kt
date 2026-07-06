@@ -22,6 +22,8 @@ import com.ep133.sampletool.domain.midi.ProjectBackupManager
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.project.PrefsProjectNameStore
 import com.ep133.sampletool.midi.MIDIManager
+import com.ep133.sampletool.midi.MIDIPort
+import com.ep133.sampletool.midi.SimulatedPortProvider
 import com.ep133.sampletool.ui.EP133App
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
@@ -36,6 +38,10 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var midiManager: MIDIManager
     private lateinit var midiRepo: MIDIRepository
+
+    // Active simulator port (debug builds only) — non-null while the Simulated EP-133
+    // toggle is on. A fresh simulator is created per activation and closed on deactivation.
+    private var simPort: MIDIPort? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -123,6 +129,23 @@ class MainActivity : ComponentActivity() {
                 deviceViewModel.showSnackbar("No browser available to open the updater")
             }
         }
+        // Simulated EP-133 toggle (debug builds only — the release SimulatedPortProvider
+        // reports available=false, so this wiring never installs and the toggle stays hidden).
+        // Real USB remains the default: nothing runs until the user flips the switch.
+        if (SimulatedPortProvider.available) {
+            deviceViewModel.onSimToggle = { enabled ->
+                if (enabled) {
+                    SimulatedPortProvider.create()?.let { sim ->
+                        simPort = sim
+                        midiRepo.swapPort(sim)
+                    }
+                } else {
+                    midiRepo.swapPort(midiManager)
+                    simPort?.close()
+                    simPort = null
+                }
+            }
+        }
         kitViewModel.onRequestLoopPick = { kitLoopLauncher.launch(arrayOf("audio/*")) }
         kitViewModel.onRequestKitPick = { kitFilesLauncher.launch(arrayOf("audio/*")) }
         kitBuilderViewModel.onRequestPackPick = { packLauncher.launch(null) }
@@ -184,6 +207,9 @@ class MainActivity : ComponentActivity() {
             unregisterReceiver(usbReceiver)
         } catch (_: IllegalArgumentException) {
         }
+        // repo.close() closes only its CURRENT port. If the simulator is active, the real
+        // MIDIManager is detached but still open — close it explicitly.
+        if (simPort != null) midiManager.close()
         midiRepo.close()
     }
 }
