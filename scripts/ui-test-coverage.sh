@@ -18,7 +18,12 @@ BASE="origin/main"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --strict) STRICT=1; shift ;;
-        --base) BASE="$2"; shift 2 ;;
+        --base)
+            if [[ $# -lt 2 ]]; then
+                echo "error: --base requires a ref argument" >&2
+                exit 2
+            fi
+            BASE="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
