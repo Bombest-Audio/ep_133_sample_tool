@@ -5,16 +5,16 @@
 | Commit SHA | `8a6677d` |
 | Commit date | 2026-07-05T20:49:15-07:00 |
 | Branch | `android-ui-test-framework` |
-| Dashboard generated at | 2026-07-06T04:29:30Z |
+| Dashboard generated at | 2026-07-06T04:56:00Z |
 
 ## Test Suite Summary
 
 | Suite | Test Classes | Test Methods | Result |
 |-------|--------------|---------------|--------|
 | Unit tests (`src/test`, `:app:testDebugUnitTest`) | 43 | 274 (0 failures, 0 errors, 13 skipped) | BUILD SUCCESSFUL |
-| androidTest (instrumented, `src/androidTest`) | 10 | 79 | not executed in this environment — see CI or `scripts/run-ui-tests.sh` |
+| androidTest (instrumented, `src/androidTest`) | 10 | 79 (0 failures, 0 errors, 0 skipped) | BUILD SUCCESSFUL |
 
-**Note:** The instrumented/androidTest suite was inventoried statically (class/method counts via `grep`) but not executed in this environment. Running it requires a connected Android device or the Pixel 2 API 33 Gradle Managed Device via `scripts/run-ui-tests.sh` — pass/fail results for that suite come from CI or a separate local run, not this dashboard.
+**Note:** The instrumented/androidTest suite WAS executed in this environment on 2026-07-06T04:52Z against the connected device `emulator-5554` (adb reported `device` state), via `./gradlew :app:connectedDebugAndroidTest`. Gradle ran the suite against AVD target `ep133_test(AVD) - 15` and completed in 1m 55s (BUILD SUCCESSFUL). All 79 test methods across the 10 instrumented test classes (`AppNavigationTest`, `DeviceScreenTest`, `FirmwareBannerTest`, `KitBuilderScreenTest`, `KitScreenTest`, `PadsScreenTest`, `ProjectsScreenTest`, `SampleImportScreenTest`, `ScaleLockFlowTest`, `SimulatedDeviceTest`) passed — 0 failures, 0 errors, 0 skipped. Stale output directories (`androidTest-results/connected`, `reports/androidTests/connected`) were deleted before this run so the JUnit XML parsed below is guaranteed fresh, not a residual from an earlier session.
 
 ## Android Version(s) Tested
 
@@ -139,14 +139,34 @@ for f in files:
 print(len(files), total_tests, total_failures, total_errors, total_skipped)
 PY
 
-# androidTest suite inventory (static — not executed; no device/emulator guaranteed)
-grep -rl "@Test" AndroidApp/app/src/androidTest/java/com/ep133/sampletool --include='*Test.kt'
-grep -rc "@Test" AndroidApp/app/src/androidTest/java/com/ep133/sampletool --include='*Test.kt' | awk -F: '{sum+=$2} END {print sum}'
+# androidTest suite (real, executed against connected device emulator-5554)
+# Clear stale output first so results are guaranteed fresh:
+rm -rf AndroidApp/app/build/outputs/androidTest-results/connected AndroidApp/app/build/reports/androidTests/connected
+cd AndroidApp && ./gradlew :app:connectedDebugAndroidTest
+
+# Parse authoritative instrumented-test XML results (recursive glob -- AGP may
+# nest output under a device-specific subdirectory, e.g. "ep133_test(AVD) - 15/testlog/")
+python3 - <<'PYEOF'
+import glob
+try:
+    import defusedxml.ElementTree as ET
+except ImportError:
+    import xml.etree.ElementTree as ET
+files = glob.glob("app/build/outputs/androidTest-results/connected/**/TEST-*.xml", recursive=True)
+total_tests = total_failures = total_errors = total_skipped = 0
+for f in files:
+    root = ET.parse(f).getroot()
+    total_tests += int(root.attrib.get("tests", 0))
+    total_failures += int(root.attrib.get("failures", 0))
+    total_errors += int(root.attrib.get("errors", 0))
+    total_skipped += int(root.attrib.get("skipped", 0))
+print(len(files), total_tests, total_failures, total_errors, total_skipped)
+PYEOF
 
 # Coverage gap report
 scripts/ui-test-coverage.sh
 
-# To actually execute the androidTest suite (device or headless managed device):
+# Alternative target when no device/emulator is connected (headless managed device):
 scripts/run-ui-tests.sh
 # or directly:
 cd AndroidApp && ./gradlew :app:pixel2Api33DebugAndroidTest
