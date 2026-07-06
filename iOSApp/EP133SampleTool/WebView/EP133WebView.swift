@@ -13,9 +13,10 @@ struct EP133WebView: UIViewRepresentable {
 
         // --- Configuration ---
         let config = WKWebViewConfiguration()
-        let prefs = WKWebpagePreferences()
-        prefs.allowsContentAccessFromFileURLs = true
-        config.defaultWebpagePreferences = prefs
+        // The compiled web app fetches sibling files from file:// URLs; WebKit
+        // blocks cross-file access by default and has no public switch for it,
+        // so set the legacy preference by key (the Capacitor/Cordova approach).
+        config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
 
         // --- Polyfill injection ---
         let userContentController = WKUserContentController()

@@ -49,6 +49,18 @@ final class MIDIManager: MIDIPort {
         connectAllSources()
     }
 
+    // MARK: - Teardown
+
+    func close() {
+        for source in connectedSources {
+            MIDIPortDisconnectSource(inputPort, source)
+        }
+        connectedSources.removeAll()
+        if inputPort != 0 { MIDIPortDispose(inputPort); inputPort = 0 }
+        if outputPort != 0 { MIDIPortDispose(outputPort); outputPort = 0 }
+        if midiClient != 0 { MIDIClientDispose(midiClient); midiClient = 0 }
+    }
+
     // MARK: - Device Enumeration
 
     func getUSBDevices() -> MIDIDeviceList {
@@ -157,16 +169,19 @@ final class MIDIManager: MIDIPort {
         eventList: UnsafePointer<MIDIEventList>,
         srcRefCon: UnsafeMutableRawPointer?
     ) {
-        let list = eventList.pointee
-        var packet = list.packet
+        let portId = srcRefCon.map { String(Int(bitPattern: $0)) } ?? "unknown"
 
-        for _ in 0..<list.numPackets {
-            let wordCount = Int(packet.wordCount)
+        // unsafeSequence() yields pointers into the original list — copying
+        // MIDIEventPacket structs and calling MIDIEventPacketNext on the copy
+        // reads past the copy's storage for any list with numPackets > 1.
+        for packetPtr in eventList.unsafeSequence() {
+            let wordCount = Int(packetPtr.pointee.wordCount)
             guard wordCount > 0 else { continue }
 
             // Extract bytes from UInt32 words
             var bytes: [UInt8] = []
-            withUnsafePointer(to: &packet.words) { wordsPtr in
+            bytes.reserveCapacity(wordCount * 4)
+            withUnsafePointer(to: packetPtr.pointee.words) { wordsPtr in
                 let wordBuffer = UnsafeBufferPointer(
                     start: UnsafeRawPointer(wordsPtr)
                         .assumingMemoryBound(to: UInt32.self),
@@ -180,18 +195,9 @@ final class MIDIManager: MIDIPort {
                 }
             }
 
-            // Determine the source port ID
-            let portId = srcRefCon.map { String(Int(bitPattern: $0)) } ?? "unknown"
-
-            let capturedPortId = portId
             let capturedBytes = bytes
             DispatchQueue.main.async { [weak self] in
-                self?.onMIDIReceived?(capturedPortId, capturedBytes)
-            }
-
-            withUnsafePointer(to: &packet) { ptr in
-                let next = MIDIEventPacketNext(ptr)
-                packet = next.pointee
+                self?.onMIDIReceived?(portId, capturedBytes)
             }
         }
     }
