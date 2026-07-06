@@ -37,8 +37,8 @@ class AppNavigationTest {
         app.assertTitle("PROJ")
         app.goToDevice()
         app.assertTitle("DEVICE")
-        app.goToImport()
-        app.assertTitle("IMPORT")
+        app.goToKit()
+        app.assertTitle("SAMPLES")
         app.goToPads()
         app.assertTitle("PADS")
     }
@@ -51,7 +51,7 @@ class AppNavigationTest {
         // Act + Assert
         app.goToProjects().assertOfflinePanel()
         app.goToDevice().assertOfflineState()
-        app.goToImport().assertPickButton("PICK FILES")
+        app.goToKit().assertModeChipsVisible()
         app.goToPads().assertPadLabel("A.")
     }
 

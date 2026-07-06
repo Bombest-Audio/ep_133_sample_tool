@@ -82,7 +82,7 @@ class SampleImportScreenTest {
     @Test
     fun uploadHeld_showsLoadingState() {
         // Arrange: hold the upload open so LOADING is observable
-        val gate = CompletableDeferred<Boolean>()
+        val gate = CompletableDeferred<Int?>()
         val h = setUpImport(
             ScriptedMIDIRepository(TestMIDIRepository.connectedState()).apply {
                 putSampleScript = { gate.await() }
@@ -94,7 +94,7 @@ class SampleImportScreenTest {
         h.robot.assertRowVisible("SNARE2")
             .waitForRowState("SNARE2", "LOADING")
         // Act: release
-        gate.complete(true)
+        gate.complete(1)
         // Assert
         h.robot.waitForRowState("SNARE2", "DONE")
     }

@@ -2,8 +2,13 @@ package com.ep133.sampletool
 
 import androidx.compose.ui.test.junit4.createComposeRule
 import com.ep133.sampletool.domain.midi.MIDIRepository
+import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.robots.AppRobot
+import com.ep133.sampletool.robots.ImportRobot
 import com.ep133.sampletool.support.launchEP133App
+import com.ep133.sampletool.ui.theme.EP133Theme
+import com.ep133.sampletool.ui.`import`.SampleImportScreen
+import com.ep133.sampletool.ui.`import`.SampleImportViewModel
 import com.ep133.sampletool.support.sim.EP133DeviceSimulator
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -67,17 +72,30 @@ class SimulatedDeviceTest {
             .assertSlotCount(9)
     }
 
+    /**
+     * Compose SampleImportScreen directly over the real repo + simulator. The shell's import
+     * entry moved into the Kit flows; this screen is still the plain upload surface and the
+     * protocol path (SampleImportManager → putSampleFile) is identical.
+     */
+    private fun launchImportScreen(repo: MIDIRepository): Pair<ImportRobot, SampleImportViewModel> {
+        val viewModel = SampleImportViewModel(repo, SampleImportManager(repo))
+        composeTestRule.setContent {
+            EP133Theme {
+                SampleImportScreen(viewModel = viewModel)
+            }
+        }
+        return ImportRobot(composeTestRule) to viewModel
+    }
+
     @Test
     fun sampleImport_runsTheRealPagedPutProtocol() {
         // Arrange
         val sim = EP133DeviceSimulator()
         val repo = connect(sim)
-        val ctx = composeTestRule.launchEP133App(repo)
-        val app = AppRobot(composeTestRule)
+        val (import, viewModel) = launchImportScreen(repo)
         // Act: 2000 bytes → FILE_INIT, /sounds node walk, PUT INIT, 5 DATA pages + terminator
         val payload = ByteArray(2000) { (it % 251).toByte() }
-        val import = app.goToImport()
-        ctx.sampleImportViewModel.importStagedBytes("KICK9", payload)
+        viewModel.importStagedBytes("KICK9", payload)
         // Assert: UI reached DONE and the file landed on the "device" byte-for-byte
         import.assertRowVisible("KICK9")
             .waitForRowState("KICK9", "DONE", timeoutMillis = 10_000)
@@ -93,11 +111,9 @@ class SimulatedDeviceTest {
         val sim = EP133DeviceSimulator()
         sim.failPutDataAtPage = 2
         val repo = connect(sim)
-        val ctx = composeTestRule.launchEP133App(repo)
-        val app = AppRobot(composeTestRule)
+        val (import, viewModel) = launchImportScreen(repo)
         // Act
-        val import = app.goToImport()
-        ctx.sampleImportViewModel.importStagedBytes("SNARE9", ByteArray(2000))
+        viewModel.importStagedBytes("SNARE9", ByteArray(2000))
         // Assert: UI shows the failure, no partial file committed, and — critically — the
         // app's forceCloseTransfer terminator cleared the wedge
         import.assertRowVisible("SNARE9")
@@ -113,11 +129,9 @@ class SimulatedDeviceTest {
         val sim = EP133DeviceSimulator()
         sim.wedge = true
         val repo = connect(sim)
-        val ctx = composeTestRule.launchEP133App(repo)
-        val app = AppRobot(composeTestRule)
+        val (import, viewModel) = launchImportScreen(repo)
         // Act
-        val import = app.goToImport()
-        ctx.sampleImportViewModel.importStagedBytes("HAT9", ByteArray(500))
+        viewModel.importStagedBytes("HAT9", ByteArray(500))
         // Assert: PUT INIT gets no ack → upload errors out after the 15s ack timeout;
         // nothing committed
         import.assertRowVisible("HAT9")

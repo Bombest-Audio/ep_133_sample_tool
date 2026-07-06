@@ -27,9 +27,9 @@ class AppRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
         return DeviceRobot(rule)
     }
 
-    fun goToImport(): ImportRobot {
-        tag(TestTags.NAV_IMPORT).performClick()
-        return ImportRobot(rule)
+    fun goToKit(): KitRobot {
+        tag(TestTags.NAV_KIT).performClick()
+        return KitRobot(rule)
     }
 
     fun assertTitle(title: String) = apply {

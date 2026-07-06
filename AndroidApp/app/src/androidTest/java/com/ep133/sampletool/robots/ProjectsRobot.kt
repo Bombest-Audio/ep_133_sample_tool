@@ -46,7 +46,10 @@ class ProjectsRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
             }
         }
         tag(slotTag).assertIsDisplayed()
-        text(name).assertIsDisplayed()
+        // Cards title untitled slots as "PROJECT <NN>" (custom names replace it).
+        rule.onNode(
+            hasText("PROJECT $name") and hasAnyAncestor(hasTestTag(slotTag)),
+        ).assertIsDisplayed()
     }
 
     fun assertEmptySlots() = apply {

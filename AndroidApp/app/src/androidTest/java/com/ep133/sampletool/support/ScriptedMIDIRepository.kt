@@ -30,8 +30,8 @@ class ScriptedMIDIRepository(
     var statsQuerySucceeds: Boolean = false
     var scriptedActiveGroupIndex: Int? = null
 
-    /** Script for putSampleFile: return true = Done, false = not-confirmed, throw = Error. */
-    var putSampleScript: suspend (name: String) -> Boolean = { true }
+    /** Script for putSampleFile: return a nodeId = Done, null = not-confirmed, throw = Error. */
+    var putSampleScript: suspend (name: String) -> Int? = { 1 }
 
     /** Names passed to putSampleFile, in call order. */
     val putSampleNames = mutableListOf<String>()
@@ -55,7 +55,7 @@ class ScriptedMIDIRepository(
         pcmBytes: ByteArray,
         channels: Int,
         sampleRate: Int,
-    ): Boolean {
+    ): Int? {
         putSampleNames += name
         return putSampleScript(name)
     }
