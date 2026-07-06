@@ -12,7 +12,13 @@
 set -euo pipefail
 
 BASE="origin/main"
-[[ "${1:-}" == "--base" ]] && BASE="$2"
+if [[ "${1:-}" == "--base" ]]; then
+    if [[ $# -lt 2 ]]; then
+        echo "error: --base requires a ref argument" >&2
+        exit 2
+    fi
+    BASE="$2"
+fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
@@ -50,8 +56,8 @@ while IFS= read -r gap; do
     i=$((i + 1))
     out="$GEN_DIR/GeneratedRegressionTest$i.kt"
     echo "generate-ui-tests: drafting $out"
-    prompt="$(sed -e "s|{{GAP}}|$gap|" "$PROMPT_TEMPLATE")"
-    # Feed the existing-test list via stdin-safe substitution (python for multiline safety).
+    # Python (not sed) does the actual {{GAP}}/{{EXISTING_TESTS}} substitution below —
+    # stdin-safe for the multiline existing-test list.
     prompt="$(python3 - "$PROMPT_TEMPLATE" "$gap" <<'EOF' "$existing_tests"
 import sys
 template_path, gap = sys.argv[1], sys.argv[2]
