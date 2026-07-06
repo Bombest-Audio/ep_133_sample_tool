@@ -32,14 +32,17 @@ final class MIDIManager: MIDIPort {
             return
         }
 
-        // Input port — receives MIDI from all connected sources
-        MIDIInputPortCreateWithProtocol(
+        // Input port — receives MIDI from all connected sources.
+        // Legacy MIDIPacketList API on purpose: packets carry raw MIDI 1.0 bytes, so
+        // SysEx arrives exactly as sent (matching the Android MIDIManager). The UMP
+        // event-list API wraps SysEx in SysEx7 packets with header nibbles, which the
+        // old naive word-unpacking corrupted.
+        MIDIInputPortCreateWithBlock(
             midiClient,
             "EP133Input" as CFString,
-            ._1_0,
             &inputPort
-        ) { [weak self] eventList, srcConnRefCon in
-            self?.handleMIDIInput(eventList: eventList, srcRefCon: srcConnRefCon)
+        ) { [weak self] packetList, srcConnRefCon in
+            self?.handleMIDIInput(packetList: packetList, srcRefCon: srcConnRefCon)
         }
 
         // Output port — sends MIDI to destinations
@@ -166,38 +169,28 @@ final class MIDIManager: MIDIPort {
     // MARK: - MIDI Input Handling
 
     private func handleMIDIInput(
-        eventList: UnsafePointer<MIDIEventList>,
+        packetList: UnsafePointer<MIDIPacketList>,
         srcRefCon: UnsafeMutableRawPointer?
     ) {
         let portId = srcRefCon.map { String(Int(bitPattern: $0)) } ?? "unknown"
 
-        // unsafeSequence() yields pointers into the original list — copying
-        // MIDIEventPacket structs and calling MIDIEventPacketNext on the copy
-        // reads past the copy's storage for any list with numPackets > 1.
-        for packetPtr in eventList.unsafeSequence() {
-            let wordCount = Int(packetPtr.pointee.wordCount)
-            guard wordCount > 0 else { continue }
+        // unsafeSequence() yields pointers into the original list — copying a
+        // MIDIPacket struct and calling MIDIPacketNext on the copy's address reads
+        // past the copy's 256-byte data tuple for any list with numPackets > 1 or
+        // packets longer than 256 bytes.
+        for packetPtr in packetList.unsafeSequence() {
+            let length = Int(packetPtr.pointee.length)
+            guard length > 0 else { continue }
 
-            // Extract bytes from UInt32 words
-            var bytes: [UInt8] = []
-            bytes.reserveCapacity(wordCount * 4)
-            withUnsafePointer(to: packetPtr.pointee.words) { wordsPtr in
-                let wordBuffer = UnsafeBufferPointer(
-                    start: UnsafeRawPointer(wordsPtr)
-                        .assumingMemoryBound(to: UInt32.self),
-                    count: wordCount
-                )
-                for word in wordBuffer {
-                    bytes.append(UInt8((word >> 24) & 0xFF))
-                    bytes.append(UInt8((word >> 16) & 0xFF))
-                    bytes.append(UInt8((word >> 8) & 0xFF))
-                    bytes.append(UInt8(word & 0xFF))
-                }
-            }
+            // Read the data bytes through a raw pointer offset from the packet base,
+            // not via packetPtr.pointee.data — the tuple copy caps at 256 bytes while
+            // a packet's declared length can exceed it.
+            let dataOffset = MemoryLayout<MIDIPacket>.offset(of: \MIDIPacket.data)!
+            let dataPtr = UnsafeRawPointer(packetPtr) + dataOffset
+            let bytes = [UInt8](UnsafeRawBufferPointer(start: dataPtr, count: length))
 
-            let capturedBytes = bytes
             DispatchQueue.main.async { [weak self] in
-                self?.onMIDIReceived?(portId, capturedBytes)
+                self?.onMIDIReceived?(portId, bytes)
             }
         }
     }
