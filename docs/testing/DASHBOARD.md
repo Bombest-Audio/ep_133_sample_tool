@@ -2,21 +2,23 @@
 
 | Field | Value |
 |-------|-------|
-| Commit SHA | `e39e738` |
-| Commit date | 2026-07-05T21:56:40-07:00 |
+| Commit SHA | `aaedf27` (+ uncommitted espresso-core 3.7.0 bump in `AndroidApp/app/build.gradle.kts`) |
+| Commit date | 2026-07-05T23:17:14-07:00 |
 | Branch | `android-ui-test-framework` |
-| Dashboard generated at | 2026-07-06T06:15:39Z |
+| Dashboard generated at | 2026-07-06T18:34:00Z |
 
 ## Test Suite Summary
 
 | Suite | Test Classes | Test Methods | Result |
 |-------|--------------|---------------|--------|
 | Unit tests (`src/test`, `:app:testDebugUnitTest`) | 43 | 274 (0 failures, 0 errors, 13 skipped) | BUILD SUCCESSFUL |
-| androidTest (instrumented, `src/androidTest`, physical Pixel 10) | 10 | 79 (79 failures, 0 errors, 0 skipped) | BUILD FAILED |
+| androidTest (instrumented, `src/androidTest`, physical Pixel 10) | 10 | 79 (0 failures, 0 errors, 0 skipped) | BUILD SUCCESSFUL |
 
-**Note (physical-device run, current):** The instrumented/androidTest suite was executed on 2026-07-06T06:12Z against the connected **physical** device `5C060DLCR000Y0` (Pixel 10, Android 17 / API 37, USB-attached, `adb devices -l` reports `usb:0-1 product:frankel model:Pixel_10 device:frankel`), scoped via `ANDROID_SERIAL=5C060DLCR000Y0 ./gradlew :app:connectedDebugAndroidTest`. A second device, `emulator-5554` (Pixel_Tablet AVD), was simultaneously connected but **did not participate** — confirmed explicitly (not assumed): the Gradle log shows `Starting 79 tests on Pixel 10 - 17` and contains zero mentions of `emulator-5554`/`Pixel_Tablet`/`emu64a` anywhere in the full build output, and only one device-named output directory was produced (`androidTest-results/connected/debug/Pixel 10 - 17/`) with no sibling tablet/emulator directory. Stale output directories were deleted before this run so the JUnit XML parsed is guaranteed fresh.
+**Note (physical-device run, current):** The instrumented/androidTest suite was executed on 2026-07-06T18:14Z against the connected **physical** device `5C060DLCR000Y0` (Pixel 10, Android 17 / API 37, USB-attached), scoped via `ANDROID_SERIAL=5C060DLCR000Y0 ./gradlew :app:connectedDebugAndroidTest`. A second device, `emulator-5554` (Pixel_Tablet AVD), was simultaneously connected but **did not participate** — confirmed explicitly (not assumed): the Gradle log shows `Starting 79 tests on Pixel 10 - 17` and contains zero mentions of `emulator-5554`/`Pixel_Tablet`/`emu64a` anywhere in the full build output, and only one device-named output directory was produced (`androidTest-results/connected/debug/Pixel 10 - 17/`) with no sibling tablet/emulator directory. Stale output directories were deleted before this run so the JUnit XML parsed is guaranteed fresh.
 
-**Result: BUILD FAILED — all 79 test methods failed on real hardware**, across all 10 instrumented test classes (`AppNavigationTest` 7/7, `DeviceScreenTest` 11/11, `FirmwareBannerTest` 5/5, `KitBuilderScreenTest` 8/8, `KitScreenTest` 17/17, `PadsScreenTest` 7/7, `ProjectsScreenTest` 7/7, `SampleImportScreenTest` 6/6, `ScaleLockFlowTest` 3/3, `SimulatedDeviceTest` 8/8 — all failing). This is reported honestly rather than hidden: every single failure shares the identical root cause, verified verbatim from the JUnit XML:
+**Result: BUILD SUCCESSFUL — all 79 test methods passed on real hardware** (1m 44s), across all 10 instrumented test classes (`AppNavigationTest` 7/7, `DeviceScreenTest` 11/11, `FirmwareBannerTest` 5/5, `KitBuilderScreenTest` 8/8, `KitScreenTest` 17/17, `PadsScreenTest` 7/7, `ProjectsScreenTest` 7/7, `SampleImportScreenTest` 6/6, `ScaleLockFlowTest` 3/3, `SimulatedDeviceTest` 8/8 — all passing). Verified from the real JUnit XML (`app/build/outputs/androidTest-results/connected/debug/TEST-Pixel 10 - 17-_app-.xml`), not just Gradle's summary line: `tests=79 failures=0 errors=0 skipped=0`.
+
+This resolves the previously-documented failure (see historical note below): every one of the 79 failures shared an identical root cause,
 
 ```
 java.lang.RuntimeException: java.util.concurrent.ExecutionException: java.lang.RuntimeException: java.lang.NoSuchMethodException: android.hardware.input.InputManager.getInstance []
@@ -27,9 +29,11 @@ Caused by: java.lang.NoSuchMethodException: android.hardware.input.InputManager.
   at androidx.test.espresso.base.InputManagerEventInjectionStrategy.initialize(InputManagerEventInjectionStrategy.java:5)
 ```
 
-This is a **framework/environment incompatibility**, not an application logic bug: Espresso's `InputManagerEventInjectionStrategy` reflects on the internal static method `android.hardware.input.InputManager.getInstance()`, which no longer exists in this signature on Android 17 (API 37) — a very recent OS release. Every Compose UI test that reaches `onIdle()` (i.e. all of them, since `createComposeRule()`/`AndroidComposeTestRule` drives idling through Espresso under the hood) fails identically regardless of what the test itself asserts. The prior emulator run below used an older AVD image (API 15 target) where this reflection path still resolves, which is why it passed. **Likely fix path (not yet applied):** bump `androidx.test.espresso:espresso-core` / `androidx.compose.ui:ui-test-junit4` to versions with Android 15+/16+ reflection compatibility, or pin CI/local physical-device runs to an OS image where the older Espresso version still works, pending upstream Espresso support for the newer `InputManager` API shape.
+which was a **framework/environment incompatibility**, not an application logic bug: `espresso-core` 3.5.1's `InputManagerEventInjectionStrategy` reflected on the internal static method `android.hardware.input.InputManager.getInstance()`, which no longer resolves in this signature on Android 15+ (confirmed failing on Android 17 / API 37). **Fix applied:** bumped `androidx.test.espresso:espresso-core` from `3.5.1` to `3.7.0` in `AndroidApp/app/build.gradle.kts` — AndroidX Test's upstream fix (landed in 3.6.1) replaces the reflective call with `Context.getSystemService(InputManager.class)`. `androidx.compose.ui:ui-test-junit4`, the compose-bom (`2024.02.00`), and `androidx.test.ext:junit` (`1.1.5`) were left untouched; the failure signature and upstream changelog pointed specifically at espresso-core, and no other `androidx.test.*` dependencies are declared standalone in this module. Verification also surfaced and worked around an unrelated environment issue: this physical device is actively used day-to-day, and a couple of verification attempts hit spurious "Process crashed" / "Unable to find instrumentation target package" failures caused by a second, competing `am instrument` invocation racing against the Gradle-driven run on the same device serial (confirmed via logcat — no real app crash, no FATAL EXCEPTION). Ensuring a single, uncontested instrumentation session against the device eliminated this entirely; it required no code change.
 
-**Historical note (prior run, superseded as the current result):** The instrumented/androidTest suite was previously executed on 2026-07-06T04:52Z against the emulator `emulator-5554` (AVD target `ep133_test(AVD) - 15`, commit `e39e738`) via the same unscoped command, and all 79 tests passed (0 failures, 0 errors, 0 skipped, BUILD SUCCESSFUL, 1m 55s). That result is preserved here for the record but is no longer the current/primary result now that a physical-device run has surfaced a real hardware-specific incompatibility the emulator could not catch.
+**Historical note (prior run, superseded as the current result):** The instrumented/androidTest suite was previously executed on 2026-07-06T06:12Z against this same physical device and **all 79 tests failed**, 100% reproducibly, with the `InputManager.getInstance()` `NoSuchMethodException` above (`espresso-core` was pinned at `3.5.1` at that time, commit `e39e738`). That result is preserved here for the record; it is superseded by the fixed, passing run above once `espresso-core` was bumped to `3.7.0`.
+
+**Historical note (emulator run, superseded):** The instrumented/androidTest suite was also previously executed on 2026-07-06T04:52Z against the emulator `emulator-5554` (AVD target `ep133_test(AVD) - 15`, commit `e39e738`) via the same unscoped command, and all 79 tests passed (0 failures, 0 errors, 0 skipped, BUILD SUCCESSFUL, 1m 55s). Preserved for the record; the physical-device pass above is now the current, primary result for real-hardware confidence.
 
 ## Android Version(s) Tested
 
