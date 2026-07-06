@@ -10,6 +10,7 @@ import com.ep133.sampletool.ui.device.DeviceScreen
 import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.theme.EP133Theme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -163,9 +164,10 @@ class DeviceScreenTest {
         // Assert
         assertEquals(1, h.backupRequests.size)
         // Full-device backups are .pak archives (project backups are the .tar ones)
-        assert(h.backupRequests.first().endsWith(".pak")) {
-            "suggested backup name should be a .pak: ${h.backupRequests.first()}"
-        }
+        assertTrue(
+            "suggested backup name should be a .pak: ${h.backupRequests.first()}",
+            h.backupRequests.first().endsWith(".pak"),
+        )
     }
 
     @Test
