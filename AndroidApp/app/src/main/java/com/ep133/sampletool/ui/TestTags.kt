@@ -44,4 +44,17 @@ object TestTags {
     // Import
     const val IMPORT_PICK_BUTTON = "import_pick_button"
     fun importRow(name: String) = "import_row_$name"
+
+    // Kit (SAMPLES screen: loop chopper + kit builder)
+    const val KIT_MODE_CHOP = "kit_mode_chop"
+    const val KIT_MODE_KIT = "kit_mode_kit"
+    const val KIT_SLICE_COUNT_DEC = "kit_slice_count_dec"
+    const val KIT_SLICE_COUNT_INC = "kit_slice_count_inc"
+    const val KIT_SLICE_COUNT_READOUT = "kit_slice_count_readout"
+    fun kitSlicePad(rank: Int) = "kit_slice_pad_$rank"
+    const val KIT_PICK_PANEL = "kit_pick_panel"
+    const val KIT_PUSH_BUTTON = "kit_push_button"
+    const val KIT_PROGRESS_STATUS = "kit_progress_status"
+    fun kitProgressPad(rank: Int) = "kit_progress_pad_$rank"
+    const val GROUP_CHOKE_TOGGLE = "group_choke_toggle"
 }

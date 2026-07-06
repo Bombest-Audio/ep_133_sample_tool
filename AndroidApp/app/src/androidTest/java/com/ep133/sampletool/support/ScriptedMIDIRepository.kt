@@ -3,6 +3,7 @@ package com.ep133.sampletool.support
 import com.ep133.sampletool.NoOpMIDIPort
 import com.ep133.sampletool.TestMIDIRepository
 import com.ep133.sampletool.domain.model.DeviceState
+import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.midi.MIDIPort
 
 /**
@@ -39,6 +40,18 @@ class ScriptedMIDIRepository(
     /** Group indices the app tried to sync to the device. */
     val setActiveGroupCalls = mutableListOf<Int>()
 
+    /** Script for assignSampleToPad: true = device ack'd, false = rejected, throw = exception path. */
+    var assignSampleScript: suspend (
+        group: PadChannel, gridIndex: Int, sampleNodeId: Int, sampleStart: Int, sampleEnd: Int, muteGroup: Boolean,
+    ) -> Boolean = { _, _, _, _, _, _ -> true }
+
+    /** Calls recorded in order, for assertions mirroring putSampleNames. */
+    data class AssignCall(
+        val group: PadChannel, val gridIndex: Int, val sampleNodeId: Int,
+        val sampleStart: Int, val sampleEnd: Int, val muteGroup: Boolean,
+    )
+    val assignCalls = mutableListOf<AssignCall>()
+
     override suspend fun listProjects(): List<ProjectSlot> = scriptedSlots
 
     override suspend fun queryDeviceStats(): Boolean = statsQuerySucceeds
@@ -58,6 +71,19 @@ class ScriptedMIDIRepository(
     ): Int? {
         putSampleNames += name
         return putSampleScript(name)
+    }
+
+    override suspend fun assignSampleToPad(
+        group: PadChannel,
+        gridIndex: Int,
+        sampleNodeId: Int,
+        sampleStart: Int,
+        sampleEnd: Int,
+        playmode: String,
+        muteGroup: Boolean,
+    ): Boolean {
+        assignCalls += AssignCall(group, gridIndex, sampleNodeId, sampleStart, sampleEnd, muteGroup)
+        return assignSampleScript(group, gridIndex, sampleNodeId, sampleStart, sampleEnd, muteGroup)
     }
 
     /** (note, velocity) pairs for every 0x9n frame the app sent. */

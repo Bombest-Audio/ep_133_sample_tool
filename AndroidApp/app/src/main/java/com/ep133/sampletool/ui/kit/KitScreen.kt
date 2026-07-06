@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -56,6 +57,7 @@ import com.ep133.sampletool.domain.audio.LoopSlicer
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.model.PadChannel
+import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderScreen
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 import com.ep133.sampletool.ui.theme.Ep133GroupChokeBar
@@ -736,6 +738,7 @@ private fun SlicePadSelector(
                 count.toString().padStart(2, '0'),
                 fontFamily = Mono, fontSize = 54.sp, fontWeight = FontWeight.Bold,
                 letterSpacing = (-1).sp, color = t.accent,
+                modifier = Modifier.testTag(TestTags.KIT_SLICE_COUNT_READOUT),
             )
             Text(
                 "SLICES", fontFamily = Mono, fontSize = 11.sp, letterSpacing = 1.6.sp,
@@ -746,8 +749,16 @@ private fun SlicePadSelector(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            SliceStepperButton("−", enabled = count > 1) { onCountChange((count - 1).coerceAtLeast(1)) }
-            SliceStepperButton("+", enabled = count < MAX_SLICES) { onCountChange((count + 1).coerceAtMost(MAX_SLICES)) }
+            SliceStepperButton(
+                "−",
+                enabled = count > 1,
+                modifier = Modifier.testTag(TestTags.KIT_SLICE_COUNT_DEC),
+            ) { onCountChange((count - 1).coerceAtLeast(1)) }
+            SliceStepperButton(
+                "+",
+                enabled = count < MAX_SLICES,
+                modifier = Modifier.testTag(TestTags.KIT_SLICE_COUNT_INC),
+            ) { onCountChange((count + 1).coerceAtMost(MAX_SLICES)) }
             Text(
                 "TAP A PAD OR USE ±\nRANGE 1–$MAX_SLICES",
                 fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.sp, color = t.text3,
@@ -772,7 +783,7 @@ private fun SlicePadSelector(
                         SlicePadCell(
                             pad = pad,
                             count = count,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).testTag(TestTags.kitSlicePad(pad.order)),
                             onTap = { onCountChange(pad.order) },
                         )
                     }
@@ -821,11 +832,11 @@ private fun SlicePadCell(pad: SlicePad, count: Int, modifier: Modifier = Modifie
 }
 
 @Composable
-private fun SliceStepperButton(label: String, enabled: Boolean, onClick: () -> Unit) {
+private fun SliceStepperButton(label: String, enabled: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val t = LocalEP133Tokens.current
     val shape = RoundedCornerShape(8.dp)
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(width = 46.dp, height = 42.dp)
             .clip(shape)
             .background(t.padFace, shape)
@@ -906,7 +917,8 @@ private fun ChopProgress(items: List<KitResultItem>, modifier: Modifier = Modifi
                 .clip(RoundedCornerShape(5.dp))
                 .background(t.inset, RoundedCornerShape(5.dp))
                 .border(1.dp, t.ruleSoft, RoundedCornerShape(5.dp))
-                .padding(horizontal = 11.dp, vertical = 9.dp),
+                .padding(horizontal = 11.dp, vertical = 9.dp)
+                .testTag(TestTags.KIT_PROGRESS_STATUS),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -943,7 +955,7 @@ private fun ChopProgress(items: List<KitResultItem>, modifier: Modifier = Modifi
                             else items[pad.order - 1].state.toProgress()
                         SliceProgressPadCell(
                             pad = pad, state = state, sweepAngle = sweepAngle,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).testTag(TestTags.kitProgressPad(pad.order)),
                         )
                     }
                 }
@@ -1120,7 +1132,8 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                             .background(if (selected) t.accent else t.inset, PanelRadius)
                             .border(1.dp, if (selected) t.accent else t.rule, PanelRadius)
                             .clickable { viewModel.onModeChange(m) }
-                            .padding(vertical = 9.dp),
+                            .padding(vertical = 9.dp)
+                            .testTag(if (m == KitMode.CHOP) TestTags.KIT_MODE_CHOP else TestTags.KIT_MODE_KIT),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
@@ -1143,6 +1156,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 chokeOn = chokeGroup,
                 onChokeChange = { viewModel.onChokeGroupChange(it) },
                 tagFor = { g -> designations[g]?.name },
+                testTagFor = { g -> TestTags.groupChip(g.name) },
             )
           }
 
@@ -1189,7 +1203,8 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                     .background(t.inset, PanelRadius)
                     .dashedBorder(t.rule)
                     .clickable { viewModel.triggerPick() }
-                    .padding(16.dp),
+                    .padding(16.dp)
+                    .testTag(TestTags.KIT_PICK_PANEL),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
@@ -1251,7 +1266,8 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp)
-                    .padding(top = 11.dp, bottom = 14.dp),
+                    .padding(top = 11.dp, bottom = 14.dp)
+                    .testTag(TestTags.KIT_PUSH_BUTTON),
                 onClick = {
                     if (mode == KitMode.CHOP) {
                         if (chopReady) viewModel.chopStagedLoop(context) else viewModel.triggerPick()
