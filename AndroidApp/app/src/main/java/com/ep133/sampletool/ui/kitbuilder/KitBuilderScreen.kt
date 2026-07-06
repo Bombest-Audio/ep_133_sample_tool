@@ -40,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -54,6 +55,7 @@ import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.domain.pack.KitPack
 import com.ep133.sampletool.domain.pack.KitSample
 import com.ep133.sampletool.domain.pack.SamplePackLoader
+import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.kit.GroupSession
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
 import kotlinx.coroutines.CancellationException
@@ -223,16 +225,23 @@ class KitBuilderViewModel(
                 _globals.update { it.copy(packLoading = false) }
                 return@launch
             }
-            if (pack.isEmpty) {
-                _snackbarMessage.value = "No audio files found in that folder"
-                _globals.update { it.copy(packLoading = false) }
-                return@launch
-            }
-            _globals.update {
-                it.copy(pack = pack, packLoading = false, category = pack.categories.first().id)
-            }
-            updateCurrent { it.copy(loadStates = emptyMap(), loadedBanner = null) }
+            applyLoadedPack(pack)
         }
+    }
+
+    /** Testability seam: apply an already-parsed pack directly, bypassing SAF + SamplePackLoader. */
+    fun loadPack(pack: KitPack) = applyLoadedPack(pack)
+
+    private fun applyLoadedPack(pack: KitPack) {
+        if (pack.isEmpty) {
+            _snackbarMessage.value = "No audio files found in that folder"
+            _globals.update { it.copy(packLoading = false) }
+            return
+        }
+        _globals.update {
+            it.copy(pack = pack, packLoading = false, category = pack.categories.first().id)
+        }
+        updateCurrent { it.copy(loadStates = emptyMap(), loadedBanner = null) }
     }
 
     fun onCategoryChange(id: String) = _globals.update { it.copy(category = id) }
@@ -414,6 +423,7 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
         val padSampleName = s.assignments[s.selectedPad]?.name ?: s.devicePads[s.selectedPad]
         AlertDialog(
             onDismissRequest = { confirmClear = false },
+            modifier = Modifier.testTag(TestTags.KB_CLEAR_CONFIRM_DIALOG),
             containerColor = t.panel,
             titleContentColor = t.text,
             textContentColor = t.text2,
@@ -452,7 +462,7 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
           // One lazy scroll surface for canvas + tabs + samples: Compose forbids nesting a lazy
           // list inside a scrollable column, so the whole page IS the list — the canvas scrolls
           // away and the sample browser gets the full height. Category tabs pin as a sticky header.
-          LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+          LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag(TestTags.KB_SAMPLE_LIST)) {
 
             // ── Kit canvas ──
             item {
@@ -472,7 +482,8 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                         Modifier.clip(PanelRadius).background(t.panel, PanelRadius)
                             .border(1.dp, t.rule, PanelRadius)
                             .clickable(enabled = !clearing) { confirmClear = true }
-                            .padding(horizontal = 8.dp, vertical = 5.dp),
+                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                            .testTag(TestTags.KB_CLEAR_PAD_BUTTON),
                     ) {
                         Text(
                             if (clearing) "CLEARING…" else "⌫ CLEAR PAD ${KB_PAD_LABELS[s.selectedPad]}",
@@ -492,7 +503,7 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                                 deviceName = s.devicePads[idx],
                                 selected = idx == s.selectedPad,
                                 loadState = s.loadStates[idx],
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier.weight(1f).testTag(TestTags.kbPadCell(idx)),
                                 onTap = { viewModel.onPadSelected(idx) },
                             )
                         }
@@ -518,7 +529,8 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                                 .background(if (on) t.accent else t.inset, PanelRadius)
                                 .border(1.dp, if (on) t.accent else t.rule, PanelRadius)
                                 .clickable { viewModel.onCategoryChange(cat.id) }
-                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                                .padding(horizontal = 10.dp, vertical = 7.dp)
+                                .testTag(TestTags.kbCategoryTab(cat.id)),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
@@ -551,7 +563,8 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                             Modifier.fillMaxWidth()
                                 .background(if (playing) t.inset else t.panel)
                                 .clickable { viewModel.onAssign(sample) }
-                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                                .testTag(TestTags.kbSampleRow(sample.name)),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(11.dp),
                         ) {
@@ -559,7 +572,8 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                                 Modifier.size(30.dp).clip(CircleShape)
                                     .background(if (playing) t.live else t.inset)
                                     .border(1.dp, if (playing) t.live else t.rule, CircleShape)
-                                    .clickable { viewModel.onAudition(sample, context) },
+                                    .clickable { viewModel.onAudition(sample, context) }
+                                    .testTag(TestTags.kbAuditionButton(sample.name)),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(if (playing) "■" else "▶", fontSize = 10.sp,
@@ -619,7 +633,8 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text(s.assignments.size.toString().padStart(2, '0'),
                                 fontFamily = Mono, fontSize = 22.sp, fontWeight = FontWeight.Bold,
-                                color = t.accent)
+                                color = t.accent,
+                                modifier = Modifier.testTag(TestTags.KB_ASSIGNED_COUNT))
                             Text("/12", fontFamily = Mono, fontSize = 11.sp, color = t.text3,
                                 modifier = Modifier.padding(start = 3.dp, bottom = 2.dp))
                         }
@@ -641,7 +656,8 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                         fontFamily = Mono, fontSize = 8.5.sp, letterSpacing = 1.sp, color = t.text2,
                         modifier = Modifier
                             .clickable { if (!s.loading) viewModel.triggerPackPick() }
-                            .padding(2.dp),
+                            .padding(2.dp)
+                            .testTag(TestTags.KB_SWITCH_PACK_BUTTON),
                     )
                 }
             }
@@ -654,7 +670,8 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(13.dp)
                     .clip(PanelRadius)
                     .background(if (banner.contains("FAILED")) KbError else t.accent, PanelRadius)
-                    .padding(12.dp),
+                    .padding(12.dp)
+                    .testTag(TestTags.KB_LOAD_BANNER),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(banner, fontWeight = FontWeight.Bold, fontSize = 12.sp,

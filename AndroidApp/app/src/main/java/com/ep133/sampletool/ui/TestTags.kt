@@ -57,4 +57,16 @@ object TestTags {
     const val KIT_PROGRESS_STATUS = "kit_progress_status"
     fun kitProgressPad(rank: Int) = "kit_progress_pad_$rank"
     const val GROUP_CHOKE_TOGGLE = "group_choke_toggle"
+
+    // Kit Builder (embedded in the SAMPLES screen's KIT mode)
+    fun kbPadCell(index: Int) = "kb_pad_cell_$index"
+    const val KB_CLEAR_PAD_BUTTON = "kb_clear_pad_button"
+    const val KB_CLEAR_CONFIRM_DIALOG = "kb_clear_confirm_dialog"
+    const val KB_SAMPLE_LIST = "kb_sample_list"
+    fun kbCategoryTab(id: String) = "kb_category_tab_$id"
+    fun kbSampleRow(name: String) = "kb_sample_row_$name"
+    fun kbAuditionButton(name: String) = "kb_audition_button_$name"
+    const val KB_ASSIGNED_COUNT = "kb_assigned_count"
+    const val KB_SWITCH_PACK_BUTTON = "kb_switch_pack_button"
+    const val KB_LOAD_BANNER = "kb_load_banner"
 }
