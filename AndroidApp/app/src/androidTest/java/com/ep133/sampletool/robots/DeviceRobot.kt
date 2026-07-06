@@ -1,6 +1,8 @@
 package com.ep133.sampletool.robots
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -100,5 +102,27 @@ class DeviceRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
 
     fun assertNoRestoreConfirm() = apply {
         tag(TestTags.DEVICE_RESTORE_CONFIRM_DIALOG).assertDoesNotExist()
+    }
+
+    // ── Simulated EP-133 toggle (debug builds only) ──
+
+    fun assertSimToggleDisplayed() = apply {
+        tag(TestTags.DEVICE_SIM_TOGGLE).assertIsDisplayed()
+    }
+
+    fun assertSimToggleAbsent() = apply {
+        tag(TestTags.DEVICE_SIM_TOGGLE).assertDoesNotExist()
+    }
+
+    fun flipSimToggle() = apply {
+        tag(TestTags.DEVICE_SIM_TOGGLE).performClick()
+    }
+
+    fun assertSimToggleOn() = apply {
+        tag(TestTags.DEVICE_SIM_TOGGLE).assertIsOn()
+    }
+
+    fun assertSimToggleOff() = apply {
+        tag(TestTags.DEVICE_SIM_TOGGLE).assertIsOff()
     }
 }

@@ -33,6 +33,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ButtonDefaults
@@ -379,6 +381,7 @@ fun DeviceScreen(
     val showRestoreConfirm by viewModel.showRestoreConfirm.collectAsState()
     val statsLoading by viewModel.statsLoading.collectAsState()
     val firmwareUpdate by viewModel.firmwareUpdate.collectAsState()
+    val simModeActive by viewModel.simModeActive.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
     // Query firmware / storage / samples whenever we're connected and the screen is shown.
@@ -406,18 +409,31 @@ fun DeviceScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(t.bg)) {
         if (!deviceState.connected) {
-            // Clean offline state — fills the body, plug-in guidance keyed off permission.
-            DeviceOfflineState(
-                permissionState = deviceState.permissionState,
-                onGrantPermission = { viewModel.refreshDevices() },
-                onOpenSettings = {
-                    val intent = Intent(
-                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        Uri.fromParts("package", context.packageName, null),
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Clean offline state — fills the body, plug-in guidance keyed off permission.
+                Box(modifier = Modifier.weight(1f)) {
+                    DeviceOfflineState(
+                        permissionState = deviceState.permissionState,
+                        onGrantPermission = { viewModel.refreshDevices() },
+                        onOpenSettings = {
+                            val intent = Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.fromParts("package", context.packageName, null),
+                            )
+                            context.startActivity(intent)
+                        },
                     )
-                    context.startActivity(intent)
-                },
-            )
+                }
+                // Critical path: with no hardware the screen is offline, and the sim toggle
+                // must be reachable here or the feature is unusable.
+                if (viewModel.simToggleAvailable) {
+                    SimulatorModeSection(
+                        active = simModeActive,
+                        onToggle = { viewModel.setSimulatedMode(it) },
+                        modifier = Modifier.padding(horizontal = 14.dp).padding(bottom = 14.dp),
+                    )
+                }
+            }
         } else {
             Column(
                 modifier = Modifier
@@ -451,6 +467,14 @@ fun DeviceScreen(
                     onBackup = { viewModel.triggerBackup() },
                     onRestore = { viewModel.triggerRestore() },
                 )
+                // Rendered while connected too, so the user can flip back to real USB
+                // while the simulator is the active port.
+                if (viewModel.simToggleAvailable) {
+                    SimulatorModeSection(
+                        active = simModeActive,
+                        onToggle = { viewModel.setSimulatedMode(it) },
+                    )
+                }
             }
         }
 
@@ -860,6 +884,43 @@ private fun BackupRestoreSection(
                 trackColor = t.inset,
             )
         }
+    }
+}
+
+// ── Simulated EP-133 toggle (debug builds only — rendered behind simToggleAvailable) ──
+@Composable
+private fun SimulatorModeSection(
+    active: Boolean,
+    onToggle: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val t = LocalEP133Tokens.current
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(PanelRadius)
+            .background(t.panel2, PanelRadius)
+            .border(1.dp, t.rule, PanelRadius)
+            .padding(horizontal = 13.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            text = "SIMULATED EP-133",
+            color = t.text2,
+            fontFamily = Mono,
+            fontSize = 9.5.sp,
+            letterSpacing = 0.6.sp,
+        )
+        Switch(
+            checked = active,
+            onCheckedChange = onToggle,
+            modifier = Modifier.testTag(TestTags.DEVICE_SIM_TOGGLE),
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = t.accent,
+                checkedThumbColor = Color.White,
+            ),
+        )
     }
 }
 

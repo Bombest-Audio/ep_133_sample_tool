@@ -34,6 +34,7 @@ object TestTags {
     const val DEVICE_RESTORE_CONFIRM_DIALOG = "device_restore_confirm_dialog"
     const val DEVICE_SCALE_DROPDOWN = "device_scale_dropdown"
     const val DEVICE_ROOT_DROPDOWN = "device_root_dropdown"
+    const val DEVICE_SIM_TOGGLE = "device_sim_toggle"
 
     // Projects
     const val PROJECTS_SLOT_LIST = "projects_slot_list"
