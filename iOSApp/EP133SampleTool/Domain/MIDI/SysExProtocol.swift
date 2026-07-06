@@ -79,12 +79,14 @@ enum SysExProtocol {
     // ── ASCII codec (mirrors Kotlin Charsets.US_ASCII behavior) ─────────────
 
     /// Encode like Kotlin `String.toByteArray(Charsets.US_ASCII)`: unmappable scalars become '?'.
-    private static func asciiBytes(_ s: String) -> [UInt8] {
+    /// Internal (not private): MIDIRepository mirrors Kotlin call sites that use this codec.
+    static func asciiBytes(_ s: String) -> [UInt8] {
         s.unicodeScalars.map { $0.isASCII ? UInt8($0.value) : 0x3F }
     }
 
     /// Decode like Kotlin `String(bytes, Charsets.US_ASCII)`: bytes > 0x7F become U+FFFD.
-    private static func asciiString<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
+    /// Internal (not private): MIDIRepository mirrors Kotlin call sites that use this codec.
+    static func asciiString<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
         var view = String.UnicodeScalarView()
         for b in bytes {
             view.append(Unicode.Scalar(b < 0x80 ? UInt32(b) : 0xFFFD)!)
