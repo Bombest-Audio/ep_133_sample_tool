@@ -10,6 +10,7 @@ import com.ep133.sampletool.ui.theme.EP133Theme
 import com.ep133.sampletool.ui.`import`.SampleImportScreen
 import com.ep133.sampletool.ui.`import`.SampleImportViewModel
 import com.ep133.sampletool.support.sim.EP133DeviceSimulator
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -28,10 +29,21 @@ class SimulatedDeviceTest {
     @get:Rule
     val composeTestRule = createComposeRule()
 
+    // Each connect() spins up a simulator with its own delivery executor thread; close them
+    // all in tearDown() so instrumentation runs don't accumulate threads test-over-test.
+    private val openRepos = mutableListOf<MIDIRepository>()
+
+    @After
+    fun closeRepos() {
+        openRepos.forEach { it.close() }
+        openRepos.clear()
+    }
+
     /** Real repository over the simulator, connected the way MainActivity would. */
     private fun connect(sim: EP133DeviceSimulator): MIDIRepository {
         val repo = MIDIRepository(sim)
         repo.refreshDeviceState() // enumerates the sim's ports → connected=true, outputPortId set
+        openRepos += repo
         return repo
     }
 
