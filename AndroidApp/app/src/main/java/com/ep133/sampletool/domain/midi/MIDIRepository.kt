@@ -141,12 +141,12 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
     fun setScale(scale: Scale?) { _selectedScale.value = scale }
     fun setRootNote(note: String) { _selectedRootNote.value = note }
 
-    // ── SysEx accumulation buffer (D-09, D-10) ──
-    private val sysExBuffer = java.io.ByteArrayOutputStream(512)
-    private var inSysEx = false
-
-    // ── Channel message partial-byte buffer ──
-    private val channelBuffer = java.io.ByteArrayOutputStream(3)
+    // Frames raw incoming USB-MIDI bytes into complete SysEx / channel messages. Routing stays here:
+    // SysEx → dispatchSysEx (protected/open so tests can inject frames), channel notes → _incomingMidi.
+    private val streamParser = MidiByteStreamParser(
+        onSysEx = { dispatchSysEx(it) },
+        onChannelMessage = { _incomingMidi.tryEmit(it) },
+    )
 
     // ── SysEx response deferreds (D-12) ──
     // reqId→waiter correlation registry (backlog 999.4). Migrated file ops register a waiter
@@ -202,17 +202,23 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
     private val repositoryJob = SupervisorJob()
     private val repositoryScope = CoroutineScope(Dispatchers.Default + repositoryJob)
 
+    // @Volatile for cross-thread visibility, matching the other in-flight guards (statsQueryInFlight,
+    // activeGroupPollInFlight). Not a full lock — it only debounces re-entrant refreshDeviceState calls.
+    @Volatile
     private var isRefreshing = false
 
     init {
         midiManager.onDevicesChanged = { updateDeviceStateOnly() }
-        midiManager.onMidiReceived = { _, data -> parseMidiInput(data) }
+        midiManager.onMidiReceived = { _, data -> streamParser.parse(data) }
     }
 
-    /** Updates state and re-establishes listeners on new devices. */
-    private fun updateDeviceStateOnly() {
+    /**
+     * Recompute [_deviceState] from the current USB device list. Returns the enumerated devices so a
+     * caller that also needs to (re)establish listeners can reuse the same list. The single copy of
+     * the snapshot logic shared by [updateDeviceStateOnly] and [refreshDeviceState].
+     */
+    private fun applyDeviceSnapshot(): MIDIPort.Devices {
         val devices = midiManager.getUSBDevices()
-        val wasConnected = _deviceState.value.connected
         val connected = devices.inputs.isNotEmpty() || devices.outputs.isNotEmpty()
         val outputPort = devices.outputs.firstOrNull()
         val permState = (midiManager as? MIDIManager)?.currentPermissionState
@@ -225,87 +231,25 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
             outputPorts = devices.outputs.map { MidiPort(it.id, it.name) },
             permissionState = permState,
         )
+        return devices
+    }
+
+    /** Updates state and re-establishes listeners on new devices. */
+    private fun updateDeviceStateOnly() {
+        val wasConnected = _deviceState.value.connected
+        val devices = applyDeviceSnapshot()
+        val connected = _deviceState.value.connected
         // Close stale listeners and re-establish on current ports
         midiManager.closeAllListeners()
         for (input in devices.inputs) {
             midiManager.startListening(input.id)
         }
         // Pre-warm send port so sequencer noteOn is immediate
-        outputPort?.id?.let { midiManager.prewarmSendPort(it) }
+        devices.outputs.firstOrNull()?.id?.let { midiManager.prewarmSendPort(it) }
 
         // Auto-trigger stats query on device connect (D-13)
         if (connected && !wasConnected) {
             repositoryScope.launch { queryDeviceStats() }
-        }
-    }
-
-    /**
-     * Byte-by-byte MIDI input processor with SysEx accumulation.
-     *
-     * - 0xF0 starts SysEx accumulation
-     * - 0xF7 ends SysEx and dispatches complete message
-     * - All other bytes during SysEx accumulation are buffered
-     * - Non-SysEx bytes are passed to the channel message parser
-     */
-    private fun parseMidiInput(data: ByteArray) {
-        for (b in data) {
-            val byte = b.toInt() and 0xFF
-            when {
-                byte == 0xF0 -> {
-                    sysExBuffer.reset()
-                    sysExBuffer.write(b.toInt())
-                    inSysEx = true
-                }
-                inSysEx && byte == 0xF7 -> {
-                    sysExBuffer.write(b.toInt())
-                    inSysEx = false
-                    val complete = sysExBuffer.toByteArray()
-                    sysExBuffer.reset()
-                    dispatchSysEx(complete)
-                }
-                inSysEx -> sysExBuffer.write(b.toInt())
-                else -> parseChannelMessageByte(b)
-            }
-        }
-    }
-
-    /**
-     * Accumulate channel message bytes (status + data bytes) and dispatch complete messages.
-     *
-     * Status bytes (high bit set) reset the buffer. Channel messages are typically 2-3 bytes.
-     */
-    private fun parseChannelMessageByte(b: Byte) {
-        val byte = b.toInt() and 0xFF
-        if (byte and 0x80 != 0) {
-            // New status byte — flush pending partial message and start fresh
-            channelBuffer.reset()
-            channelBuffer.write(b.toInt())
-        } else {
-            channelBuffer.write(b.toInt())
-        }
-
-        val bytes = channelBuffer.toByteArray()
-        if (bytes.isEmpty()) return
-        val status = bytes[0].toInt() and 0xFF
-        val type = status and 0xF0
-
-        // Dispatch complete 3-byte messages (Note On/Off, CC, Pitch Bend)
-        // Dispatch complete 2-byte messages (PC, Channel Pressure)
-        val expectedLen = when (type) {
-            0x80, 0x90, 0xA0, 0xB0, 0xE0 -> 3
-            0xC0, 0xD0 -> 2
-            else -> return
-        }
-
-        if (bytes.size >= expectedLen) {
-            val ch = status and 0x0F
-            val note = bytes.getOrNull(1)?.toInt()?.and(0x7F) ?: 0
-            val velocity = bytes.getOrNull(2)?.toInt()?.and(0x7F) ?: 0
-            Log.d("EP133APP", "MIDI IN: type=0x${type.toString(16)} ch=$ch note=$note vel=$velocity")
-            if (type == 0x90 || type == 0x80 || type == 0xC0) {
-                _incomingMidi.tryEmit(MidiEvent(type, note, velocity, ch))
-            }
-            channelBuffer.reset()
         }
     }
 
@@ -395,19 +339,7 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
         } finally {
             isRefreshing = false
         }
-        val devices = midiManager.getUSBDevices()
-        val connected = devices.inputs.isNotEmpty() || devices.outputs.isNotEmpty()
-        val outputPort = devices.outputs.firstOrNull()
-        val permState = (midiManager as? MIDIManager)?.currentPermissionState
-            ?: PermissionState.UNKNOWN
-        _deviceState.value = _deviceState.value.copy(
-            connected = connected,
-            deviceName = outputPort?.name ?: "",
-            outputPortId = outputPort?.id,
-            inputPorts = devices.inputs.map { MidiPort(it.id, it.name) },
-            outputPorts = devices.outputs.map { MidiPort(it.id, it.name) },
-            permissionState = permState,
-        )
+        applyDeviceSnapshot()
     }
 
     /**
@@ -436,7 +368,7 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
         _deviceState.value = DeviceState()
         // Rewire exactly as the init block does, then enumerate the new port.
         newPort.onDevicesChanged = { updateDeviceStateOnly() }
-        newPort.onMidiReceived = { _, data -> parseMidiInput(data) }
+        newPort.onMidiReceived = { _, data -> streamParser.parse(data) }
         refreshDeviceState()
     }
 
@@ -792,8 +724,12 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
             val frame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, terminatorPage, ByteArray(0), requestId = reqId)
             Log.w("EP133MIDI", "MIDI META: force-closing incomplete transfer page=$terminatorPage reqId=$reqId")
             awaitFileOp(reqId, FileOpKind.PUT_DATA, portId, frame, FORCE_CLOSE_TIMEOUT_MS)
+        } catch (_: CancellationException) {
+            // Intentionally NOT rethrown (the one place in this file that doesn't): this is best-effort
+            // cleanup that itself runs during cancellation, so a fresh CancellationException from the
+            // suspending awaitFileOp is expected here and must not abort the cleanup.
         } catch (_: Exception) {
-            // Best-effort — ignore all errors.
+            // Best-effort — ignore all other errors.
         }
     }
 

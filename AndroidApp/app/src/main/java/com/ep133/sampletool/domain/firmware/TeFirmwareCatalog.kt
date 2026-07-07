@@ -4,7 +4,6 @@ import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -89,10 +88,9 @@ class TeFirmwareCatalog : FirmwareCatalog {
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (e: IOException) {
-            Log.w("EP133APP", "FW releases fetch failed", e)
-            null
         } catch (e: Exception) {
+            // Covers IOException (network/read) and any parse failure identically — fall back to the
+            // bundled catalog rather than surfacing the error.
             Log.w("EP133APP", "FW releases fetch failed", e)
             null
         }

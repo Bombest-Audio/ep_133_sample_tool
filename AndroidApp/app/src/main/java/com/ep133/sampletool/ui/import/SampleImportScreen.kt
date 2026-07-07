@@ -49,6 +49,7 @@ import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -252,8 +253,6 @@ class SampleImportViewModel(
 // Screen composable
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Hard 2–3dp corner used across the faceplate UI (mirrors the design's `border-radius:2px`). */
-private val PanelRadius = RoundedCornerShape(3.dp)
 private val Mono = FontFamily.Monospace
 
 /** Number of page cells in the per-file SysEx progress strip (mirrors the design's 12-cell grid). */

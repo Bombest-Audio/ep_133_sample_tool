@@ -78,6 +78,7 @@ import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.Ep133StatReadout
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -360,8 +361,6 @@ class DeviceViewModel(
     }
 }
 
-/** Hard ~2–3dp faceplate corner (mirrors the design's `border-radius:2px/3px`). */
-private val PanelRadius = RoundedCornerShape(3.dp)
 private val Mono = FontFamily.Monospace
 
 @Composable

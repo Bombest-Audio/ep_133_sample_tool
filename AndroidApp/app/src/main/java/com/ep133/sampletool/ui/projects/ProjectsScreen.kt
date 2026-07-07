@@ -67,6 +67,7 @@ import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -279,8 +280,6 @@ private fun shareBackup(context: Context, file: File) {
 // Screen composable — the app shell ([Ep133Scaffold]) owns header + nav; this is the body.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Hard 2–3dp corner used across the faceplate UI (mirrors the design's `border-radius:2px`). */
-private val PanelRadius = RoundedCornerShape(3.dp)
 private val Mono = FontFamily.Monospace
 
 /** Deterministic 4-bar mini "fill" meter per project/backup — purely decorative, keyed off a seed. */
@@ -399,17 +398,23 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
         AlertDialog(
             onDismissRequest = { viewModel.cancelRestore() },
             modifier = Modifier.testTag(TestTags.PROJECTS_RESTORE_CONFIRM_DIALOG),
-            title = { Text("Restore project?") },
+            containerColor = t.panel,
+            titleContentColor = t.text,
+            textContentColor = t.text2,
+            shape = PanelRadius,
+            title = { Text("Restore project?", fontWeight = FontWeight.Bold) },
             text = { Text("This will overwrite the matching slot on your EP-133. This cannot be undone.") },
             confirmButton = {
-                TextButton(onClick = { viewModel.confirmRestore(context) }) {
-                    Text("Restore")
-                }
+                TextButton(
+                    onClick = { viewModel.confirmRestore(context) },
+                    colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
+                ) { Text("Restore", fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.cancelRestore() }) {
-                    Text("Cancel")
-                }
+                TextButton(
+                    onClick = { viewModel.cancelRestore() },
+                    colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
+                ) { Text("Cancel") }
             },
         )
     }
