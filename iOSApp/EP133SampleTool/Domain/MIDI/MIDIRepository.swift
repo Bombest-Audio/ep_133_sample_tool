@@ -279,6 +279,11 @@ class MIDIRepository {
         refreshDeviceState()
     }
 
+    /// The currently active port. Read-only seam for the debug Simulated EP-133 toggle: the
+    /// composition point captures the real CoreMIDI port here before `swapPort` installs a
+    /// simulator, so deactivation can restore it. All swapping still goes through `swapPort`.
+    var activePort: MIDIPort { port }
+
     // ── MIDI input parsing ────────────────────────────────────────────────────
 
     /// Byte-by-byte MIDI input processor with SysEx accumulation.

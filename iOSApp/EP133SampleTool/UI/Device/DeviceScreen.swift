@@ -32,6 +32,14 @@ class DeviceViewModel {
     init(_ midi: MIDIRepository, catalog: FirmwareCatalog = TeFirmwareCatalog()) {
         self.midi = midi
         self.catalog = catalog
+        #if DEBUG
+        // MainActivity-style composition: install the toggle wiring only when the provider
+        // reports available (debug builds). Release: available=false → onSimToggle stays
+        // nil → simToggleAvailable=false → the toggle never renders.
+        if SimulatedPortProvider.available {
+            onSimToggle = { [weak self] enabled in self?.swapSimulatedPort(enabled) }
+        }
+        #endif
     }
 
     var deviceState: DeviceState { midi.deviceState }
@@ -56,11 +64,19 @@ class DeviceViewModel {
     // Firmware updater callback — set by AppShell (mirrors the MainActivity SAF/callback pattern)
     @ObservationIgnored var onOpenFirmwareUpdater: (() -> Void)?
 
-    // Simulated EP-133 toggle — wired only when a simulator port provider exists (none on iOS
-    // yet). Nil hides the toggle UI entirely, matching the Android release behavior.
+    // Simulated EP-133 toggle — wired in init when SimulatedPortProvider.available (debug
+    // builds). Nil hides the toggle UI entirely, matching the Android release behavior.
+    // Assignable so tests can substitute their own callback (DeviceSimToggleTest parity).
     @ObservationIgnored var onSimToggle: ((Bool) -> Void)?
     var simToggleAvailable: Bool { onSimToggle != nil }
     var simModeActive = false
+
+    #if DEBUG
+    /// The live simulator while the toggle is on — fresh per activation, closed on deactivation.
+    @ObservationIgnored private var simPort: MIDIPort?
+    /// The real CoreMIDI port captured before the simulator takes over; restored on deactivation.
+    @ObservationIgnored private var realPort: MIDIPort?
+    #endif
 
     /// The in-flight loadStats task — awaited by tests (the advanceUntilIdle seam).
     @ObservationIgnored private(set) var loadStatsTask: Task<Void, Never>?
@@ -98,6 +114,26 @@ class DeviceViewModel {
         simModeActive = enabled
         loadStats()
     }
+
+    #if DEBUG
+    /// MainActivity's onSimToggle body: swap the repository between the real CoreMIDI port
+    /// and a fresh simulator. Fresh simulator per activation (clean device state); the
+    /// simulator is closed on deactivation; the real port is never closed, so it survives
+    /// the round trip (swapPort only detaches callbacks).
+    private func swapSimulatedPort(_ enabled: Bool) {
+        if enabled {
+            guard let sim = SimulatedPortProvider.makePort() else { return }
+            realPort = midi.activePort
+            simPort = sim
+            midi.swapPort(newPort: sim)
+        } else {
+            if let real = realPort { midi.swapPort(newPort: real) }
+            simPort?.close()
+            simPort = nil
+            realPort = nil
+        }
+    }
+    #endif
 
     /// Query firmware / storage / sample count. Called when the Device screen opens connected.
     func loadStats() {
