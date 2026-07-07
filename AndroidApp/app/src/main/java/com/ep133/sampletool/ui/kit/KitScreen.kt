@@ -287,6 +287,73 @@ class KitViewModel(
         runChop(group, staged.uri, staged.name, context)
     }
 
+    /** Result of [uploadAndAssign] for one row. Cancellation is rethrown, never returned; failures
+     *  carry the [Throwable] so callers can format their own (differing) snackbar text exactly. */
+    private sealed interface UploadOutcome {
+        object Done : UploadOutcome
+        object UploadRejected : UploadOutcome
+        object AssignRejected : UploadOutcome
+        data class UploadFailed(val error: Throwable) : UploadOutcome
+        data class AssignFailed(val error: Throwable) : UploadOutcome
+    }
+
+    /**
+     * The shared device leg of every kit/chop upload: put [pcm] as [name], then assign the returned
+     * node to [padIndex] of [group], driving row [i] to Done or Error. Serialized on [deviceMutex].
+     *
+     * This is the one copy of a sequence that was duplicated across [runChop], [onKitFilesPicked],
+     * [chopFromPcm] and [kitFromPcm]. It owns the item state transitions (which the tests assert);
+     * the caller owns control flow (loop vs per-file launch) and snackbar messaging (which differ per
+     * entry point), driving off the returned [UploadOutcome]. Rethrows CancellationException.
+     */
+    private suspend fun uploadAndAssign(
+        group: PadChannel,
+        i: Int,
+        padIndex: Int,
+        name: String,
+        pcm: ByteArray,
+        channels: Int,
+        sampleRate: Int,
+        frames: Int,
+        chokeOn: Boolean,
+        logLabel: String,
+    ): UploadOutcome {
+        val nodeId: Int? = try {
+            deviceMutex.withLock { midi.putSampleFile(name, pcm, channels, sampleRate) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "KitViewModel $logLabel: putSampleFile failed for $name", e)
+            updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
+            return UploadOutcome.UploadFailed(e)
+        }
+
+        if (nodeId == null) {
+            updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
+            return UploadOutcome.UploadRejected
+        }
+
+        val ok = try {
+            deviceMutex.withLock {
+                midi.assignSampleToPad(group, padIndex, nodeId, 0, frames, muteGroup = chokeOn)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "KitViewModel $logLabel: assignSampleToPad $i failed", e)
+            updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
+            return UploadOutcome.AssignFailed(e)
+        }
+
+        return if (ok) {
+            updateItem(group, i) { it.copy(state = KitItemState.Done) }
+            UploadOutcome.Done
+        } else {
+            updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+            UploadOutcome.AssignRejected
+        }
+    }
+
     /**
      * Convert → slice → per-slice upload+assign the staged loop.
      *
@@ -372,49 +439,25 @@ class KitViewModel(
                 return@launch
             }
 
-            // Per-slice upload + assign — same path as kit mode.
+            // Per-slice upload + assign — same device path as kit mode (see uploadAndAssign).
             for (i in slices.indices) {
                 val slicePcm = slices[i]
                 val sliceFrames = slicePcm.size / bytesPerFrame
                 val sliceName = "${safeName.substringBeforeLast('.')}_${i + 1}.wav"
                 updateItem(group, i) { it.copy(state = KitItemState.Working) }
 
-                val sliceNodeId: Int? = try {
-                    deviceMutex.withLock {
-                        midi.putSampleFile(sliceName, slicePcm, chopChannels, converted.sampleRate)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel chop: putSampleFile failed for slice $i ($sliceName)", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
-                    _snackbarMessage.value = "Slice ${i + 1} upload failed: ${e.message ?: e}"
-                    continue
-                }
-
-                if (sliceNodeId == null) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
-                    _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
-                    continue
-                }
-
-                val ok = try {
-                    deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames, muteGroup = chokeOn)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel chop: assignSampleToPad slice $i failed", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
-                    _snackbarMessage.value = "Slice ${i + 1} assign failed: ${e.message ?: e}"
-                    continue
-                }
-
-                if (ok) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Done) }
-                } else {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+                when (val outcome = uploadAndAssign(
+                    group, i, PAD_FILL_ORDER.getOrElse(i) { i },
+                    sliceName, slicePcm, chopChannels, converted.sampleRate, sliceFrames, chokeOn, "chop",
+                )) {
+                    is UploadOutcome.UploadFailed ->
+                        _snackbarMessage.value = "Slice ${i + 1} upload failed: ${outcome.error.message ?: outcome.error}"
+                    UploadOutcome.UploadRejected ->
+                        _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
+                    is UploadOutcome.AssignFailed ->
+                        _snackbarMessage.value = "Slice ${i + 1} assign failed: ${outcome.error.message ?: outcome.error}"
+                    UploadOutcome.AssignRejected -> {}
+                    UploadOutcome.Done -> {}
                 }
             }
 
@@ -469,43 +512,19 @@ class KitViewModel(
                 }
                 val frames = converted.pcm.size / 2 / converted.channels
 
-                // Upload + assign serialized via deviceMutex.
-                val sampleNodeId: Int? = try {
-                    deviceMutex.withLock {
-                        midi.putSampleFile(safeName, converted.pcm, converted.channels, converted.sampleRate)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel kit: putSampleFile failed for $safeName", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
-                    _snackbarMessage.value = "Upload failed for $safeName: ${e.message ?: e}"
-                    return@launch
-                }
-
-                if (sampleNodeId == null) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
-                    _snackbarMessage.value = "Upload rejected for $safeName — reconnect and retry"
-                    return@launch
-                }
-
-                val ok = try {
-                    deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames, muteGroup = chokeOn)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel kit: assignSampleToPad $i failed", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
-                    _snackbarMessage.value = "Assign failed for $safeName: ${e.message ?: e}"
-                    return@launch
-                }
-
-                if (ok) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Done) }
-                } else {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+                // Upload + assign serialized via deviceMutex (see uploadAndAssign).
+                when (val outcome = uploadAndAssign(
+                    group, i, PAD_FILL_ORDER.getOrElse(i) { i },
+                    safeName, converted.pcm, converted.channels, converted.sampleRate, frames, chokeOn, "kit",
+                )) {
+                    is UploadOutcome.UploadFailed ->
+                        _snackbarMessage.value = "Upload failed for $safeName: ${outcome.error.message ?: outcome.error}"
+                    UploadOutcome.UploadRejected ->
+                        _snackbarMessage.value = "Upload rejected for $safeName — reconnect and retry"
+                    is UploadOutcome.AssignFailed ->
+                        _snackbarMessage.value = "Assign failed for $safeName: ${outcome.error.message ?: outcome.error}"
+                    UploadOutcome.AssignRejected -> {}
+                    UploadOutcome.Done -> {}
                 }
             }
         }
@@ -566,40 +585,18 @@ class KitViewModel(
                 val sliceName = "${safeName.substringBeforeLast('.')}_${i + 1}.wav"
                 updateItem(group, i) { it.copy(state = KitItemState.Working) }
 
-                val sliceNodeId: Int? = try {
-                    deviceMutex.withLock {
-                        midi.putSampleFile(sliceName, slicePcm, channels, sampleRate)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel chopFromPcm: putSampleFile failed for slice $i ($sliceName)", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
-                    _snackbarMessage.value = "Slice ${i + 1} upload failed: ${e.message ?: e}"
-                    continue
-                }
-
-                if (sliceNodeId == null) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
-                    _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
-                    continue
-                }
-
-                val ok = try {
-                    deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames, muteGroup = chokeOn)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel chopFromPcm: assignSampleToPad slice $i failed", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
-                    continue
-                }
-                if (ok) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Done) }
-                } else {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+                when (val outcome = uploadAndAssign(
+                    group, i, PAD_FILL_ORDER.getOrElse(i) { i },
+                    sliceName, slicePcm, channels, sampleRate, sliceFrames, chokeOn, "chopFromPcm",
+                )) {
+                    is UploadOutcome.UploadFailed ->
+                        _snackbarMessage.value = "Slice ${i + 1} upload failed: ${outcome.error.message ?: outcome.error}"
+                    UploadOutcome.UploadRejected ->
+                        _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
+                    // chopFromPcm (test seam) emits no snackbar on the assign paths.
+                    is UploadOutcome.AssignFailed -> {}
+                    UploadOutcome.AssignRejected -> {}
+                    UploadOutcome.Done -> {}
                 }
             }
         }
@@ -631,40 +628,11 @@ class KitViewModel(
                 }
                 updateItem(group, i) { it.copy(state = KitItemState.Working) }
 
-                val sampleNodeId: Int? = try {
-                    deviceMutex.withLock {
-                        midi.putSampleFile(safeName, pcm, channels, sampleRate)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel kitFromPcm: putSampleFile failed for $safeName", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
-                    return@launch
-                }
-
-                if (sampleNodeId == null) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
-                    return@launch
-                }
-
-                val ok = try {
-                    deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames, muteGroup = chokeOn)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel kitFromPcm: assignSampleToPad $i failed", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
-                    return@launch
-                }
-
-                if (ok) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Done) }
-                } else {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
-                }
+                // Test seam: no snackbars; uploadAndAssign drives the row's Working→Done/Error state.
+                uploadAndAssign(
+                    group, i, PAD_FILL_ORDER.getOrElse(i) { i },
+                    safeName, pcm, channels, sampleRate, frames, chokeOn, "kitFromPcm",
+                )
             }
         }
     }
