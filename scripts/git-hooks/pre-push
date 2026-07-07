@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Pre-push gate for the Android app.
+#
+# Always (fast, ~1-3 min warm):
+#   - JVM unit tests
+#   - androidTest compilation (catches stale UI tests before CI ever sees them)
+# When a device/emulator is attached (adb):
+#   - full connected UI test suite
+# Else when EP133_GMD=1:
+#   - headless Gradle Managed Device UI test run
+#
+# Escape hatches: SKIP_TESTS=1 git push   |   git push --no-verify
+set -euo pipefail
+
+if [[ "${SKIP_TESTS:-0}" == "1" ]]; then
+    echo "pre-push: SKIP_TESTS=1 — skipping test gate"
+    exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+APP_DIR="$REPO_ROOT/AndroidApp"
+
+if [[ ! -d "$APP_DIR" ]]; then
+    echo "pre-push: no AndroidApp directory — nothing to gate"
+    exit 0
+fi
+
+cd "$APP_DIR"
+
+echo "pre-push: unit tests + androidTest compile…"
+./gradlew --quiet :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin
+
+adb_device_present() {
+    command -v adb >/dev/null 2>&1 && adb devices 2>/dev/null | awk 'NR>1 && $2=="device"' | grep -q .
+}
+
+if adb_device_present; then
+    echo "pre-push: device/emulator attached — running connected UI tests…"
+    ./gradlew --quiet :app:connectedDebugAndroidTest
+elif [[ "${EP133_GMD:-0}" == "1" ]]; then
+    echo "pre-push: EP133_GMD=1 — running UI tests on Gradle Managed Device…"
+    ./gradlew --quiet :app:pixel2Api33DebugAndroidTest
+else
+    echo "pre-push: no device attached — UI tests skipped."
+    echo "          Run scripts/run-ui-tests.sh (or set EP133_GMD=1) before merging."
+fi
+
+echo "pre-push: gate passed"

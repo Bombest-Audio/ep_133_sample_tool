@@ -29,6 +29,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -49,6 +52,7 @@ import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.model.EP133Pads
 import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.domain.model.Scale
+import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.theme.Ep133GroupChip
 import com.ep133.sampletool.ui.theme.Ep133Pad
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
@@ -203,7 +207,7 @@ fun PadsScreen(viewModel: PadsViewModel) {
                     label = channel.name,
                     selected = channel == selectedChannel,
                     onClick = { viewModel.selectChannel(channel) },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).testTag(TestTags.groupChip(channel.name)),
                 )
             }
         }
@@ -218,6 +222,7 @@ fun PadsScreen(viewModel: PadsViewModel) {
 
         Column(
             modifier = Modifier
+                .testTag(TestTags.PADS_GRID)
                 .onSizeChanged { size ->
                     gridWidthPx = size.width.toFloat()
                     gridHeightPx = size.height.toFloat()
@@ -281,13 +286,22 @@ fun PadsScreen(viewModel: PadsViewModel) {
                             pad.defaultSound != null -> PadState.Loaded
                             else -> PadState.Empty
                         }
+                        // stateDescription exposes the visual PadState (glow/hairline are
+                        // color-only and invisible to the semantics tree) for UI tests.
+                        val stateDesc = when (state) {
+                            PadState.Pressed -> TestTags.PAD_STATE_PRESSED
+                            PadState.InScale -> TestTags.PAD_STATE_IN_SCALE
+                            else -> TestTags.PAD_STATE_IDLE
+                        }
                         Ep133Pad(
                             id = pad.label,
                             name = pad.defaultSound ?: "—",
                             state = state,
                             modifier = Modifier
                                 .weight(1f)
-                                .aspectRatio(1f),
+                                .aspectRatio(1f)
+                                .testTag(TestTags.pad(index))
+                                .semantics { stateDescription = stateDesc },
                         )
                     }
                     // Fill remaining columns if row is short

@@ -7,7 +7,7 @@ Native Kotlin/Jetpack Compose app for managing the Teenage Engineering EP-133 K.
 | Tool | Version |
 |------|---------|
 | Android Studio | Hedgehog (2023.1.1) or newer |
-| Android SDK | 35 (compile), 34 (target) |
+| Android SDK | 34 (compile), 34 (target) |
 | JDK | 17 |
 | Min Android | 10 (API 29) — required for `android.media.midi` |
 
@@ -37,16 +37,24 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 USB Host capability and MIDI support are declared as required in `AndroidManifest.xml`.
 
+## Testing without hardware (debug builds)
+
+Debug builds include a **Simulated EP-133** toggle at the bottom of the **Device** screen. It's hidden in release builds — gated by `SimulatedPortProvider.available`, which reports `false` outside debug builds, so the toggle and its wiring never install there.
+
+Flipping it on hot-swaps the MIDI stack from real USB to a wire-level `EP133DeviceSimulator` that speaks the actual EP-133 SysEx protocol — not a stub or mock — so pads, kit, projects, and device flows can all be exercised without a physical device attached. Real USB is always the default at launch; the toggle can be flipped on or off at any time while the app is running.
+
+![Device screen with the toggle off, no hardware connected](../docs/assets/android_device_no_hw_sim_toggle.png)
+![Device screen with the toggle on, connected to the simulator](../docs/assets/android_device_sim_connected.png)
+
 ## Architecture
 
 ```
 MainActivity
   └── NavHost (Jetpack Compose)
         ├── PadsScreen       — 16-pad grid, multi-touch velocity
-        ├── BeatsScreen      — 16-step sequencer, EDIT/LIVE modes
-        ├── SoundsScreen     — EP-133 sound browser, preview
-        ├── ChordsScreen     — Chord browser + offline synth preview
-        │     └── ChordBuilderScreen — Custom chord builder, push-to-KO-II via MIDI
+        ├── KitScreen        — CHOP/KIT modes, sample chopping + kit building
+        │     └── KitBuilderScreen — Custom kit builder (KIT mode, inline composition)
+        ├── ProjectsScreen   — Project backup/restore, device slot management
         └── DeviceScreen     — Device stats, PAK backup/restore
               └── SampleManagerActivity (WebView) — legacy sample manager
 ```

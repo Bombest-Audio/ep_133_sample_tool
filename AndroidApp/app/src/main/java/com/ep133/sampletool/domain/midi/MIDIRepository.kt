@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * - [queryDeviceStats] for firmware version, storage, and sample count (D-12)
  * - [selectedScale] and [selectedRootNote] as shared state flows (D-17)
  */
-open class MIDIRepository(private val midiManager: MIDIPort) {
+open class MIDIRepository(private var midiManager: MIDIPort) {
 
     /**
      * Serialises all device file operations so that only one file op can hold the shared mutable
@@ -156,7 +156,6 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private val fileWaiters = FileWaiterRegistry()
 
     private var pendingGreetDeferred: CompletableDeferred<Map<String, String>>? = null
-    private var pendingMetadataDeferred: CompletableDeferred<Map<String, String>>? = null
     private var pendingFileListCountDeferred: CompletableDeferred<Int>? = null
     private var fileListEntryCount: Int = 0
     private var currentDeviceId: Int = 0
@@ -412,6 +411,36 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     }
 
     /**
+     * Swap the underlying MIDI port at runtime (debug-only Simulated EP-133 toggle seam).
+     *
+     * Detaches the old port's callbacks, resets per-connection session state so the new
+     * port gets a fresh handshake, rewires callbacks, and re-enumerates the new port.
+     * Does NOT close either port — the caller (MainActivity) owns port lifecycles, so
+     * the real MIDIManager survives a round trip to the simulator and back.
+     */
+    fun swapPort(newPort: MIDIPort) {
+        Log.i(
+            "EP133APP",
+            "swapPort: ${midiManager.javaClass.simpleName} -> ${newPort.javaClass.simpleName}",
+        )
+        // Detach the old port so stale callbacks can't mutate state after the swap.
+        midiManager.onMidiReceived = null
+        midiManager.onDevicesChanged = null
+        midiManager.closeAllListeners()
+        midiManager = newPort
+        // Reset per-connection session state: the new port needs a fresh FILE_INIT
+        // handshake, and stale firmware/stats/port ids must not leak across ports.
+        fileSessionInitialized = false
+        groupsNodeCache.clear()
+        groupNodeNameCache.clear()
+        _deviceState.value = DeviceState()
+        // Rewire exactly as the init block does, then enumerate the new port.
+        newPort.onDevicesChanged = { updateDeviceStateOnly() }
+        newPort.onMidiReceived = { _, data -> parseMidiInput(data) }
+        refreshDeviceState()
+    }
+
+    /**
      * Query real device stats from the EP-133:
      * - GREET → firmwareVersion
      * - FILE_METADATA on /sounds → storageUsedBytes, storageTotalBytes
@@ -419,7 +448,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *
      * Returns true if GREET succeeded; false on timeout or no output port.
      */
-    suspend fun queryDeviceStats(): Boolean {
+    open suspend fun queryDeviceStats(): Boolean {
         val portId = _deviceState.value.outputPortId ?: return false
         // Guard against overlapping queries (e.g. rapid disconnect/reconnect). Two concurrent
         // runs would race on the shared pending-deferred fields and could call complete() twice
@@ -906,8 +935,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             ensureFileSessionInitNoLock()
             val projectsNode = resolveNodeIdInternal("/projects") ?: return@withLock emptyList()
 
-            // Active-slot pointer from /projects directory metadata (NoLock).
-            val activeNode = queryProjectsActiveNodeNoLock()
+            // Active-slot pointer from /projects directory metadata, via the reqId-routed
+            // nodeId-form GET (the same round-trip getActiveGroupIndex rides).
+            val activeNode = getMetadataJson(projectsNode).optInt("active", -1).takeIf { it > 0 }
 
             val body = listNodeBody(projectsNode, requestId = nextFileReqId()) ?: return@withLock emptyList()
 
@@ -950,26 +980,10 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         null
     }
 
-    /**
-     * Read the /projects directory metadata "active" pointer (the currently-loaded slot).
-     *
-     * NoLock: must only be called from within a [fileOpMutex] locked context.
-     */
-    private suspend fun queryProjectsActiveNodeNoLock(): Int? {
-        val portId = _deviceState.value.outputPortId ?: return null
-        return try {
-            val deferred = CompletableDeferred<Map<String, String>>()
-            pendingMetadataDeferred = deferred
-            val frame = SysExProtocol.buildFileMetadataFrame(currentDeviceId, "/projects", requestId = nextFileReqId())
-            midiManager.sendMidi(portId, frame)
-            val meta = withTimeoutOrNull(FILE_LIST_TIMEOUT_MS) { deferred.await() }
-            meta?.get("active")?.toIntOrNull()
-        } catch (e: CancellationException) {
-            throw e
-        } finally {
-            pendingMetadataDeferred = null
-        }
-    }
+    // queryProjectsActiveNodeNoLock removed: it used the legacy path-string METADATA frame and
+    // a pendingMetadataDeferred that nothing completed after the reqId-first dispatcher refactor
+    // (backlog 999.4) — every listProjects() stalled its full 5 s timeout and the active pointer
+    // was always null. Caught by SimulatedDeviceTest against the wire-level device simulator.
 
     // ── Active-group sync: nodeId-form metadata round-trips (Step 1) ─────────────
     //
@@ -1104,7 +1118,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *
      * @return Group index 0–3, or null if the device is disconnected / no active project.
      */
-    suspend fun getActiveGroupIndex(): Int? {
+    open suspend fun getActiveGroupIndex(): Int? {
         Log.d("EP133APP", "MIDI META: getActiveGroupIndex() called, outputPort=${_deviceState.value.outputPortId}")
         if (_deviceState.value.outputPortId == null) return null
         // Poll guard: return immediately if a poll is already running. This prevents a
@@ -1201,7 +1215,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *
      * @return true if the SET ack was received, false on error or timeout.
      */
-    suspend fun setActiveGroup(index: Int): Boolean {
+    open suspend fun setActiveGroup(index: Int): Boolean {
         val channel = PadChannel.entries.getOrNull(index) ?: return false
         if (_deviceState.value.outputPortId == null) return false
         return fileOpMutex.withLock {

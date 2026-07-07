@@ -45,6 +45,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -62,6 +63,7 @@ import com.ep133.sampletool.domain.midi.ProjectBackupProgress
 import com.ep133.sampletool.domain.model.DeviceState
 import com.ep133.sampletool.domain.project.InMemoryProjectNameStore
 import com.ep133.sampletool.domain.project.ProjectNameStore
+import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
@@ -396,6 +398,7 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
     if (showRestoreConfirm) {
         AlertDialog(
             onDismissRequest = { viewModel.cancelRestore() },
+            modifier = Modifier.testTag(TestTags.PROJECTS_RESTORE_CONFIRM_DIALOG),
             title = { Text("Restore project?") },
             text = { Text("This will overwrite the matching slot on your EP-133. This cannot be undone.") },
             confirmButton = {
@@ -414,6 +417,7 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
     Box(modifier = Modifier.fillMaxSize().background(t.bg)) {
         LazyColumn(
             modifier = Modifier
+                .testTag(TestTags.PROJECTS_SLOT_LIST)
                 .fillMaxSize()
                 .padding(horizontal = 14.dp),
             contentPadding = PaddingValues(top = 14.dp, bottom = 14.dp),
@@ -562,6 +566,7 @@ private fun SlotCard(
     val t = LocalEP133Tokens.current
     Column(
         modifier = Modifier
+            .testTag(TestTags.projectSlot(slot.nodeId))
             .fillMaxWidth()
             .clip(PanelRadius)
             .background(t.panel, PanelRadius)
@@ -702,6 +707,7 @@ private fun BackupCard(
     val t = LocalEP133Tokens.current
     Column(
         modifier = Modifier
+            .testTag(TestTags.backupCard(backup.name))
             .fillMaxWidth()
             .clip(PanelRadius)
             .background(t.panel, PanelRadius)
