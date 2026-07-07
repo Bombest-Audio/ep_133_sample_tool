@@ -23,6 +23,11 @@ enum TestTags {
     static func pad(_ index: Int) -> String { "pad_\(index)" }
     static func groupChip(_ label: String) -> String { "group_chip_\(label)" }
 
+    // Pad stateDescription values (see PadsScreen cell semantics)
+    static let PAD_STATE_PRESSED = "pressed"
+    static let PAD_STATE_IN_SCALE = "in_scale"
+    static let PAD_STATE_IDLE = "idle"
+
     // Device
     static let DEVICE_PERMISSION_ACTION = "device_permission_action"
     static let DEVICE_FIRMWARE_BANNER = "device_firmware_banner"
