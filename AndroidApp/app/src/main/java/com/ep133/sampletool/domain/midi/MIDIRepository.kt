@@ -202,6 +202,9 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
     private val repositoryJob = SupervisorJob()
     private val repositoryScope = CoroutineScope(Dispatchers.Default + repositoryJob)
 
+    // @Volatile for cross-thread visibility, matching the other in-flight guards (statsQueryInFlight,
+    // activeGroupPollInFlight). Not a full lock — it only debounces re-entrant refreshDeviceState calls.
+    @Volatile
     private var isRefreshing = false
 
     init {
@@ -721,8 +724,12 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
             val frame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, terminatorPage, ByteArray(0), requestId = reqId)
             Log.w("EP133MIDI", "MIDI META: force-closing incomplete transfer page=$terminatorPage reqId=$reqId")
             awaitFileOp(reqId, FileOpKind.PUT_DATA, portId, frame, FORCE_CLOSE_TIMEOUT_MS)
+        } catch (_: CancellationException) {
+            // Intentionally NOT rethrown (the one place in this file that doesn't): this is best-effort
+            // cleanup that itself runs during cancellation, so a fresh CancellationException from the
+            // suspending awaitFileOp is expected here and must not abort the cleanup.
         } catch (_: Exception) {
-            // Best-effort — ignore all errors.
+            // Best-effort — ignore all other errors.
         }
     }
 
