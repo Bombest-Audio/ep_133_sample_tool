@@ -743,9 +743,26 @@ final class KitScreenModel {
 
     init(midi: MIDIRepository) {
         let manager = SampleImportManager(midi)
-        let session = GroupSession(defaults: UserDefaults(suiteName: "ep133_group_session"))
+        // Production persists the group session (designation + choke) in the shared defaults
+        // suite; a UI-test launch uses a fresh in-memory session so a prior test's KIT/choke
+        // state can't leak into the next launch (the Android tests' `GroupSession()` analog).
+        let session: GroupSession
+        #if DEBUG
+        session = UITestConfig.useEphemeralGroupSession
+            ? GroupSession()
+            : GroupSession(defaults: UserDefaults(suiteName: "ep133_group_session"))
+        #else
+        session = GroupSession(defaults: UserDefaults(suiteName: "ep133_group_session"))
+        #endif
         kitViewModel = KitViewModel(midi, manager, session: session)
         builderViewModel = KitBuilderViewModel(midi, manager, session: session)
+        #if DEBUG
+        // Seed a deterministic pack so the Kit Builder browser is reachable out-of-process
+        // (the `loadPack(testPack())` seam the Android instrumented test uses in-process).
+        if UITestConfig.seedKitBuilderPack {
+            builderViewModel.loadPack(UITestConfig.makeTestPack())
+        }
+        #endif
     }
 }
 

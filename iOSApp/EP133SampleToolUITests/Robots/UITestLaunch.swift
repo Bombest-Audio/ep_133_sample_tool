@@ -16,14 +16,18 @@ extension XCUIApplication {
     ///   - permission: offline `PermissionState` to seed ("unknown"|"awaiting"|"denied"|"granted").
     ///   - deviceFirmware: firmware version the simulated device reports (sim-port only).
     ///   - latestFirmware: stub-catalog latest version, or "none" for an unavailable catalog.
+    ///   - kitBuilderPack: seed a deterministic in-memory pack into the Kit Builder (the
+    ///     out-of-process analog of `KitBuilderScreenTest`'s `viewModel.loadPack(testPack())`).
     func launchForUITest(
         simPort: Bool = false,
         permission: String? = nil,
         deviceFirmware: String? = nil,
-        latestFirmware: String? = nil
+        latestFirmware: String? = nil,
+        kitBuilderPack: Bool = false
     ) {
         launchArguments.append("-EP133UITest")
         if simPort { launchArguments.append("-EP133UITestSimPort") }
+        if kitBuilderPack { launchArguments.append("-EP133UITestKbPack") }
         if let permission { launchEnvironment["EP133_PERMISSION"] = permission }
         if let deviceFirmware { launchEnvironment["EP133_FW_DEVICE"] = deviceFirmware }
         if let latestFirmware { launchEnvironment["EP133_FW_LATEST"] = latestFirmware }

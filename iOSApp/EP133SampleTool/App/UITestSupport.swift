@@ -69,6 +69,43 @@ enum UITestConfig {
         return StubFirmwareCatalog(latest: FirmwareVersion.parse(raw))
     }
 
+    // ── SAMPLES screen (Kit + Kit Builder) knobs ──────────────────────────────
+
+    /// The SAMPLES page persists its `GroupSession` (designation + choke) in the
+    /// "ep133_group_session" defaults suite, so a prior run's KIT designation or choke flip would
+    /// leak into the next launch and make the Kit/Kit-Builder UI tests non-deterministic. Under UI
+    /// test we build a fresh in-memory `GroupSession` instead — the out-of-process analog of the
+    /// Android tests' `GroupSession()` (no prefs). Always on when the master gate is active.
+    static var useEphemeralGroupSession: Bool { isActive }
+
+    /// When `-EP133UITestKbPack` is passed, seed the Kit Builder with a deterministic in-memory
+    /// pack via its `loadPack` seam — the out-of-process analog of the Android
+    /// `KitBuilderScreenTest`'s `viewModel.loadPack(testPack())`. The samples point at synthetic
+    /// URLs that can't be decoded/played, so audition + upload naturally fail (matching the Kotlin
+    /// "the fake genuinely can't do it" pattern), while browsing/assign/clear are fully reachable.
+    static var seedKitBuilderPack: Bool {
+        isActive && ProcessInfo.processInfo.arguments.contains("-EP133UITestKbPack")
+    }
+
+    /// The canned pack the Kit Builder loads under `-EP133UITestKbPack`. Mirrors the Kotlin
+    /// `testPack()` in `KitBuilderScreenTest`: "Drum Breaks" with KICKS (Kick 1, Kick 2) and
+    /// SNARES (Snare 1). Synthetic file URLs (unreadable) so the failure paths reproduce.
+    static func makeTestPack() -> KitPack {
+        func sample(_ name: String, _ category: String) -> KitSample {
+            KitSample(
+                name: name,
+                url: URL(string: "ep133-uitest://pack/\(name).wav")!,
+                category: category,
+                meta: "12 KB")
+        }
+        return KitPack(
+            name: "Drum Breaks",
+            categories: [
+                KitCategory(id: "KICKS", samples: [sample("Kick 1", "KICKS"), sample("Kick 2", "KICKS")]),
+                KitCategory(id: "SNARES", samples: [sample("Snare 1", "SNARES")]),
+            ])
+    }
+
     /// Build the repository the app runs against under UI test, or nil to use the real MIDI stack.
     /// Sim-port → a connected simulated EP-133; otherwise an inert port seeded with the requested
     /// offline permission state.
