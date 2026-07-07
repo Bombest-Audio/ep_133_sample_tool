@@ -58,6 +58,9 @@ import com.ep133.sampletool.domain.pack.SamplePackLoader
 import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.kit.GroupSession
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.PadEmptyInk
+import com.ep133.sampletool.ui.theme.PadFilledInk
+import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -388,10 +391,7 @@ class KitBuilderViewModel(
 
 // ── Screen ──────────────────────────────────────────────────────────────────────
 
-private val PanelRadius = RoundedCornerShape(3.dp)
 private val Mono = FontFamily.Monospace
-private val PadFilledInk = androidx.compose.ui.graphics.Color(0xFF1A1206)
-private val PadEmptyInk = androidx.compose.ui.graphics.Color(0xFFE2E3E4)
 private val KbError = androidx.compose.ui.graphics.Color(0xFFD0021B)
 
 /**

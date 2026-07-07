@@ -64,6 +64,9 @@ import com.ep133.sampletool.ui.theme.Ep133GroupChokeBar
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.PadEmptyInk
+import com.ep133.sampletool.ui.theme.PadFilledInk
+import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -221,6 +224,13 @@ class KitViewModel(
     val sliceCountText: StateFlow<String> = derived { it.sliceCountText }
     val items: StateFlow<List<KitResultItem>> = derived { it.items }
     val stagedLoop: StateFlow<StagedLoop?> = derived { it.stagedLoop }
+
+    /**
+     * Canonical resolved slice count for the selected group. The selector grid AND the labels
+     * collect this one flow, so the highlighted pad count can never disagree with what the device
+     * actually slices (they previously resolved the raw text independently, with different fallbacks).
+     */
+    val resolvedSliceCount: StateFlow<Int> = derived { resolveSliceCount(it) }
 
     // Transient toast — global (not per-group).
     private val _snackbarMessage = MutableStateFlow<String?>(null)
@@ -659,12 +669,14 @@ class KitViewModel(
         }
     }
 
-    /** Slice count for [group], clamped to [1, MAX_SLICES]. MAX_SLICES on parse failure. */
-    private fun resolvedSliceCountFor(group: PadChannel): Int =
-        groupOf(group).sliceCountText.toIntOrNull()?.coerceIn(1, MAX_SLICES) ?: MAX_SLICES
+    /** The one slice-count formula: parse [GroupState.sliceCountText], clamp to [1, MAX_SLICES],
+     *  MAX_SLICES on parse failure. Both [resolvedSliceCountFor] and the [resolvedSliceCount] flow
+     *  route through this so they can't drift apart. */
+    private fun resolveSliceCount(state: GroupState): Int =
+        state.sliceCountText.toIntOrNull()?.coerceIn(1, MAX_SLICES) ?: MAX_SLICES
 
-    /** Slice count for the currently-selected group (used by the UI labels). */
-    fun resolvedSliceCount(): Int = resolvedSliceCountFor(session.selected.value)
+    /** Slice count for [group]. */
+    private fun resolvedSliceCountFor(group: PadChannel): Int = resolveSliceCount(groupOf(group))
 
     /** Replace [group]'s progress items. */
     private fun setItems(group: PadChannel, items: List<KitResultItem>) =
@@ -683,7 +695,6 @@ class KitViewModel(
 // Screen composable
 // ─────────────────────────────────────────────────────────────────────────────
 
-private val PanelRadius = RoundedCornerShape(3.dp)
 private val Mono = FontFamily.Monospace
 
 /** One pad in the slice selector: its printed label and its 1-based fill-order rank. */
@@ -701,11 +712,6 @@ private val SLICE_PAD_GRID = listOf(
     SlicePad("1", 4),  SlicePad("2", 5),  SlicePad("3", 6),
     SlicePad(".", 1),  SlicePad("0", 2),  SlicePad("ENT", 3),
 )
-
-// Ink on a filled (accent) pad — a warm near-black for contrast, regardless of app theme.
-private val PadFilledInk = Color(0xFF1A1206)
-// Label on an empty (dark) pad — a fixed light, since the pad face is always dark like the device.
-private val PadEmptyInk = Color(0xFFE2E3E4)
 
 /**
  * Visual slice-count selector (implements the "Slice Pad Selector" design). A big count readout
@@ -1063,7 +1069,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
     val t = LocalEP133Tokens.current
     val mode by viewModel.mode.collectAsState()
     val selectedGroup by viewModel.selectedGroup.collectAsState()
-    val sliceCountText by viewModel.sliceCountText.collectAsState()
+    val resolvedSliceCount by viewModel.resolvedSliceCount.collectAsState()
     val items by viewModel.items.collectAsState()
     val stagedLoop by viewModel.stagedLoop.collectAsState()
     val chokeGroup by viewModel.chokeGroup.collectAsState()
@@ -1195,13 +1201,8 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                     ChopProgress(items = items, modifier = Modifier.fillMaxWidth())
                 }
                 mode == KitMode.CHOP -> {
-                    // Single source of truth: the selector, the labels, and the actual chop all
-                    // read resolvedSliceCount() so the highlighted pad count can never disagree
-                    // with what the device will actually slice. (Reading sliceCountText via
-                    // collectAsState above keeps this recomposing on every edit.)
-                    val count = viewModel.resolvedSliceCount()
                     SlicePadSelector(
-                        count = count,
+                        count = resolvedSliceCount,
                         onCountChange = { viewModel.onSliceCountChange(it.toString()) },
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -1227,9 +1228,9 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 Text(
                     text = when {
                         mode == KitMode.CHOP && loop != null ->
-                            "READY · CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → GROUP ${selectedGroup.name}"
+                            "READY · CHOP INTO $resolvedSliceCount SLICES → GROUP ${selectedGroup.name}"
                         mode == KitMode.CHOP ->
-                            "PICK ONE LOOP · CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → GROUP ${selectedGroup.name}"
+                            "PICK ONE LOOP · CHOP INTO $resolvedSliceCount SLICES → GROUP ${selectedGroup.name}"
                         else ->
                             "PICK UP TO $MAX_SLICES ONE-SHOTS → GROUP ${selectedGroup.name}"
                     },
@@ -1266,7 +1267,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
             // then chops the staged loop; in a KIT group it picks a pack then loads the staged kit.
             val chopReady = stagedLoop != null
             val pushLabel = if (mode == KitMode.CHOP) {
-                if (chopReady) "PUSH TO DEVICE · ${viewModel.resolvedSliceCount()} SLICES → ${selectedGroup.name}"
+                if (chopReady) "PUSH TO DEVICE · $resolvedSliceCount SLICES → ${selectedGroup.name}"
                 else "PICK LOOP"
             } else {
                 when {

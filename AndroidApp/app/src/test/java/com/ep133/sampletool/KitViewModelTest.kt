@@ -440,9 +440,10 @@ class KitViewModelTest {
     fun chop_sliceCountClampedToMaxSlices() = runTest {
         val (repo, vm) = makeVm(connected = true)
 
-        // Request more than MAX_SLICES — resolvedSliceCount() must clamp to MAX_SLICES.
+        // Request more than MAX_SLICES — resolvedSliceCount must clamp to MAX_SLICES.
         vm.onSliceCountChange("99")
-        assertEquals("resolvedSliceCount() must clamp to $MAX_SLICES", MAX_SLICES, vm.resolvedSliceCount())
+        advanceUntilIdle()
+        assertEquals("resolvedSliceCount must clamp to $MAX_SLICES", MAX_SLICES, vm.resolvedSliceCount.value)
 
         val frames = 4800
         vm.chopFromPcm("loop.wav", pcm(frames))
