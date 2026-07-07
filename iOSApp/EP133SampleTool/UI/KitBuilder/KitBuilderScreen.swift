@@ -690,6 +690,10 @@ struct KitBuilderScreen: View {
         .background(playing ? t.inset : t.panel)
         .contentShape(Rectangle())
         .onTapGesture { viewModel.onAssign(sample) }
+        // Keep the row a container (children keep their own identifiers) so the audition Button's
+        // `kbAuditionButton` id survives instead of being overridden by the row id — otherwise the
+        // whole row (button, name, meta) all report the row id and audition can't be targeted.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(TestTags.kbSampleRow(sample.name))
     }
 
