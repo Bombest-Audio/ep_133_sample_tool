@@ -221,10 +221,17 @@ enum ZIPArchive {
     private static func dosTimestamp(_ date: Date) -> (time: UInt16, date: UInt16) {
         let c = Calendar(identifier: .gregorian)
             .dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
-        let year = max((c.year ?? 1980) - 1980, 0)
-        let time = UInt16(((c.hour ?? 0) << 11) | ((c.minute ?? 0) << 5) | ((c.second ?? 0) / 2))
-        let day = UInt16((year << 9) | ((c.month ?? 1) << 5) | (c.day ?? 1))
-        return (time, day)
+        // Explicit Int locals: folding the shift/or chain and the UInt16 init into one
+        // expression makes the type-checker time out on older Swift toolchains.
+        let year: Int = max((c.year ?? 1980) - 1980, 0)
+        let hour: Int = c.hour ?? 0
+        let minute: Int = c.minute ?? 0
+        let second: Int = c.second ?? 0
+        let month: Int = c.month ?? 1
+        let dayOfMonth: Int = c.day ?? 1
+        let timeBits: Int = (hour << 11) | (minute << 5) | (second / 2)
+        let dateBits: Int = (year << 9) | (month << 5) | dayOfMonth
+        return (UInt16(timeBits), UInt16(dateBits))
     }
 
     private static let crcTable: [UInt32] = (0..<256).map { n in
