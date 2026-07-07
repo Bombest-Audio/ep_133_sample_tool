@@ -297,46 +297,85 @@ struct EP133StatReadout: View {
 }
 
 // ── App chrome — header + body + bottom tab nav ───────────────────────────────
-/// The six bottom-nav destinations, in order.
-enum EP133Tab: String, CaseIterable {
-    case pads = "PADS"
-    case beats = "BEATS"
-    case sounds = "SOUNDS"
-    case chords = "CHORDS"
-    case scale = "SCALE"
-    case device = "DEVICE"
+/// The bottom-nav destinations, in order (mirrors `NavRoute` in EP133App.kt).
+enum EP133Tab: CaseIterable {
+    case pads, kit, projects, device
 
-    var label: String { rawValue }
+    var label: String {
+        switch self {
+        case .pads: "PADS"
+        case .kit: "SAMPLES"
+        case .projects: "PROJ"
+        case .device: "DEVICE"
+        }
+    }
+
+    var testTag: String {
+        switch self {
+        case .pads: TestTags.NAV_PADS
+        case .kit: TestTags.NAV_KIT
+        case .projects: TestTags.NAV_PROJECTS
+        case .device: TestTags.NAV_DEVICE
+        }
+    }
 }
 
-/// App shell: faceplate header (EP·133 badge + screen title + connection dot), the screen
-/// `content`, and the bottom tab nav. Mirrors the design's chrome. `title` is the current screen
-/// name.
+/// App shell chrome, mirroring `EP133App` in EP133App.kt: faceplate header (tappable SKU badge +
+/// screen title + theme-mode toggle + connection dot) wrapping the screen `content`, with the mono
+/// bottom tab nav. Theme/SKU state lives in the caller (AppShell) so the header controls can
+/// re-theme the whole app.
 struct EP133Scaffold<Content: View>: View {
     @Environment(\.ep133Tokens) private var t
     let title: String
     let connected: Bool
     let currentTab: EP133Tab
     let onTab: (EP133Tab) -> Void
-    var onToggleConnected: (() -> Void)? = nil
+    var sku: EP133Sku = .ep133
+    var onSkuToggle: (() -> Void)? = nil
+    var themeGlyph: String? = nil
+    var onThemeToggle: (() -> Void)? = nil
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         VStack(spacing: 0) {
-            // header
+            // ── Faceplate header ──
             HStack(spacing: 0) {
-                Text("EP·133")
-                    .font(mono(11, .bold))
-                    .foregroundStyle(t.onAccent)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .ep133Panel(fill: t.accent)
+                // Tap the badge to switch SKU theme (EP-133 orange ↔ EP-1320 rust).
+                Button(action: { onSkuToggle?() }) {
+                    Text(sku == .ep133 ? "EP·133" : "EP·1320")
+                        .font(mono(11, .bold))
+                        .foregroundStyle(t.onAccent)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .ep133Panel(fill: t.accent)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier(TestTags.HEADER_SKU_BADGE)
+                .accessibilityLabel(
+                    sku == .ep133
+                        ? "Switch to the EP-1320 color theme"
+                        : "Switch to the EP-133 color theme"
+                )
                 Text(title.uppercased())
                     .font(mono(11, .semibold))
                     .tracking(1.1)
                     .foregroundStyle(t.text2)
                     .padding(.leading, 9)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(TestTags.HEADER_TITLE)
+                // Tap to cycle theme: follow system → light → dark.
+                if let themeGlyph {
+                    Button(action: { onThemeToggle?() }) {
+                        Text(themeGlyph)
+                            .font(.system(size: 14))
+                            .foregroundStyle(t.text2)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier(TestTags.HEADER_THEME_TOGGLE)
+                    Spacer().frame(width: 8)
+                }
                 let dot = connected ? t.live : t.text3
                 HStack(spacing: 7) {
                     EP133StatusDot(color: dot, size: 8)
@@ -345,30 +384,36 @@ struct EP133Scaffold<Content: View>: View {
                         .tracking(0.7)
                         .foregroundStyle(dot)
                 }
-                .onTapGesture { onToggleConnected?() }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier(TestTags.HEADER_CONNECTION)
             }
             .padding(.horizontal, 15)
             .padding(.vertical, 13)
             .background(t.panel2)
-            // body
+            // ── Screen body ──
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // bottom tab nav
+            // ── Faceplate bottom tab nav ──
             HStack(spacing: 0) {
                 ForEach(EP133Tab.allCases, id: \.self) { tab in
                     let active = tab == currentTab
                     Text(tab.label)
-                        .font(mono(9.5, active ? .bold : .medium))
-                        .tracking(0.5)
+                        .font(mono(8.5, active ? .bold : .medium))
+                        .tracking(0.3)
                         .foregroundStyle(active ? t.accent : t.text3)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 11)
                         .contentShape(Rectangle())
                         .onTapGesture { onTab(tab) }
+                        .accessibilityIdentifier(tab.testTag)
+                        .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
                 }
             }
-            .background(t.panel2)
+            // Nav background bleeds under the home indicator (Android's navigationBarsPadding
+            // inside the panel2 background); the status-bar area above shows bg, matching
+            // Android's statusBarsPadding on the bg column.
+            .background(t.panel2.ignoresSafeArea(edges: .bottom))
         }
-        .background(t.bg)
+        .background(t.bg.ignoresSafeArea())
     }
 }

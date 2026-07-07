@@ -249,25 +249,3 @@ final class MIDIManager: MIDIPort {
         return MIDIDevice(id: String(uniqueID), name: displayName)
     }
 }
-
-// MARK: - MIDIManagerObservable
-
-/// ObservableObject wrapper around MIDIManager for SwiftUI environment injection.
-///
-/// Created once in EP133SampleToolApp as a @StateObject and injected via .environmentObject().
-/// iOS 16 target requires ObservableObject + @Published (not @Observable which requires iOS 17).
-final class MIDIManagerObservable: ObservableObject {
-
-    let midi = MIDIManager()
-
-    @Published var isConnected: Bool = false
-
-    init() {
-        midi.onDevicesChanged = { [weak self] in
-            guard let self else { return }
-            let devices = self.midi.getUSBDevices()
-            self.isConnected = !devices.inputs.isEmpty || !devices.outputs.isEmpty
-        }
-        midi.setup()
-    }
-}
