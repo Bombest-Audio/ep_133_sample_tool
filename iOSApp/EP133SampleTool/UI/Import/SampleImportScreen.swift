@@ -177,10 +177,6 @@ private let panelRadius: CGFloat = 3
 /// Number of page cells in the per-file SysEx progress strip (mirrors the design's 12-cell grid).
 private let PAGE_CELLS = 12
 
-private func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-    .system(size: size, weight: weight, design: .monospaced)
-}
-
 private extension View {
     func importPanel(fill: Color, border: Color) -> some View {
         background(RoundedRectangle(cornerRadius: panelRadius).fill(fill))

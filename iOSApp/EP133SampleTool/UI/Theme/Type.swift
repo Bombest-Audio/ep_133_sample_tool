@@ -49,3 +49,9 @@ extension View {
         font(style.font).tracking(style.tracking)
     }
 }
+
+/// Ad-hoc monospaced system font at an explicit size/weight — the hardware-display face the
+/// screens use for one-off labels that don't map to a named `EP133TextStyle`.
+func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+    .system(size: size, weight: weight, design: .monospaced)
+}

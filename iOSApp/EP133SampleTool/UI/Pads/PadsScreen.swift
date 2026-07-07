@@ -325,10 +325,6 @@ private struct LegendItem: View {
     }
 }
 
-private func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-    .system(size: size, weight: weight, design: .monospaced)
-}
-
 // ── Multi-touch layer — Android's grid-level pointerInteropFilter ─────────────
 
 /// Transparent UIKit layer over the pad grid handling true multi-touch: several simultaneous

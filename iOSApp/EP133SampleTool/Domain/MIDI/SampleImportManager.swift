@@ -79,7 +79,10 @@ final class SampleImportManager {
     }
 
     /// Maximum device-safe basename length (excludes the ".wav" extension).
-    static let MAX_BASENAME_LEN = 32
+    /// `nonisolated`: a plain constant read from the nonisolated convert/sanitize path. Without it
+    /// the constant inherits the class's `@MainActor` isolation — a warning in Swift 5, an error in
+    /// the Swift 6 language mode.
+    nonisolated static let MAX_BASENAME_LEN = 32
 
     // ── Import flows ───────────────────────────────────────────────────────────
 

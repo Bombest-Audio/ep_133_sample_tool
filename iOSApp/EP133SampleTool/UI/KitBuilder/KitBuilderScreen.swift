@@ -450,10 +450,6 @@ private func errorText(_ error: Error) -> String {
 
 private let panelRadius: CGFloat = 3
 
-private func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-    .system(size: size, weight: weight, design: .monospaced)
-}
-
 private extension View {
     func kbPanel(fill: Color, border: Color? = nil, radius: CGFloat = panelRadius) -> some View {
         background(RoundedRectangle(cornerRadius: radius).fill(fill))

@@ -14,10 +14,6 @@ private let radius: CGFloat = 3
 
 /// Mono labels/codes (the design uses JetBrains Mono; the system monospaced design — SF Mono —
 /// is the safe on-device fallback).
-private func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-    .system(size: size, weight: weight, design: .monospaced)
-}
-
 private extension View {
     /// Compose's `.clip(Radius).background(color, Radius).border(1.dp, border, Radius)` stack.
     func ep133Panel(fill: Color, border: Color? = nil) -> some View {

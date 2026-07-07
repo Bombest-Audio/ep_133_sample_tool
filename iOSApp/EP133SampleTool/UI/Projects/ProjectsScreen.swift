@@ -220,10 +220,6 @@ private func formatTimestamp(_ epochMillis: Int64) -> String {
 /// Hard 2–3pt corner used across the faceplate UI (mirrors the design's `border-radius:2px`).
 private let panelRadius: CGFloat = 3
 
-private func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-    .system(size: size, weight: weight, design: .monospaced)
-}
-
 private extension View {
     func projectsPanel(fill: Color, border: Color) -> some View {
         background(RoundedRectangle(cornerRadius: panelRadius).fill(fill))
