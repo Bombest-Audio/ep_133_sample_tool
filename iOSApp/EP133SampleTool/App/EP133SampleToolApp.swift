@@ -12,12 +12,21 @@ struct EP133SampleToolApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(catalog: catalogOverride)
                 .environment(midiStack.repository)
         }
         .onChange(of: scenePhase) { _, phase in
             midiStack.handleScenePhase(phase)
         }
+    }
+
+    /// Firmware catalog to inject under UI test (nil → production `TeFirmwareCatalog`).
+    private var catalogOverride: FirmwareCatalog? {
+        #if DEBUG
+        return UITestConfig.makeCatalog()
+        #else
+        return nil
+        #endif
     }
 }
 
@@ -34,14 +43,28 @@ final class MIDIStack {
 
     private var startedOnce = false
 
+    /// True when a UI-test launch replaced the CoreMIDI repository with a test one, so scene-phase
+    /// port teardown/rebuild is skipped (there is no CoreMIDI client to cycle).
+    private let usingTestRepository: Bool
+
     init() {
         manager = MIDIManager()
+        #if DEBUG
+        if let testRepo = UITestConfig.makeRepository() {
+            // UI test: run against the simulated/inert port; never touch CoreMIDI.
+            repository = testRepo
+            usingTestRepository = true
+            return
+        }
+        #endif
+        usingTestRepository = false
         manager.setup()
         repository = MIDIRepository(manager)
         repository.refreshDeviceState()
     }
 
     func handleScenePhase(_ phase: ScenePhase) {
+        if usingTestRepository { return }
         switch phase {
         case .active:
             if startedOnce {

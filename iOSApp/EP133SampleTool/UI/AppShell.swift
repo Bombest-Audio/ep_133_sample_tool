@@ -17,9 +17,15 @@ struct AppShell: View {
 
     @Environment(\.openURL) private var openURL
 
-    init(midi: MIDIRepository) {
+    init(midi: MIDIRepository, catalog: FirmwareCatalog? = nil) {
         self.midi = midi
-        _deviceViewModel = State(initialValue: DeviceViewModel(midi))
+        // catalog is nil in production → DeviceViewModel falls back to TeFirmwareCatalog; a
+        // UI-test launch passes a StubFirmwareCatalog through here.
+        if let catalog {
+            _deviceViewModel = State(initialValue: DeviceViewModel(midi, catalog: catalog))
+        } else {
+            _deviceViewModel = State(initialValue: DeviceViewModel(midi))
+        }
     }
 
     /// Compose's `themeMode` glyph: ☀ light, ☾ dark, ◐ follow system.

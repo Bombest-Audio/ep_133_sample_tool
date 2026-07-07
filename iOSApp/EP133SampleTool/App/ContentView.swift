@@ -6,7 +6,10 @@ import SwiftUI
 struct ContentView: View {
     @Environment(MIDIRepository.self) private var midi
 
+    /// Firmware catalog override for UI tests; nil → AppShell uses the production catalog.
+    var catalog: FirmwareCatalog? = nil
+
     var body: some View {
-        AppShell(midi: midi)
+        AppShell(midi: midi, catalog: catalog)
     }
 }

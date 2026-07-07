@@ -1,0 +1,116 @@
+#if DEBUG
+import Foundation
+
+/// DEBUG-only bridge between the out-of-process XCUITest runner and the app.
+///
+/// XCUITest cannot inject Swift fakes the way Android's in-process instrumented tests hand a
+/// `TestMIDIRepository`/`FakeFirmwareCatalog` straight to the composition. Instead the UI-test
+/// target launches the app with launch arguments / environment, and this file reads them at
+/// startup to compose the same test seams the Android robots rely on:
+///
+/// - `-EP133UITest`            gates every other hook. Nothing here activates without it, so a
+///                            normally launched debug build is unaffected.
+/// - `-EP133UITestSimPort`     boots the repository against a fresh `EP133DeviceSimulator`
+///                            (a connected EP-133 over the wire protocol) instead of the
+///                            CoreMIDI `MIDIManager`. This is the out-of-process analog of
+///                            Android's `TestMIDIRepository.connectedState()`.
+/// - `EP133_PERMISSION`        seeds the offline `PermissionState` (unknown | awaiting | denied |
+///                            granted) so the DeviceScreen offline branches are reachable without
+///                            hardware — the `ScriptedMIDIRepository(initialStateFor(...))` analog.
+/// - `EP133_FW_DEVICE`         overrides the simulator's reported firmware version (default 2.0.5),
+///                            standing in for `connectedState(firmwareVersion:)`.
+/// - `EP133_FW_LATEST`         drives a `StubFirmwareCatalog` (the `FakeFirmwareCatalog` analog):
+///                            a parseable version → that latest; "none"/unset → nil (catalog
+///                            unavailable → no banner). Injected into every `DeviceViewModel`.
+///
+/// Everything is `#if DEBUG`: the Release build compiles with zero test-hook code (the simulator
+/// and stub catalog are never referenced), matching Android's src/debug variant isolation.
+///
+/// EXTENDING THIS (for the Pads / Kit / Projects / Import UI tests a second agent ports):
+/// add new launch keys as `static let` accessors on `UITestConfig` and read them where the
+/// relevant ViewModel is composed — the sim-port path already gives those screens a live
+/// simulated device, so most extensions are new env knobs (e.g. a seeded project list) plus a
+/// branch in `UITestSupport.makeRepository()` or the owning screen's init.
+enum UITestConfig {
+
+    /// Master gate — no hook fires unless the runner passed `-EP133UITest`.
+    static var isActive: Bool {
+        ProcessInfo.processInfo.arguments.contains("-EP133UITest")
+    }
+
+    /// Boot against a simulated EP-133 (connected device) rather than CoreMIDI.
+    static var useSimPort: Bool {
+        isActive && ProcessInfo.processInfo.arguments.contains("-EP133UITestSimPort")
+    }
+
+    /// Offline permission state to seed (only meaningful when not using the sim port).
+    static var permissionOverride: PermissionState? {
+        guard isActive else { return nil }
+        switch ProcessInfo.processInfo.environment["EP133_PERMISSION"] {
+        case "unknown": return .unknown
+        case "awaiting": return .awaiting
+        case "denied": return .denied
+        case "granted": return .granted
+        default: return nil
+        }
+    }
+
+    /// Firmware version the simulated device should report (default matches the simulator's own).
+    static var deviceFirmware: String? {
+        guard isActive else { return nil }
+        return ProcessInfo.processInfo.environment["EP133_FW_DEVICE"]
+    }
+
+    /// The catalog to inject into every `DeviceViewModel`, or nil to keep the production catalog.
+    static func makeCatalog() -> FirmwareCatalog? {
+        guard isActive else { return nil }
+        guard let raw = ProcessInfo.processInfo.environment["EP133_FW_LATEST"] else { return nil }
+        if raw == "none" { return StubFirmwareCatalog(latest: nil) }
+        return StubFirmwareCatalog(latest: FirmwareVersion.parse(raw))
+    }
+
+    /// Build the repository the app runs against under UI test, or nil to use the real MIDI stack.
+    /// Sim-port → a connected simulated EP-133; otherwise an inert port seeded with the requested
+    /// offline permission state.
+    @MainActor
+    static func makeRepository() -> MIDIRepository? {
+        guard isActive else { return nil }
+        if useSimPort {
+            let sim = EP133DeviceSimulator(firmwareVersion: deviceFirmware ?? "2.0.5")
+            let repo = MIDIRepository(sim)
+            repo.refreshDeviceState()
+            return repo
+        }
+        // Offline path: an inert port with no devices, seeded with the requested permission state.
+        let repo = MIDIRepository(UITestInertPort())
+        if let permission = permissionOverride {
+            repo.deviceState.permissionState = permission
+        }
+        return repo
+    }
+}
+
+/// Canned `FirmwareCatalog` for UI tests — no network. Mirrors `FakeFirmwareCatalog` (Android) /
+/// the private `FakeFirmwareCatalog` in `DeviceViewModelFirmwareTests`.
+final class StubFirmwareCatalog: FirmwareCatalog {
+    private let latest: FirmwareVersion?
+
+    init(latest: FirmwareVersion?) { self.latest = latest }
+
+    func latestVersion() async -> FirmwareVersion? { latest }
+}
+
+/// Inert `MIDIPort` for offline UI tests — reports no devices and drops every send. The
+/// out-of-process counterpart of `NoOpMIDIPort` in the Android test support code.
+final class UITestInertPort: MIDIPort {
+    var onMIDIReceived: ((String, [UInt8]) -> Void)?
+    var onDevicesChanged: (() -> Void)?
+
+    func setup() {}
+    func close() {}
+    func getUSBDevices() -> MIDIDeviceList { MIDIDeviceList(inputs: [], outputs: []) }
+    func sendMIDI(to portId: String, data: [UInt8]) {}
+    func startListening(portId: String) {}
+    func stopListening(portId: String) {}
+}
+#endif
