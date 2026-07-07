@@ -209,10 +209,13 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
         midiManager.onMidiReceived = { _, data -> parseMidiInput(data) }
     }
 
-    /** Updates state and re-establishes listeners on new devices. */
-    private fun updateDeviceStateOnly() {
+    /**
+     * Recompute [_deviceState] from the current USB device list. Returns the enumerated devices so a
+     * caller that also needs to (re)establish listeners can reuse the same list. The single copy of
+     * the snapshot logic shared by [updateDeviceStateOnly] and [refreshDeviceState].
+     */
+    private fun applyDeviceSnapshot(): MIDIPort.Devices {
         val devices = midiManager.getUSBDevices()
-        val wasConnected = _deviceState.value.connected
         val connected = devices.inputs.isNotEmpty() || devices.outputs.isNotEmpty()
         val outputPort = devices.outputs.firstOrNull()
         val permState = (midiManager as? MIDIManager)?.currentPermissionState
@@ -225,13 +228,21 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
             outputPorts = devices.outputs.map { MidiPort(it.id, it.name) },
             permissionState = permState,
         )
+        return devices
+    }
+
+    /** Updates state and re-establishes listeners on new devices. */
+    private fun updateDeviceStateOnly() {
+        val wasConnected = _deviceState.value.connected
+        val devices = applyDeviceSnapshot()
+        val connected = _deviceState.value.connected
         // Close stale listeners and re-establish on current ports
         midiManager.closeAllListeners()
         for (input in devices.inputs) {
             midiManager.startListening(input.id)
         }
         // Pre-warm send port so sequencer noteOn is immediate
-        outputPort?.id?.let { midiManager.prewarmSendPort(it) }
+        devices.outputs.firstOrNull()?.id?.let { midiManager.prewarmSendPort(it) }
 
         // Auto-trigger stats query on device connect (D-13)
         if (connected && !wasConnected) {
@@ -395,19 +406,7 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
         } finally {
             isRefreshing = false
         }
-        val devices = midiManager.getUSBDevices()
-        val connected = devices.inputs.isNotEmpty() || devices.outputs.isNotEmpty()
-        val outputPort = devices.outputs.firstOrNull()
-        val permState = (midiManager as? MIDIManager)?.currentPermissionState
-            ?: PermissionState.UNKNOWN
-        _deviceState.value = _deviceState.value.copy(
-            connected = connected,
-            deviceName = outputPort?.name ?: "",
-            outputPortId = outputPort?.id,
-            inputPorts = devices.inputs.map { MidiPort(it.id, it.name) },
-            outputPorts = devices.outputs.map { MidiPort(it.id, it.name) },
-            permissionState = permState,
-        )
+        applyDeviceSnapshot()
     }
 
     /**
