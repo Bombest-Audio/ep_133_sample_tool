@@ -95,6 +95,49 @@ final class DeviceRobot: BaseRobot {
         return self
     }
 
+    // ── Scale mode (connected only) ──
+
+    /// Open the SCALE dropdown (a SwiftUI Menu) and pick [name] (e.g. "Major", "None"). The scale
+    /// selection lives in MIDIRepository, so this re-skins the Pads grid across screens.
+    @discardableResult
+    func selectScale(_ name: String) -> DeviceRobot {
+        let dropdown = waitForTag(TestTags.DEVICE_SCALE_DROPDOWN)
+        dropdown.tap()
+        // The Menu presents each option as a button titled with the option text.
+        let option = app.buttons[name]
+        XCTAssertTrue(option.waitForExistence(timeout: BaseRobot.defaultTimeout),
+                      "scale option '\(name)' should be offered")
+        option.tap()
+        return self
+    }
+
+    /// Open the ROOT dropdown and pick [note] (e.g. "C", "D"). A single-letter note collides with
+    /// the A/B/C/D group chips mounted on hidden tabs, so match the menu option specifically — a
+    /// button whose label is the note AND which carries no accessibilityIdentifier (menu items
+    /// have none, group chips carry `group_chip_*`).
+    @discardableResult
+    func selectRootNote(_ note: String) -> DeviceRobot {
+        let dropdown = waitForTag(TestTags.DEVICE_ROOT_DROPDOWN)
+        dropdown.tap()
+        // Candidates: menu options (id="") plus the mounted group chips (also label "D", but not
+        // hittable while the menu is presented). Pick the hittable menu option.
+        let candidates = app.buttons.matching(NSPredicate(format: "label ==[c] %@", note))
+        XCTAssertTrue(
+            candidates.firstMatch.waitForExistence(timeout: BaseRobot.defaultTimeout),
+            "root option '\(note)' should be offered")
+        var option: XCUIElement?
+        for i in 0..<candidates.count {
+            let candidate = candidates.element(boundBy: i)
+            if candidate.identifier.isEmpty && candidate.isHittable {
+                option = candidate
+                break
+            }
+        }
+        XCTAssertNotNil(option, "a hittable root option '\(note)' should be present in the menu")
+        option?.tap()
+        return self
+    }
+
     // ── Backup / restore ──
 
     @discardableResult
