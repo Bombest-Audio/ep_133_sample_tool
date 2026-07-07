@@ -37,8 +37,9 @@ private let EP133_SKU = "TE032AS001"
 /// (no nested braces), so matching brace-delimited objects isolates them; the sku/version lookup
 /// within an object is order-independent.
 func parseReleases(_ json: String) -> FirmwareVersion? {
-    // Patterns are constant (modulo the SKU literal), so compilation cannot fail.
-    let skuPresent = try! NSRegularExpression(pattern: "\"sku\"\\s*:\\s*\"\(EP133_SKU)\"")
+    // Patterns are constant (the SKU literal is regex-escaped), so compilation cannot fail.
+    let skuPattern = NSRegularExpression.escapedPattern(for: EP133_SKU)
+    let skuPresent = try! NSRegularExpression(pattern: "\"sku\"\\s*:\\s*\"\(skuPattern)\"")
     let version = try! NSRegularExpression(pattern: "\"version\"\\s*:\\s*\"([^\"]+)\"")
     let objects = try! NSRegularExpression(pattern: "\\{[^{}]*\\}")
 
