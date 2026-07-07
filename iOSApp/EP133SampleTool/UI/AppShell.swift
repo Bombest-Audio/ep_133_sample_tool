@@ -53,11 +53,29 @@ struct AppShell: View {
             themeGlyph: themeGlyph,
             onThemeToggle: { themeMode = (themeMode + 1) % 3 }
         ) {
-            switch currentTab {
-            case .pads: PadsScreen()
-            case .kit: KitScreen()
-            case .projects: ProjectsScreen()
-            case .device: DeviceScreen(viewModel: deviceViewModel)
+            // All tabs stay mounted (hidden, not removed) so screen-owned @State — including
+            // each screen's ViewModel — survives tab switches, matching Android's
+            // activity-scoped ViewModels. A `switch` here would tear the screen down and
+            // reset kit slices, pack browsing, etc. on every tab change.
+            ZStack {
+                PadsScreen()
+                    .opacity(currentTab == .pads ? 1 : 0)
+                    .allowsHitTesting(currentTab == .pads)
+                    .accessibilityHidden(currentTab != .pads)
+                KitScreen()
+                    .opacity(currentTab == .kit ? 1 : 0)
+                    .allowsHitTesting(currentTab == .kit)
+                    .accessibilityHidden(currentTab != .kit)
+                ProjectsScreen()
+                    .opacity(currentTab == .projects ? 1 : 0)
+                    .allowsHitTesting(currentTab == .projects)
+                    .accessibilityHidden(currentTab != .projects)
+                // Device mounts per visit: its ViewModel already lives at shell scope, and
+                // remounting refires the screen's onAppear stats query like Android's
+                // LaunchedEffect on navigation.
+                if currentTab == .device {
+                    DeviceScreen(viewModel: deviceViewModel)
+                }
             }
         }
         .ep133Theme(sku: sku)
