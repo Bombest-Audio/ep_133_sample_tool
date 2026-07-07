@@ -18,16 +18,20 @@ extension XCUIApplication {
     ///   - latestFirmware: stub-catalog latest version, or "none" for an unavailable catalog.
     ///   - kitBuilderPack: seed a deterministic in-memory pack into the Kit Builder (the
     ///     out-of-process analog of `KitBuilderScreenTest`'s `viewModel.loadPack(testPack())`).
+    ///   - seedBackup: seed a `P01.tar` into the app's backup library (the Projects test's
+    ///     seeded-`.tar` analog). The library is always cleared under UI test regardless.
     func launchForUITest(
         simPort: Bool = false,
         permission: String? = nil,
         deviceFirmware: String? = nil,
         latestFirmware: String? = nil,
-        kitBuilderPack: Bool = false
+        kitBuilderPack: Bool = false,
+        seedBackup: Bool = false
     ) {
         launchArguments.append("-EP133UITest")
         if simPort { launchArguments.append("-EP133UITestSimPort") }
         if kitBuilderPack { launchArguments.append("-EP133UITestKbPack") }
+        if seedBackup { launchArguments.append("-EP133UITestSeedBackup") }
         if let permission { launchEnvironment["EP133_PERMISSION"] = permission }
         if let deviceFirmware { launchEnvironment["EP133_FW_DEVICE"] = deviceFirmware }
         if let latestFirmware { launchEnvironment["EP133_FW_LATEST"] = latestFirmware }

@@ -698,6 +698,9 @@ private struct BackupCard: View {
         }
         .padding(12)
         .projectsPanel(fill: t.panel, border: t.rule)
+        // Keep the card a container so its SHARE / RESTORE actions stay addressable as their own
+        // elements instead of being merged into the card's single accessibility element.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(TestTags.backupCard(backup.name))
     }
 }

@@ -87,6 +87,26 @@ enum UITestConfig {
         isActive && ProcessInfo.processInfo.arguments.contains("-EP133UITestKbPack")
     }
 
+    // ── Projects screen knobs ─────────────────────────────────────────────────
+
+    /// Prepare the app's backup library (`<Documents>/backups`) for a UI-test run: clear it so a
+    /// prior run can't leak a card (the Android test's `@Before`/`@After` cleanup analog), then,
+    /// when `-EP133UITestSeedBackup` is passed, write a small `P01.tar` so the backup-library card
+    /// is reachable out-of-process (the analog of seeding a real `.tar` in the backups dir). No-op
+    /// unless the master gate is active.
+    static func seedBackupFileIfRequested() {
+        guard isActive else { return }
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("backups", isDirectory: true)
+        // Clear any leftover backups so the empty-state case stays deterministic across runs.
+        try? FileManager.default.removeItem(at: dir)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if ProcessInfo.processInfo.arguments.contains("-EP133UITestSeedBackup") {
+            let file = dir.appendingPathComponent("P01.tar")
+            FileManager.default.createFile(atPath: file.path, contents: Data(count: 128))
+        }
+    }
+
     /// The canned pack the Kit Builder loads under `-EP133UITestKbPack`. Mirrors the Kotlin
     /// `testPack()` in `KitBuilderScreenTest`: "Drum Breaks" with KICKS (Kick 1, Kick 2) and
     /// SNARES (Snare 1). Synthetic file URLs (unreadable) so the failure paths reproduce.

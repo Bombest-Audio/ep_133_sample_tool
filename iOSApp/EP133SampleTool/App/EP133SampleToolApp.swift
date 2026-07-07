@@ -50,6 +50,8 @@ final class MIDIStack {
     init() {
         manager = MIDIManager()
         #if DEBUG
+        // Prepare the on-disk backup library for a deterministic UI-test run (clear + optional seed).
+        UITestConfig.seedBackupFileIfRequested()
         if let testRepo = UITestConfig.makeRepository() {
             // UI test: run against the simulated/inert port; never touch CoreMIDI.
             repository = testRepo
