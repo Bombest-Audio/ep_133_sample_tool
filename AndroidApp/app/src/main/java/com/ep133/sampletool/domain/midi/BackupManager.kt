@@ -1,6 +1,7 @@
 package com.ep133.sampletool.domain.midi
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import java.io.ByteArrayOutputStream
@@ -165,6 +166,8 @@ class BackupManager(private val midi: MIDIRepository) {
                     val nodeId = try {
                         // Paged create-PUT with a per-page ack and a closing terminator.
                         midi.putSampleFile(name = name, pcmBytes = data)
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.w(TAG, "restore failed on '$name'", e)
                         null

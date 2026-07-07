@@ -399,17 +399,23 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
         AlertDialog(
             onDismissRequest = { viewModel.cancelRestore() },
             modifier = Modifier.testTag(TestTags.PROJECTS_RESTORE_CONFIRM_DIALOG),
-            title = { Text("Restore project?") },
+            containerColor = t.panel,
+            titleContentColor = t.text,
+            textContentColor = t.text2,
+            shape = PanelRadius,
+            title = { Text("Restore project?", fontWeight = FontWeight.Bold) },
             text = { Text("This will overwrite the matching slot on your EP-133. This cannot be undone.") },
             confirmButton = {
-                TextButton(onClick = { viewModel.confirmRestore(context) }) {
-                    Text("Restore")
-                }
+                TextButton(
+                    onClick = { viewModel.confirmRestore(context) },
+                    colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
+                ) { Text("Restore", fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.cancelRestore() }) {
-                    Text("Cancel")
-                }
+                TextButton(
+                    onClick = { viewModel.cancelRestore() },
+                    colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
+                ) { Text("Cancel") }
             },
         )
     }

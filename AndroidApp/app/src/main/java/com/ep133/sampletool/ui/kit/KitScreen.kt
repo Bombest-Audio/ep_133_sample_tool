@@ -892,15 +892,24 @@ private fun ChopProgress(items: List<KitResultItem>, modifier: Modifier = Modifi
     }
 
     // One infinite transition drives both the live-pad sweep and the status-dot blink.
-    val anim = rememberInfiniteTransition(label = "cp")
-    val sweepAngle by anim.animateFloat(
-        initialValue = 0f, targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing)), label = "sweep",
-    )
-    val dotAlpha by anim.animateFloat(
-        initialValue = 1f, targetValue = 0.35f,
-        animationSpec = infiniteRepeatable(tween(1000), repeatMode = RepeatMode.Reverse), label = "dot",
-    )
+    // Compose it ONLY while a batch is in flight — an unconditional infinite transition
+    // keeps the frame clock ticking (and recomposing this grid) forever after the run ends.
+    val sweepAngle: Float
+    val dotAlpha: Float
+    if (inFlight) {
+        val anim = rememberInfiniteTransition(label = "cp")
+        sweepAngle = anim.animateFloat(
+            initialValue = 0f, targetValue = 360f,
+            animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing)), label = "sweep",
+        ).value
+        dotAlpha = anim.animateFloat(
+            initialValue = 1f, targetValue = 0.35f,
+            animationSpec = infiniteRepeatable(tween(1000), repeatMode = RepeatMode.Reverse), label = "dot",
+        ).value
+    } else {
+        sweepAngle = 0f
+        dotAlpha = 1f
+    }
 
     Column(
         modifier = modifier
@@ -1186,7 +1195,11 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                     ChopProgress(items = items, modifier = Modifier.fillMaxWidth())
                 }
                 mode == KitMode.CHOP -> {
-                    val count = sliceCountText.toIntOrNull()?.coerceIn(1, MAX_SLICES) ?: DEFAULT_SLICE_COUNT
+                    // Single source of truth: the selector, the labels, and the actual chop all
+                    // read resolvedSliceCount() so the highlighted pad count can never disagree
+                    // with what the device will actually slice. (Reading sliceCountText via
+                    // collectAsState above keeps this recomposing on every edit.)
+                    val count = viewModel.resolvedSliceCount()
                     SlicePadSelector(
                         count = count,
                         onCountChange = { viewModel.onSliceCountChange(it.toString()) },
@@ -1196,6 +1209,9 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
             }
 
             // Drop / pick hint panel — tappable (it reads as a button), triggers the same pick.
+            // Capture the collected state into a local so the null-checks below smart-cast
+            // (a delegated `by collectAsState()` var can't, which is what forced the old `!!`).
+            val loop = stagedLoop
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1210,7 +1226,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
             ) {
                 Text(
                     text = when {
-                        mode == KitMode.CHOP && stagedLoop != null ->
+                        mode == KitMode.CHOP && loop != null ->
                             "READY · CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → GROUP ${selectedGroup.name}"
                         mode == KitMode.CHOP ->
                             "PICK ONE LOOP · CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → GROUP ${selectedGroup.name}"
@@ -1225,7 +1241,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 )
                 Text(
                     text = when {
-                        mode == KitMode.CHOP && stagedLoop != null -> stagedLoop!!.name
+                        mode == KitMode.CHOP && loop != null -> loop.name
                         mode == KitMode.CHOP -> "pick loop to chop"
                         else -> "pick one-shots to build kit"
                     },
@@ -1234,7 +1250,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
                 )
-                if (mode == KitMode.CHOP && stagedLoop != null) {
+                if (mode == KitMode.CHOP && loop != null) {
                     Text(
                         text = "TAP TO PICK A DIFFERENT LOOP",
                         color = t.text3, fontFamily = Mono, fontSize = 8.sp,

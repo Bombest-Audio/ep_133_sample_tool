@@ -118,10 +118,13 @@ object AudioDecoder {
             Log.e(TAG, msg, e)
             throw IOException(msg, e)
         } finally {
-            codec?.stop()
-            codec?.release()
-            extractor.release()
-            pfd.close()
+            // Each cleanup call is isolated: MediaCodec.stop() can throw in several
+            // documented error states, and a throw here must not skip release()/close()
+            // on the very error path this block exists to guard.
+            runCatching { codec?.stop() }
+            runCatching { codec?.release() }
+            runCatching { extractor.release() }
+            runCatching { pfd.close() }
         }
     }
 
