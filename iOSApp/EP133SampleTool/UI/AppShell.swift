@@ -8,14 +8,18 @@ import SwiftUI
 /// re-theme the whole app, exactly like Android's `themeMode`/`sku` state above `EP133Theme`.
 struct AppShell: View {
     private let midi: MIDIRepository
+    @State private var deviceViewModel: DeviceViewModel
 
     /// 0 = follow system, 1 = light, 2 = dark (mirrors Android's `themeMode`).
     @State private var themeMode = 0
     @State private var sku: EP133Sku = .ep133
     @State private var currentTab: EP133Tab = .pads
 
+    @Environment(\.openURL) private var openURL
+
     init(midi: MIDIRepository) {
         self.midi = midi
+        _deviceViewModel = State(initialValue: DeviceViewModel(midi))
     }
 
     /// Compose's `themeMode` glyph: ☀ light, ☾ dark, ◐ follow system.
@@ -53,11 +57,18 @@ struct AppShell: View {
             case .pads: PadsScreen()
             case .kit: KitScreen()
             case .projects: ProjectsScreen()
-            case .device: EP133ComingSoonPanel(section: "DEVICE")
+            case .device: DeviceScreen(viewModel: deviceViewModel)
             }
         }
         .ep133Theme(sku: sku)
         .preferredColorScheme(schemeOverride)
+        .onAppear {
+            // MainActivity wires the firmware-updater Custom Tab; here the SwiftUI openURL
+            // action fills the same seam.
+            deviceViewModel.onOpenFirmwareUpdater = {
+                openURL(URL(string: "https://teenage.engineering/apps/update")!)
+            }
+        }
     }
 }
 
