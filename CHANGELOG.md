@@ -12,21 +12,21 @@ The big one: this release turns a desktop-only tool into a real cross-platform a
 and opens the whole thing up as a community project.
 
 ### Added
-- Native **Android** app — Kotlin + Jetpack Compose. Pads, Device, Projects, and
-  Sample Import screens talking straight to the MIDI layer, with the original web
-  app kept as a WebView fallback for backup/restore/sync. (Beats, Sounds, and
+- Native **Android** app built in Kotlin + Jetpack Compose. Pads, Device, Projects,
+  and Sample Import screens talking straight to the MIDI layer, with the original
+  web app kept as a WebView fallback for backup/restore/sync. (Beats, Sounds, and
   Chords are sitting out this first release until their hardware behavior is solid.)
-- A **Teenage-Engineering-grade redesign** of the whole Android UI — every screen
+- A **Teenage-Engineering-grade redesign** of the whole Android UI: every screen
   rebuilt on a hardware-faithful design system (faceplate grays, rubberized pads,
   mono labels, hairline rules). Light and dark themes, plus an EP-133 ↔ EP-1320
   rust SKU you flip right from the header.
 - **Signed release builds** for Android, so the APK installs clean as a sideload.
 - Native **iOS** app (Swift/SwiftUI WKWebView wrapper) and a **JUCE** AU/VST3
   plugin wrapper for the DAW.
-- **Import your own WAV samples over USB** straight to the device's `/sounds` — the
+- **Import your own WAV samples over USB** straight to the device's `/sounds`, the
   hard part. Built on a from-scratch reverse-engineering of the EP-133 file-transfer
   protocol, verified on real hardware.
-- `docs/ep133-sysex-protocol.md` — the full reverse-engineered EP-133 / EP-1320
+- `docs/ep133-sysex-protocol.md`, the full reverse-engineered EP-133 / EP-1320
   USB-MIDI SysEx file protocol: frame format, the session handshake, 7-bit packing,
   the node tree, paged uploads, and every gotcha that cost real time.
 - Open-source project setup: MIT `LICENSE` for our code, a `NOTICE` that draws the
@@ -39,8 +39,8 @@ and opens the whole thing up as a community project.
 ### Fixed
 - Rebuilt how the app handles EP-133 file responses: every reply is now matched to
   its request by request id, instead of guessing from in-flight flags. The old way
-  dropped reqId-matching replies under rapid or overlapping transfers — which
-  silently broke sample import, truncated backups, and forced active-group sync off.
+  dropped reqId-matching replies under rapid or overlapping transfers, silently
+  breaking sample import, truncating backups, and forcing active-group sync off.
   It's race-proof now.
 - **Backups no longer truncate.** Multi-chunk sample files download in full instead
   of stopping after the first chunk (older backups came out with barely more than a

@@ -143,12 +143,12 @@ jobs:
           # Practical install footer for the people sideloading this.
           {
             printf '\n---\n\n'
-            printf '### Install — Android\n\n'
+            printf '### Installing on Android\n\n'
             printf 'Grab `EP133SampleTool-<version>.apk` below, let your browser or Files app install\n'
             printf 'it (you'\''ll get a one-time "allow from this source" prompt), and open it. Plug your\n'
             printf 'KO-II in over a USB-OTG cable and you'\''re managing samples from your phone. Android\n'
             printf '10+ required.\n\n'
-            printf 'First community build — sideload only, not on the Play Store yet.\n'
+            printf 'First community build, sideload only, not on the Play Store yet.\n'
           } >> release-notes.md
 
       - name: Publish release
