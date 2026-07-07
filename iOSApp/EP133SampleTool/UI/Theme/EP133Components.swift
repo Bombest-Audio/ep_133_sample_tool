@@ -356,6 +356,10 @@ struct EP133Scaffold<Content: View>: View {
                         ? "Switch to the EP-1320 color theme"
                         : "Switch to the EP-133 color theme"
                 )
+                // Announce the currently selected SKU (VoiceOver reads it as the control's value,
+                // and it's the stable read the UI tests assert on since the Button collapses its
+                // child Text out of the accessibility tree).
+                .accessibilityValue(sku == .ep133 ? "EP·133" : "EP·1320")
                 Text(title.uppercased())
                     .font(mono(11, .semibold))
                     .tracking(1.1)
