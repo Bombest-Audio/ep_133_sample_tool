@@ -31,6 +31,53 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
      */
     private val activeGroupPollInFlight = AtomicBoolean(false)
 
+    /**
+     * Holder for the result of [resolveActiveProjectNoLock]: the active project's node ID and
+     * its resolved display name (from FILE_INFO).
+     */
+    private data class ActiveProject(val projNodeId: Int, val projName: String)
+
+    /**
+     * Shared active-project resolution walk (999.5 Plan 03, D-05): folds the four repeated
+     * `/projects → METADATA active → FILE_INFO name` walks previously duplicated across
+     * [getActiveGroupIndexNoLock], [setActiveGroup], [resolvePadNodeIdNoLock], and
+     * [readGroupPadState] into one helper.
+     *
+     * MUST only be called from within an [FileTransferClient.withFileOpLock] context (same
+     * constraint as the four call sites it replaces).
+     *
+     * ### The `>0` vs `>=0` divergence (D-05)
+     * All four call sites folded here validate the active-project nodeId read from
+     * `/projects` metadata with `.takeIf { it >= 0 }` — i.e. they treat nodeId `0` as a valid
+     * active project. [FileTransferClient.listProjects] performs the *same* walk's first two
+     * steps but validates with `.takeIf { it > 0 }` (nodeId `0` is NOT valid there) and does not
+     * resolve a project name — it maps device slots by nodeId directly. That third-callsite
+     * divergence is **intentionally NOT folded into this helper** and `listProjects`'s check is
+     * left untouched: unifying `>0` vs `>=0` into a single contract has not been proven safe on
+     * a physical EP-133 (nodeId `0` as "no active project" vs "project at nodeId 0" is an
+     * untested edge case), so [minActive] below only needs to encode the `>=0` semantics its
+     * four current callers already agreed on. If a future caller needs the `>0` contract, thread
+     * it through this same [minActive] parameter rather than adding a fifth inline walk —
+     * **true unification of all five sites to one validation contract is deferred as a
+     * hardware-gated follow-up** (see 999.5-CONTEXT.md "Deferred Ideas").
+     *
+     * @param minActive Minimum acceptable value for the active-project nodeId read from
+     *   `/projects` metadata (inclusive). All four current callers pass `0` (the `>=0` semantics
+     *   this helper was folded from). Documented here, not hardcoded, so the `>0` divergence
+     *   [FileTransferClient.listProjects] uses stays visible as a parameter rather than a
+     *   silently-baked-in constant.
+     * @return null if `/projects` can't be resolved, no active project meets [minActive], or the
+     *   active project's name can't be resolved via FILE_INFO. Callers map null to their own
+     *   original sentinel (see each call site).
+     */
+    private suspend fun resolveActiveProjectNoLock(minActive: Int = 0): ActiveProject? {
+        val projectsNode = ftc.resolveNodeIdInternal("/projects") ?: return null
+        val activeProjNodeId = ftc.getMetadataJson(projectsNode).optInt("active", -1)
+            .takeIf { it >= minActive } ?: return null
+        val projName = ftc.getNodeInfo(activeProjNodeId)?.name ?: return null
+        return ActiveProject(activeProjNodeId, projName)
+    }
+
     // ── Active-group sync: nodeId-form metadata round-trips (Step 1) ─────────────
     //
     // These implement the reference tool's group-select mechanism:
@@ -97,24 +144,15 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
      * MUST only be called from within an [FileTransferClient.withFileOpLock] context.
      */
     private suspend fun getActiveGroupIndexNoLock(): Int? {
-        // Step 1: resolve the /projects node once (cached implicitly by resolveNodeIdInternal
-        // finding it by name from root). We need the node ID so we can METADATA GET it.
-        // Use the fast METADATA GET path — no directory list needed here.
-        val projectsNode = ftc.resolveNodeIdInternal("/projects") ?: return null
-
-        // Step 2: METADATA GET on projects node → get active-project nodeId (fast, 1 round-trip).
-        val activeProjNodeId = ftc.getMetadataJson(projectsNode).optInt("active", -1)
-            .takeIf { it >= 0 } ?: return null
+        // Steps 1-2: resolve /projects and the active-project nodeId+name in one shared walk
+        // (999.5 Plan 03, D-05: resolveActiveProjectNoLock). minActive=0 preserves this site's
+        // original `.takeIf { it >= 0 }` validation exactly.
+        val (activeProjNodeId, projName) = resolveActiveProjectNoLock() ?: return null
         Log.d("EP133APP", "MIDI META: active project nodeId=$activeProjNodeId")
+        Log.d("EP133APP", "MIDI META: active project name='$projName' (one-time resolution)")
 
         // Step 3: resolve groups dir — cache hit avoids directory walk after first call.
         val groupsNode = ftc.groupsNodeCache.getOrPut(activeProjNodeId) {
-            // One-time: need the project name to build the path, so do FILE_INFO on activeProjNodeId.
-            val projName = ftc.getNodeInfo(activeProjNodeId)?.name ?: run {
-                Log.w("EP133APP", "MIDI META: could not get project name for nodeId=$activeProjNodeId")
-                return null
-            }
-            Log.d("EP133APP", "MIDI META: active project name='$projName' (one-time resolution)")
             val gn = ftc.resolveNodeIdInternal("/projects/$projName/groups") ?: run {
                 Log.w("EP133APP", "MIDI META: /projects/$projName/groups not found — device may use different structure")
                 return null
@@ -166,10 +204,9 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
         val channel = PadChannel.entries.getOrNull(index) ?: return false
         return ftc.withFileOpLock {
             try {
-                val projectsNode = ftc.resolveNodeIdInternal("/projects") ?: return@withFileOpLock false
-                val activeProjNodeId = ftc.getMetadataJson(projectsNode).optInt("active", -1)
-                    .takeIf { it >= 0 } ?: return@withFileOpLock false
-                val projName = ftc.getNodeInfo(activeProjNodeId)?.name ?: return@withFileOpLock false
+                // Shared walk (999.5 Plan 03, D-05); minActive=0 preserves this site's original
+                // `.takeIf { it >= 0 }` validation exactly.
+                val (_, projName) = resolveActiveProjectNoLock() ?: return@withFileOpLock false
                 val groupNode = ftc.resolveNodeIdInternal("/projects/$projName/groups/${channel.name}") ?: return@withFileOpLock false
                 val groupsNode = ftc.resolveNodeIdInternal("/projects/$projName/groups") ?: return@withFileOpLock false
                 ftc.setMetadata(groupsNode, """{"active":$groupNode}""")
@@ -275,14 +312,12 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
      * [clearPad].
      */
     private suspend fun resolvePadNodeIdNoLock(group: PadChannel, gridIndex: Int): Int? {
-        val projectsNode = ftc.resolveNodeIdInternal("/projects") ?: run {
-            Log.w("EP133APP", "resolvePadNode: cannot resolve /projects"); return null
-        }
-        val activeProjNodeId = ftc.getMetadataJson(projectsNode).optInt("active", -1).takeIf { it >= 0 } ?: run {
-            Log.w("EP133APP", "resolvePadNode: no active project in /projects metadata"); return null
-        }
-        val projName = ftc.getNodeInfo(activeProjNodeId)?.name ?: run {
-            Log.w("EP133APP", "resolvePadNode: cannot get project name for nodeId=$activeProjNodeId"); return null
+        // Shared walk (999.5 Plan 03, D-05); minActive=0 preserves this site's original
+        // `.takeIf { it >= 0 }` validation exactly. Original per-step log lines are preserved
+        // as a single combined warning since the helper doesn't distinguish which sub-step
+        // failed (matches the folded call sites' logging fidelity).
+        val (_, projName) = resolveActiveProjectNoLock() ?: run {
+            Log.w("EP133APP", "resolvePadNode: cannot resolve /projects, active project, or its name"); return null
         }
         val groupDirPath = "/projects/$projName/groups/${group.name}"
         val groupDirNode = ftc.resolveNodeIdInternal(groupDirPath) ?: run {
@@ -367,10 +402,9 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
         return ftc.withFileOpLock {
             ftc.ensureFileSessionInitNoLock()
             try {
-                val projectsNode = ftc.resolveNodeIdInternal("/projects") ?: return@withFileOpLock emptyMap()
-                val activeProjNodeId = ftc.getMetadataJson(projectsNode).optInt("active", -1)
-                    .takeIf { it >= 0 } ?: return@withFileOpLock emptyMap()
-                val projName = ftc.getNodeInfo(activeProjNodeId)?.name ?: return@withFileOpLock emptyMap()
+                // Shared walk (999.5 Plan 03, D-05); minActive=0 preserves this site's original
+                // `.takeIf { it >= 0 }` validation exactly.
+                val (_, projName) = resolveActiveProjectNoLock() ?: return@withFileOpLock emptyMap()
                 val groupDir = ftc.resolveNodeIdInternal("/projects/$projName/groups/${group.name}")
                     ?: return@withFileOpLock emptyMap()
                 val body = ftc.listNodeBody(groupDir, requestId = ftc.nextRequestId()) ?: return@withFileOpLock emptyMap()
