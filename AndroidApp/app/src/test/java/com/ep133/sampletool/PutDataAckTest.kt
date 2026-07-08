@@ -1,15 +1,15 @@
 package com.ep133.sampletool
 
-import com.ep133.sampletool.domain.midi.MIDIRepository
+import com.ep133.sampletool.domain.midi.FileTransferClient
 import com.ep133.sampletool.domain.midi.SysExProtocol
-import com.ep133.sampletool.domain.model.DeviceState
 import com.ep133.sampletool.midi.MIDIPort
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.Assert.*
 
 /**
- * Tests for PUT DATA page-ack routing through [MIDIRepository.dispatchSysEx].
+ * Tests for PUT DATA page-ack routing through [FileTransferClient.routeFileFrame]
+ * (moved from `MIDIRepository.dispatchSysEx` in 999.5 Plan 01).
  *
  * Bug (fixed 2026-06-25): `if (body.isEmpty()) return` at ~line 313 dropped the
  * STATUS-ONLY empty-body page ack from the device before reqId-matching, leaving
@@ -118,19 +118,21 @@ private class AutoAckMIDIPort(
 }
 
 /**
- * Fake repo that stubs /sounds node resolution to skip FILE_LIST round-trips.
- * Lets [putSampleFile] proceed to the INIT/DATA/ack cycle without hardware.
+ * Fake FTC that stubs /sounds node resolution to skip FILE_LIST round-trips.
+ * Lets [FileTransferClient.putSampleFile] proceed to the INIT/DATA/ack cycle without hardware.
  *
- * Overrides [resolveSoundsNodeId] (called from within the fileOpMutex locked block in
- * [putSampleFile]) rather than [resolveNodeId] to avoid acquiring the mutex a second time.
+ * Overrides [FileTransferClient.resolveSoundsNodeId] (called from within FTC's own file-op
+ * mutex in [FileTransferClient.putSampleFile]) rather than `resolveNodeId`, to avoid acquiring
+ * the mutex a second time — and because [putSampleFile] now calls FTC's own internal
+ * `resolveSoundsNodeId`, not any override on a MIDIRepository subclass (D-01, 999.5 Plan 01).
  */
-private class PutAckTestRepo(
+private class PutAckTestFtc(
     port: AutoAckMIDIPort,
-) : MIDIRepository(port) {
-    init {
-        _deviceState.value = DeviceState(connected = true, outputPortId = "out")
-    }
-
+) : FileTransferClient(
+    port,
+    outputPortId = { "out" },
+    deviceId = { 0 },
+) {
     override suspend fun resolveSoundsNodeId(): Int? = 42
 }
 
@@ -146,13 +148,13 @@ class PutDataAckTest {
     @Test
     fun putSampleFile_emptyBodyStatusOkAck_completesPageAckTrue() = runTest {
         val port = AutoAckMIDIPort(statusForDataAcks = SysExProtocol.STATUS_OK)
-        val repo = PutAckTestRepo(port)
+        val ftc = PutAckTestFtc(port)
 
         // Ensure file session initialized using auto-ack port (FILE_INIT → empty-body status=0).
-        repo.ensureFileSessionInit()
+        ftc.ensureFileSessionInit()
 
         // Upload 1 byte so we get exactly one DATA page + one terminator.
-        val result = repo.putSampleFile("kick.wav", ByteArray(1) { 0x42 })
+        val result = ftc.putSampleFile("kick.wav", ByteArray(1) { 0x42 })
 
         // The empty-body DATA/terminator acks must complete the pages (the regression under
         // test), and the nodeId must come through from the INIT ack body — putSampleFile
@@ -173,11 +175,11 @@ class PutDataAckTest {
     @Test
     fun putSampleFile_emptyBodyErrorStatusAck_completesPageAckFalse() = runTest {
         val port = AutoAckMIDIPort(statusForDataAcks = 1 /* error status */)
-        val repo = PutAckTestRepo(port)
+        val ftc = PutAckTestFtc(port)
 
-        repo.ensureFileSessionInit()
+        ftc.ensureFileSessionInit()
 
-        val result = repo.putSampleFile("kick.wav", ByteArray(1) { 0x42 })
+        val result = ftc.putSampleFile("kick.wav", ByteArray(1) { 0x42 })
 
         assertNull("putSampleFile must return null when device sends non-OK status on page ack", result)
     }
