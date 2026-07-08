@@ -1,8 +1,7 @@
 package com.ep133.sampletool
 
-import com.ep133.sampletool.domain.midi.MIDIRepository
-import com.ep133.sampletool.domain.midi.SysExProtocol
-import com.ep133.sampletool.domain.model.DeviceState
+import com.ep133.sampletool.domain.midi.FileTransferClient
+import com.ep133.sampletool.domain.midi.PadAssignmentService
 import com.ep133.sampletool.midi.MIDIPort
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -10,15 +9,17 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /**
- * Unit tests for [MIDIRepository.buildPadAssignmentJson] — the hardware-verified pad
+ * Unit tests for [PadAssignmentService.buildPadAssignmentJson] — the hardware-verified pad
  * metadata JSON shape (verified against a real EP-133, 2026-06-29).
  *
- * These are pure string/JSON assertions, no device I/O needed.
+ * These are pure string/JSON assertions, no device I/O needed. `buildPadAssignmentJson` moved
+ * from `MIDIRepository` into `PadAssignmentService` (999.5 Plan 02, D-02) — this test was
+ * retargeted to construct `PadAssignmentService` directly (byte-identical assertions).
  */
 class PadAssignmentTest {
 
-    // Minimal test double — just enough to call buildPadAssignmentJson.
-    private val repo = object : MIDIRepository(object : MIDIPort {
+    // Minimal test double — just enough to construct FTC + PAS and call buildPadAssignmentJson.
+    private val port = object : MIDIPort {
         override var onMidiReceived: ((String, ByteArray) -> Unit)? = null
         override var onDevicesChanged: (() -> Unit)? = null
         override fun getUSBDevices() = MIDIPort.Devices(emptyList(), emptyList())
@@ -29,7 +30,9 @@ class PadAssignmentTest {
         override fun closeAllListeners() {}
         override fun prewarmSendPort(portId: String) {}
         override fun close() {}
-    }) {}
+    }
+    private val ftc = FileTransferClient(port, outputPortId = { null }, deviceId = { 0 })
+    private val repo = PadAssignmentService(ftc)
 
     // ── Test A: Required keys present with correct types ─────────────────────────
 
