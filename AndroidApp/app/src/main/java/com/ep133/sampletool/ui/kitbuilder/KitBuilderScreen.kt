@@ -23,12 +23,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -56,6 +53,7 @@ import com.ep133.sampletool.domain.pack.KitSample
 import com.ep133.sampletool.domain.pack.SamplePackLoader
 import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.kit.GroupSession
+import com.ep133.sampletool.ui.theme.Ep133ConfirmDialog
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
 import com.ep133.sampletool.ui.theme.Mono
 import com.ep133.sampletool.ui.theme.PadEmptyInk
@@ -419,39 +417,17 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
     if (confirmClear) {
         val padLabel = KB_PAD_LABELS[s.selectedPad]
         val padSampleName = s.assignments[s.selectedPad]?.name ?: s.devicePads[s.selectedPad]
-        AlertDialog(
-            onDismissRequest = { confirmClear = false },
+        Ep133ConfirmDialog(
+            title = "Clear pad $padLabel?",
+            message = if (padSampleName != null) {
+                "Removes \"$padSampleName\" from pad $padLabel of group ${s.group.name} on the EP-133."
+            } else {
+                "Unbinds whatever sample is on pad $padLabel of group ${s.group.name} on the EP-133."
+            },
+            confirmLabel = "Clear",
+            onConfirm = { viewModel.onClearPad(); confirmClear = false },
+            onDismiss = { confirmClear = false },
             modifier = Modifier.testTag(TestTags.KB_CLEAR_CONFIRM_DIALOG),
-            containerColor = t.panel,
-            titleContentColor = t.text,
-            textContentColor = t.text2,
-            shape = PanelRadius,
-            title = { Text("Clear pad $padLabel?", fontWeight = FontWeight.Bold) },
-            text = {
-                Text(
-                    if (padSampleName != null) {
-                        "Removes \"$padSampleName\" from pad $padLabel of group ${s.group.name} on the EP-133."
-                    } else {
-                        "Unbinds whatever sample is on pad $padLabel of group ${s.group.name} on the EP-133."
-                    },
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = { viewModel.onClearPad(); confirmClear = false },
-                    colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
-                ) {
-                    Text("Clear", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { confirmClear = false },
-                    colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
-                ) {
-                    Text("Cancel")
-                }
-            },
         )
     }
 

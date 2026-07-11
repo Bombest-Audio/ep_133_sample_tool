@@ -13,7 +13,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -283,4 +286,44 @@ fun Ep133StatReadout(label: String, value: String, modifier: Modifier = Modifier
         Text(label.uppercase(), color = t.text3, fontFamily = Mono, fontSize = 8.5.sp, letterSpacing = 1.2.sp)
         Text(value, color = t.text, fontFamily = Mono, fontSize = 15.sp, fontWeight = FontWeight.Bold)
     }
+}
+
+// ── Confirm dialog — themed AlertDialog with an accent confirm + plain cancel ─
+/**
+ * A faceplate-themed confirmation dialog: bold [title], body [message], an accent [confirmLabel]
+ * action, and a [dismissLabel] cancel. Used for destructive/irreversible actions (clear, restore).
+ */
+@Composable
+fun Ep133ConfirmDialog(
+    title: String,
+    message: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    dismissLabel: String = "Cancel",
+) {
+    val t = LocalEP133Tokens.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = modifier,
+        containerColor = t.panel,
+        titleContentColor = t.text,
+        textContentColor = t.text2,
+        shape = PanelRadius,
+        title = { Text(title, fontWeight = FontWeight.Bold) },
+        text = { Text(message) },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
+            ) { Text(confirmLabel, fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
+            ) { Text(dismissLabel) }
+        },
+    )
 }

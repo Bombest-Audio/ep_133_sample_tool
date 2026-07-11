@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -70,6 +69,7 @@ import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.domain.model.PermissionState
 import com.ep133.sampletool.domain.model.Scale
 import com.ep133.sampletool.ui.TestTags
+import com.ep133.sampletool.ui.theme.Ep133ConfirmDialog
 import com.ep133.sampletool.ui.theme.Ep133GhostButton
 import com.ep133.sampletool.ui.theme.Ep133GroupChip
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
@@ -1026,31 +1026,12 @@ private fun RestoreConfirmDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val t = LocalEP133Tokens.current
-    AlertDialog(
-        onDismissRequest = onDismiss,
+    Ep133ConfirmDialog(
+        title = "Restore EP-133?",
+        message = "This will overwrite all content on your EP-133. This cannot be undone.",
+        confirmLabel = "Restore",
+        onConfirm = onConfirm,
+        onDismiss = onDismiss,
         modifier = Modifier.testTag(TestTags.DEVICE_RESTORE_CONFIRM_DIALOG),
-        containerColor = t.panel,
-        titleContentColor = t.text,
-        textContentColor = t.text2,
-        shape = PanelRadius,
-        title = { Text("Restore EP-133?", fontWeight = FontWeight.Bold) },
-        text = { Text("This will overwrite all content on your EP-133. This cannot be undone.") },
-        confirmButton = {
-            TextButton(
-                onClick = onConfirm,
-                colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
-            ) {
-                Text("Restore", fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
-            ) {
-                Text("Cancel")
-            }
-        },
     )
 }
