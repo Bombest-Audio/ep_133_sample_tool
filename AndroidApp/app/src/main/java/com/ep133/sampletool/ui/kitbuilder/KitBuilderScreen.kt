@@ -45,6 +45,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ep133.sampletool.domain.PadUploadResult
+import com.ep133.sampletool.domain.PadUploadService
+import com.ep133.sampletool.domain.SliceUpload
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.model.PadChannel
@@ -169,6 +172,7 @@ class KitBuilderViewModel(
     var onRequestPackPick: (() -> Unit)? = null
 
     private val deviceMutex = Mutex()
+    private val uploads = PadUploadService(midi, deviceMutex)
     private var player: MediaPlayer? = null
 
     private fun updateGroup(g: PadChannel, block: (KbGroupState) -> KbGroupState) {
@@ -348,21 +352,18 @@ class KitBuilderViewModel(
                     val converted = withContext(Dispatchers.IO) { manager.convert(context, sample.uri) }
                     val frames = converted.pcm.size / 2 / converted.channels
                     val safeName = (manager.sanitizeName(sample.name + ".wav") ?: "sample.wav")
-                    val nodeId = deviceMutex.withLock {
-                        midi.putSampleFile(safeName, converted.pcm, converted.channels, converted.sampleRate)
-                    }
-                    if (nodeId == null) {
-                        false
-                    } else {
-                        deviceMutex.withLock {
-                            midi.assignSampleToPad(group, padIdx, nodeId, 0, frames, muteGroup = chokeOn)
-                        }
+                    val upload = SliceUpload(safeName, converted.pcm, converted.channels, converted.sampleRate, frames)
+                    when (val r = uploads.uploadAndAssign(group, padIdx, upload, chokeOn)) {
+                        PadUploadResult.Done -> true
+                        is PadUploadResult.UploadFailed -> { reportLoadFailure(sample, r.error); false }
+                        is PadUploadResult.AssignFailed -> { reportLoadFailure(sample, r.error); false }
+                        // UploadRejected / AssignRejected: device said no without an error — no snackbar.
+                        else -> false
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.e(TAG, "KitBuilder: load failed for ${sample.name}", e)
-                    _snackbarMessage.value = "${sample.name}: ${e.message ?: "failed"}"
+                    reportLoadFailure(sample, e)
                     false
                 }
                 if (success) ok++ else failed++
@@ -379,6 +380,12 @@ class KitBuilderViewModel(
             // The just-written pads are now on the device — re-read so the canvas reflects them.
             refreshDevicePads(group)
         }
+    }
+
+    /** Log a per-sample load failure and surface it as a snackbar (device errors + convert errors). */
+    private fun reportLoadFailure(sample: KitSample, error: Throwable) {
+        Log.e(TAG, "KitBuilder: load failed for ${sample.name}", error)
+        _snackbarMessage.value = "${sample.name}: ${error.message ?: "failed"}"
     }
 
     override fun onCleared() {
