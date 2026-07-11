@@ -41,7 +41,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,6 +57,7 @@ import com.ep133.sampletool.domain.pack.SamplePackLoader
 import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.kit.GroupSession
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.Mono
 import com.ep133.sampletool.ui.theme.PadEmptyInk
 import com.ep133.sampletool.ui.theme.PadFilledInk
 import com.ep133.sampletool.ui.theme.PanelRadius
@@ -391,8 +391,6 @@ class KitBuilderViewModel(
 
 // ── Screen ──────────────────────────────────────────────────────────────────────
 
-private val Mono = FontFamily.Monospace
-private val KbError = androidx.compose.ui.graphics.Color(0xFFD0021B)
 
 /**
  * Kit Builder (implements the "Kit Builder" design): pick a pack folder, browse categories,
@@ -669,7 +667,7 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
             Row(
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(13.dp)
                     .clip(PanelRadius)
-                    .background(if (banner.contains("FAILED")) KbError else t.accent, PanelRadius)
+                    .background(if (banner.contains("FAILED")) t.error else t.accent, PanelRadius)
                     .padding(12.dp)
                     .testTag(TestTags.KB_LOAD_BANNER),
                 verticalAlignment = Alignment.CenterVertically,
@@ -704,7 +702,7 @@ private fun KbPadCell(
     // pack sample about to be uploaded.
     val onDevice = !staged && deviceName != null
     val bg = when {
-        loadState == KbLoadState.Error -> KbError
+        loadState == KbLoadState.Error -> t.error
         staged -> t.accent
         else -> t.padFace
     }

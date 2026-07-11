@@ -31,7 +31,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,11 +48,11 @@ import com.ep133.sampletool.ui.projects.ProjectsScreen
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
 import com.ep133.sampletool.ui.theme.EP133Theme
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.Mono
 import com.ep133.sampletool.ui.kit.KitScreen
 import com.ep133.sampletool.ui.kit.KitViewModel
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 
-private val MonoFont = FontFamily.Monospace
 private val BadgeShape = RoundedCornerShape(3.dp)
 
 private enum class NavRoute(val route: String, val label: String, val tag: String) {
@@ -125,7 +124,7 @@ fun EP133App(
                         ) { sku = if (sku == Ep133Sku.EP133) Ep133Sku.EP1320 else Ep133Sku.EP133 }
                         .padding(horizontal = 7.dp, vertical = 4.dp),
                     color = t.onAccent,
-                    fontFamily = MonoFont,
+                    fontFamily = Mono,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                 )
@@ -133,7 +132,7 @@ fun EP133App(
                     currentRoute.label,
                     Modifier.testTag(TestTags.HEADER_TITLE).padding(start = 9.dp).weight(1f),
                     color = t.text2,
-                    fontFamily = MonoFont,
+                    fontFamily = Mono,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 1.1.sp,
@@ -167,7 +166,7 @@ fun EP133App(
                     Text(
                         if (isConnected) "CONNECTED" else "NO DEVICE",
                         color = dot,
-                        fontFamily = MonoFont,
+                        fontFamily = Mono,
                         fontSize = 10.sp,
                         letterSpacing = 0.7.sp,
                     )
@@ -220,7 +219,7 @@ fun EP133App(
                         Text(
                             item.label,
                             color = if (selected) t.accent else t.text3,
-                            fontFamily = MonoFont,
+                            fontFamily = Mono,
                             fontSize = 8.5.sp,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                             letterSpacing = 0.3.sp,

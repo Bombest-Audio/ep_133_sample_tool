@@ -10,7 +10,7 @@ import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Stateful file-transfer core extracted from [MIDIRepository] (999.5 Plan 01).
+ * Stateful file-transfer core, split out from [MIDIRepository].
  *
  * Owns everything the device's node-ID FILE protocol needs: the file-op mutex, the
  * reqId→waiter correlation registry, the FILE_INIT session handshake, node-ID resolution,
@@ -23,13 +23,13 @@ import java.util.concurrent.atomic.AtomicInteger
  * update them independently (e.g. on device greet) without FTC holding a stale copy.
  *
  * The incoming-SysEx file-frame path (TE_SYSEX_FILE / cmd=5) is routed here via
- * [routeFileFrame] — the SAME seam test doubles subclass/inject into (D-01 == D-04, see the
- * 999.5 CONTEXT). Device-state frames (GREET) stay classified in [MIDIRepository.dispatchSysEx];
- * on GREET the root calls [onDeviceGreet] so FTC can reset its own per-connection state.
+ * [routeFileFrame] — the same seam test doubles subclass/inject into. Device-state frames
+ * (GREET) stay classified in [MIDIRepository.dispatchSysEx]; on GREET the root calls
+ * [onDeviceGreet] so FTC can reset its own per-connection state.
  *
  * Self-wires [port]'s `onMidiReceived` to its own byte-stream parser so FTC is independently
- * testable/usable against a raw [MIDIPort] (constructing FTC standalone, as retargeted seam
- * tests do per D-01). In production, [MIDIRepository]'s `init` block runs AFTER this
+ * testable/usable against a raw [MIDIPort] (constructing FTC standalone, as the retargeted seam
+ * tests do). In production, [MIDIRepository]'s `init` block runs AFTER this
  * constructor and overwrites `onMidiReceived` with its own parser (owning the device-state
  * fan-out via `dispatchSysEx` → `routeFileFrame`) — so this self-wiring is a no-op there.
  */
@@ -117,8 +117,8 @@ open class FileTransferClient(
     private var deviceChunkSize: Int = 512
 
     // ── SysEx response deferreds ──
-    // reqId→waiter correlation registry (backlog 999.4). Every file op registers a waiter
-    // under its unique reqId and [routeFileFrame] routes responses by reqId via [fileWaiters].
+    // reqId→waiter correlation registry. Every file op registers a waiter under its unique
+    // reqId and [routeFileFrame] routes responses by reqId via [fileWaiters].
     private val fileWaiters = FileWaiterRegistry()
 
     /**
@@ -154,10 +154,9 @@ open class FileTransferClient(
     }
 
     /**
-     * Route an incoming TE_SYSEX_FILE (cmd=5) frame. This is the SAME seam the retargeted
-     * tests inject into (D-01 == D-04) — the full TE_SYSEX_FILE branch body formerly in
-     * [MIDIRepository.dispatchSysEx]: extract status + reqId, unpack the 7-bit body, and
-     * route the [FileResponse] to its waiter via [fileWaiters].
+     * Route an incoming TE_SYSEX_FILE (cmd=5) frame. This is the same seam the retargeted
+     * tests inject into: extract status + reqId, unpack the 7-bit body, and route the
+     * [FileResponse] to its waiter via [fileWaiters].
      *
      * @param message the complete raw SysEx message (starting 0xF0, ending 0xF7) exactly as
      *   received by the byte-stream parser — identical to what [MIDIRepository.dispatchSysEx]
@@ -182,8 +181,8 @@ open class FileTransferClient(
         // Guard only when there is no status byte at all (payload itself is empty).
         if (payload.isEmpty()) return
 
-        // reqId-first routing (backlog 999.4): every file op registers a waiter under its
-        // unique reqId, and route() delivers each response to the waiter that owns it. An
+        // reqId-first routing: every file op registers a waiter under its unique reqId, and
+        // route() delivers each response to the waiter that owns it. An
         // unmatched reqId is a stale or duplicate response (the device sends each response
         // twice) and is dropped.
         val responseReqId = ((message[6].toInt() and 0x0F) shl 7) or (message[7].toInt() and 0x7F)
@@ -193,7 +192,7 @@ open class FileTransferClient(
         }
     }
 
-    // ── Paged project archive transfer (Phase 4 GATE) ──
+    // ── Paged project archive transfer ──
 
     /**
      * Download a full project archive via the device's two-phase INIT/DATA protocol.
@@ -298,7 +297,7 @@ open class FileTransferClient(
         }
     }
 
-    // ── Sample file upload to /sounds (Phase 5 Wave 2, SAMPLE-03) ──
+    // ── Sample file upload to /sounds ──
 
     /**
      * Upload raw s16 LE PCM bytes to /sounds by creating a new file via the device's node-ID
@@ -714,7 +713,7 @@ open class FileTransferClient(
      * rethrows CancellationException. The caller parses [FileResponse.body] for its own op.
      *
      * Routes by reqId, so it is immune to the interleaving/duplicate-response race that the old
-     * mutable-flag model hit (backlog 999.4). Does NOT acquire [fileOpMutex] — callers that need
+     * mutable-flag model hit. Does NOT acquire [fileOpMutex] — callers that need
      * device-access serialization hold it already.
      */
     private suspend fun awaitFileOp(
@@ -791,7 +790,7 @@ open class FileTransferClient(
         private const val GET_INIT_TIMEOUT_MS = 5_000L
         private const val GET_PAGE_TIMEOUT_MS = 5_000L
         private const val PUT_ACK_TIMEOUT_MS = 15_000L
-        // Node-ID FILE_LIST + /projects metadata query bound (enumeration, Wave 2).
+        // Node-ID FILE_LIST + /projects metadata query bound (enumeration).
         // Reverted from 10 s (the bump didn't help — root cause was reqId aliasing, not latency).
         private const val FILE_LIST_TIMEOUT_MS = 5_000L
         // Metadata GET/SET + FILE_INFO round-trip timeout (Step 1 — active-group sync).

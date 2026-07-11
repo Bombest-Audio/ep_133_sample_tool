@@ -240,8 +240,8 @@ object AudioDecoder {
  * - [AudioFormat.ENCODING_PCM_32BIT]: 4-byte LE — downshift to 16-bit (drop low 2 bytes).
  *
  * Pure, JVM-testable function: no Android runtime dependencies beyond the [AudioFormat]
- * constants (which are plain Int values). Accessible as [AudioDecoder.pcmBytesToShorts]
- * from Kotlin via the object's static scope, or directly from test code.
+ * constants (which are plain Int values). Top-level function in this package — call it
+ * directly as `pcmBytesToShorts(...)` (import it by name), including from test code.
  *
  * @param bytes    Raw PCM bytes from MediaCodec output.
  * @param encoding One of the [AudioFormat].ENCODING_PCM_* constants.

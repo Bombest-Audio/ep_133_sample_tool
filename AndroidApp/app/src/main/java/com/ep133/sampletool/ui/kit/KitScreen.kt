@@ -36,16 +36,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -64,6 +59,8 @@ import com.ep133.sampletool.ui.theme.Ep133GroupChokeBar
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.Mono
+import com.ep133.sampletool.ui.theme.dashedBorder
 import com.ep133.sampletool.ui.theme.PadEmptyInk
 import com.ep133.sampletool.ui.theme.PadFilledInk
 import com.ep133.sampletool.ui.theme.PanelRadius
@@ -663,7 +660,6 @@ class KitViewModel(
 // Screen composable
 // ─────────────────────────────────────────────────────────────────────────────
 
-private val Mono = FontFamily.Monospace
 
 /** One pad in the slice selector: its printed label and its 1-based fill-order rank. */
 private data class SlicePad(val label: String, val order: Int)
@@ -839,7 +835,6 @@ private fun KitItemState.toProgress(): PadProgressState = when (this) {
 
 // Progress-mode colors from the "Chop Progress" design (device-accurate, theme-independent).
 private val ProgTealCore = Color(0xFF141B1B)
-private val ProgError = Color(0xFFD0021B)
 private val ProgErrorInk = Color(0xFFFFE8E5)
 private val ProgInactiveInk = Color(0xFF4A4B4C)
 
@@ -861,7 +856,7 @@ private fun ChopProgress(items: List<KitResultItem>, modifier: Modifier = Modifi
     val statusColor: Color
     when {
         inFlight   -> { statusText = "UPLOADING · ${pad2(done + working)} / $total"; statusColor = t.live }
-        errors > 0 -> { statusText = "${pad2(errors)} FAILED · $done OK"; statusColor = ProgError }
+        errors > 0 -> { statusText = "${pad2(errors)} FAILED · $done OK"; statusColor = t.error }
         else       -> { statusText = "DONE · ${pad2(done)} / $total"; statusColor = t.accent }
     }
 
@@ -983,7 +978,7 @@ private fun SliceProgressPadCell(
         } else {
             val bg = when (state) {
                 PadProgressState.Done  -> t.accent
-                PadProgressState.Error -> ProgError
+                PadProgressState.Error -> t.error
                 else                   -> t.padFace   // inactive / queued
             }
             Box(
@@ -1276,17 +1271,3 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
     }
 }
 
-// ── Decoration modifier ───────────────────────────────────────────────────────
-
-private fun Modifier.dashedBorder(color: Color): Modifier = this.drawBehind {
-    val stroke = Stroke(
-        width = 1.dp.toPx(),
-        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()), 0f),
-    )
-    val radius = 3.dp.toPx()
-    drawRoundRect(
-        color = color,
-        cornerRadius = CornerRadius(radius, radius),
-        style = stroke,
-    )
-}

@@ -77,10 +77,6 @@ object EP133WebViewSetup {
         webView.setBackgroundColor(android.graphics.Color.BLACK)
     }
 
-    fun loadApp(webView: WebView) {
-        webView.loadUrl("https://$ASSET_HOST/assets/mobile.html")
-    }
-
     /**
      * Reads mobile.html from assets, injects the MIDI polyfill into <head>,
      * and returns the modified HTML as a WebResourceResponse.

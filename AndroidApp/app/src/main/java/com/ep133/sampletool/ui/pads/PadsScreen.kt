@@ -32,7 +32,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,6 +56,7 @@ import com.ep133.sampletool.ui.theme.Ep133GroupChip
 import com.ep133.sampletool.ui.theme.Ep133Pad
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.Mono
 import com.ep133.sampletool.ui.theme.PadState
 import androidx.compose.material3.Text as M3Text
 
@@ -77,7 +77,7 @@ class PadsViewModel(private val midi: MIDIRepository) : ViewModel() {
             midi.incomingMidi.collect { event ->
                 when {
                     event.status == 0x90 && event.velocity > 0 -> {
-                        val resolved = EP133Pads.resolveIncoming(event.note, event.channel) ?: return@collect
+                        val resolved = EP133Pads.resolveIncoming(event.note) ?: return@collect
                         val (group, index) = resolved
 
                         if (group != _selectedChannel.value) {
@@ -335,7 +335,7 @@ private fun LegendItem(dotColor: Color, label: String) {
         M3Text(
             label,
             color = t.text3,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = Mono,
             fontSize = 9.sp,
             letterSpacing = 0.6.sp,
         )

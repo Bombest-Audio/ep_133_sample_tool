@@ -40,7 +40,7 @@ data class BackupItem(val file: File, val name: String, val timestamp: Long)
 
 /**
  * Single-project archive backup / restore + local backup-library enumeration over the
- * Wave 1 paged transfer protocol.
+ * paged transfer protocol.
  *
  * A project backup is an **opaque device blob**: download the `.tar` via the paged GET,
  * write it to app storage, done — no ZIP re-archiving and never inspect inside the tar
@@ -74,7 +74,7 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
      *
      * Downloads the archive via the paged GET (no `ZipOutputStream`), then writes it under
      * `getExternalFilesDir("backups")` (falling back to internal `filesDir/backups` if external
-     * storage is unavailable — Pitfall 6). Emits Progress → Done(file), or Error on failure.
+     * storage is unavailable). Emits Progress → Done(file), or Error on failure.
      */
     fun backupProject(
         slot: MIDIRepository.ProjectSlot,
@@ -129,9 +129,9 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
      * the regex also rejects path separators, so a traversal name ("../") can never match.
      * Reads the bytes under [Dispatchers.IO], then uploads via the paged PUT.
      *
-     * HARDWARE-GATE (Open Q2): restore is wired and validated, but the user-facing button is
-     * gated on a hardware backup→restore round-trip pass; default = ship behind the Wave 3
-     * restore-confirm AlertDialog. The destructive PUT requires that confirmation before invocation.
+     * Restore is wired and validated, but the user-facing button stays gated on a hardware
+     * backup→restore round-trip pass and behind the restore-confirm AlertDialog. The destructive
+     * PUT requires that confirmation before invocation.
      */
     fun restoreProject(file: File, context: Context): Flow<ProjectBackupProgress> = flow {
         if (!PROJECT_TAR_REGEX.matches(file.name)) {
@@ -194,7 +194,7 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
 
     /**
      * App-specific external backups dir, with a fallback to internal storage when external
-     * storage is unavailable (Pitfall 6). The directory is created if missing.
+     * storage is unavailable. The directory is created if missing.
      */
     private fun backupsDir(context: Context): File =
         (context.getExternalFilesDir(BACKUPS_DIR)

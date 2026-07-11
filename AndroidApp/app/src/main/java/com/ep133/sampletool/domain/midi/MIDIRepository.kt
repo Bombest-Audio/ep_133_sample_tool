@@ -30,12 +30,12 @@ import org.json.JSONObject
  * Wraps a [MIDIPort] implementation with typed helpers for Note On/Off, CC,
  * and Program Change. Exposes device state as a [StateFlow] for Compose observation.
  *
- * Phase 2 additions:
- * - SysEx accumulation buffer for fragmented SysEx messages (D-09, D-10)
+ * Also provides:
+ * - a SysEx accumulation buffer for fragmented SysEx messages
  * - [sendRawBytes] for MIDI system real-time messages (Start, Stop, Clock)
- * - [channelFlow] as [StateFlow] for cross-screen channel sharing (D-16)
- * - [queryDeviceStats] for firmware version, storage, and sample count (D-12)
- * - [selectedScale] and [selectedRootNote] as shared state flows (D-17)
+ * - [channelFlow] as [StateFlow] for cross-screen channel sharing
+ * - [queryDeviceStats] for firmware version, storage, and sample count
+ * - [selectedScale] and [selectedRootNote] as shared state flows
  */
 open class MIDIRepository internal constructor(
     private var midiManager: MIDIPort,
@@ -50,10 +50,10 @@ open class MIDIRepository internal constructor(
     constructor(midiManager: MIDIPort) : this(midiManager, injectedCollaborators = null)
 
     /**
-     * Internal constructor for test injection (999.5 Plan 02, D-03): accepts pre-built [ftc] /
-     * [pas] collaborators so tests can construct a repo around fakes without going through the
-     * production wiring path. The public one-arg constructor above remains the only production
-     * construction site (see MainActivity.kt).
+     * Internal constructor for test injection: accepts pre-built [ftc] / [pas] collaborators so
+     * tests can construct a repo around fakes without going through the production wiring path.
+     * The public one-arg constructor above remains the only production construction site
+     * (see MainActivity.kt).
      */
     internal constructor(
         midiManager: MIDIPort,
@@ -62,10 +62,10 @@ open class MIDIRepository internal constructor(
     ) : this(midiManager, injectedCollaborators = ftc to pas)
 
     /**
-     * Stateful file-transfer core (999.5 Plan 01). Owns the file-op mutex, the reqId
-     * correlation registry, node-ID resolution, metadata primitives, and paged GET/PUT
-     * transfers. This root stays the single owner of [_deviceState] / [currentDeviceId]; FTC
-     * reads them live via the trailing lambda constructor params.
+     * Stateful file-transfer core. Owns the file-op mutex, the reqId correlation registry,
+     * node-ID resolution, metadata primitives, and paged GET/PUT transfers. This root stays
+     * the single owner of [_deviceState] / [currentDeviceId]; FTC reads them live via the
+     * trailing lambda constructor params.
      */
     private var ftc: FileTransferClient = injectedCollaborators?.first ?: FileTransferClient(
         midiManager,
@@ -74,8 +74,8 @@ open class MIDIRepository internal constructor(
     )
 
     /**
-     * Pad-assignment layer (999.5 Plan 02, D-02). Layered on [ftc] by constructor dependency;
-     * owns getActiveGroupIndex/setActiveGroup/assignSampleToPad/clearPad/clearProject/
+     * Pad-assignment layer. Layered on [ftc] by constructor dependency; owns
+     * getActiveGroupIndex/setActiveGroup/assignSampleToPad/clearPad/clearProject/
      * readGroupPadState.
      */
     private var pas: PadAssignmentService = injectedCollaborators?.second ?: PadAssignmentService(ftc)
@@ -83,13 +83,13 @@ open class MIDIRepository internal constructor(
     protected val _deviceState = MutableStateFlow(DeviceState())
     open val deviceState: StateFlow<DeviceState> = _deviceState.asStateFlow()
 
-    /** Incoming MIDI events: Triple(statusByte, note, velocity). */
+    /** Incoming MIDI event: status byte, note, velocity, and channel. */
     data class MidiEvent(val status: Int, val note: Int, val velocity: Int, val channel: Int)
 
     private val _incomingMidi = MutableSharedFlow<MidiEvent>(extraBufferCapacity = 64)
     val incomingMidi: SharedFlow<MidiEvent> = _incomingMidi.asSharedFlow()
 
-    // ── Channel state (D-16) ──
+    // ── Channel state ──
     private val _channel = MutableStateFlow(0)
     /** Currently selected MIDI channel (0-15) as StateFlow for cross-screen sharing. */
     val channelFlow: StateFlow<Int> = _channel.asStateFlow()
@@ -97,7 +97,7 @@ open class MIDIRepository internal constructor(
     /** Currently selected MIDI channel (0-15). Backed by [channelFlow]. */
     val channel: Int get() = _channel.value
 
-    // ── Scale state (D-17) ──
+    // ── Scale state ──
     private val _selectedScale = MutableStateFlow<Scale?>(null)
     /** Currently selected scale for scale-lock highlighting. Null = no scale (all pads normal). */
     val selectedScale: StateFlow<Scale?> = _selectedScale.asStateFlow()
@@ -116,34 +116,21 @@ open class MIDIRepository internal constructor(
         onChannelMessage = { _incomingMidi.tryEmit(it) },
     )
 
-    // ── SysEx response deferreds (D-12) ──
-    // FTC owns the reqId→waiter correlation registry for file-transfer responses (moved 999.5
-    // Plan 01). The root keeps only the device-state deferred below.
+    // ── SysEx response deferreds ──
+    // FTC owns the reqId→waiter correlation registry for file-transfer responses; the root keeps
+    // only the device-state deferreds below.
     private var pendingGreetDeferred: CompletableDeferred<Map<String, String>>? = null
     private var pendingFileListCountDeferred: CompletableDeferred<Int>? = null
     private var fileListEntryCount: Int = 0
     private var currentDeviceId: Int = 0
     @Volatile private var statsQueryInFlight = false
 
-    // ── FILE_INIT session state / fileWaiters / groupsNodeCache / groupNodeNameCache ──
-    // Moved into FileTransferClient (999.5 Plan 01). The root reads them via `ftc.*` where
-    // still needed (e.g. resetting on greet/port-swap through ftc.onDeviceGreet()/onPortSwapped()).
-
-    // ── Paged project transfer state (Phase 4 GATE) ──
-    // fileOpMutex serializes whole file ops (the device tolerates one transfer at a time), and
-    // each op registers a reqId-keyed waiter in fileWaiters — so there is no shared in-flight
-    // state to track. (transferInFlight / pendingPut* / awaited*ReqId removed with backlog 999.4.)
-
-    // ── Project enumeration state (Phase 4 Wave 2) ──
-    // FILE_LIST by node ID returns concatenated directory entries; the dispatcher hands the
-    // accumulated body to a CompletableDeferred keyed by nodeListInFlight.
-    // (pendingNodeListDeferred / nodeListBuffer removed — node FILE_LIST correlates by reqId)
-
-    // ── Metadata JSON round-trip state (Step 1 — active-group sync) ──
-    // (metadata GET/SET in-flight flags + deferreds removed — both now correlate by reqId via
-    //  fileWaiters; see getMetadataJson / setMetadata.)
-
-    // (pendingNodeInfoDeferred removed — FILE_INFO now correlates by reqId via fileWaiters)
+    // FTC's fileOpMutex serializes whole file ops (the device tolerates one transfer at a time),
+    // and each op registers a reqId-keyed waiter — so there is no shared in-flight transfer state
+    // to track here. Node FILE_LIST, FILE_INFO, and metadata GET/SET all correlate by reqId via
+    // those waiters (see getMetadataJson / setMetadata). Session state, fileWaiters, and the group
+    // node caches live in FileTransferClient; the root reaches them via `ftc.*` (e.g. resetting on
+    // greet/port-swap through ftc.onDeviceGreet() / ftc.onPortSwapped()).
 
     // ── File protocol flows (for BackupManager) ──
     data class FileListEntry(val path: String, val nodeId: Int)
@@ -207,7 +194,7 @@ open class MIDIRepository internal constructor(
         // Pre-warm send port so sequencer noteOn is immediate
         devices.outputs.firstOrNull()?.id?.let { midiManager.prewarmSendPort(it) }
 
-        // Auto-trigger stats query on device connect (D-13)
+        // Auto-trigger stats query on device connect
         if (connected && !wasConnected) {
             repositoryScope.launch { queryDeviceStats() }
         }
@@ -239,7 +226,7 @@ open class MIDIRepository internal constructor(
                     Log.d("EP133MIDI", "GREET: adopted deviceId=0x${reportedDeviceId.toString(16)}")
                 }
                 // Reset file session, structure caches, and fail in-flight file waiters —
-                // owned by FTC (999.5 Plan 01).
+                // all owned by FTC.
                 ftc.onDeviceGreet()
 
                 val parsed = SysExProtocol.parseGreetResponse(payload)
@@ -248,16 +235,13 @@ open class MIDIRepository internal constructor(
                 pendingGreetDeferred = null
             }
             SysExProtocol.TE_SYSEX_FILE -> {
-                // File-correlation frames route through FTC (999.5 Plan 01, D-04). This is the
-                // same seam FTC's own tests inject into (D-01) — build once, dispatch from here.
+                // File-correlation frames route through FTC — the same seam FTC's own tests inject
+                // into. Every file response correlates by reqId through fileWaiters, and each
+                // awaiting op parses its own response body (the dispatcher just routes).
                 ftc.routeFileFrame(message)
             }
         }
     }
-
-    // dispatchFileResponse / dispatchPagedPutResponse removed — every file response now routes by
-    // reqId through fileWaiters (see the TE_SYSEX_FILE branch in dispatchSysEx). The per-op body
-    // parsing lives in each awaiting op, not the dispatcher.
 
     /** Refresh device state from MIDIManager. */
     fun refreshDeviceState() {
@@ -376,7 +360,7 @@ open class MIDIRepository internal constructor(
         return true
     }
 
-    // ── Paged project archive transfer (Phase 4 GATE) ── moved to FileTransferClient (999.5-01) ──
+    // ── Paged project archive transfer (delegates to FileTransferClient) ──────────
 
     /**
      * Download a full project archive via the device's two-phase INIT/DATA protocol.
@@ -402,7 +386,7 @@ open class MIDIRepository internal constructor(
     suspend fun putProjectArchive(slotNodeId: Int, tarBytes: ByteArray): Boolean =
         ftc.putProjectArchive(slotNodeId, tarBytes)
 
-    // ── Sample file upload to /sounds (Phase 5 Wave 2, SAMPLE-03) ── moved to FTC (999.5-01) ──
+    // ── Sample file upload to /sounds (delegates to FileTransferClient) ───────────
 
     /**
      * Upload raw s16 LE PCM bytes to /sounds by creating a new file via the device's node-ID
@@ -425,7 +409,7 @@ open class MIDIRepository internal constructor(
      */
     internal fun computeSampleChunkSize(chunkSize: Int): Int = ftc.computeSampleChunkSize(chunkSize)
 
-    // ── FILE_INIT session handshake (Task 3 — once per connection) ── moved to FTC ─────────────
+    // ── FILE_INIT session handshake — once per connection (delegates to FileTransferClient) ──
 
     /**
      * Ensure the FILE_INIT handshake has been completed for this connection. Thin delegation to
@@ -436,7 +420,7 @@ open class MIDIRepository internal constructor(
      */
     suspend fun ensureFileSessionInit(): Boolean = ftc.ensureFileSessionInit()
 
-    // ── Project slot enumeration (Phase 4 Wave 2, PROJ-01) ──
+    // ── Project slot enumeration ──
 
     /** A single EP-133 project slot (one of /projects/P00 .. /projects/P08). */
     data class ProjectSlot(
@@ -455,17 +439,13 @@ open class MIDIRepository internal constructor(
 
     /**
      * Resolve a path like "/projects" to a numeric node ID. Thin delegation to
-     * [FileTransferClient.resolveNodeId] — kept `open` so test subclasses that override this on
-     * the ROOT for production-facing polymorphism (production code always calls through this
-     * public method) still work; the moved seam test doubles now subclass FTC directly (D-01).
-     *
-     * HARDWARE-VERIFY (Open Q1): confirm /projects lists by nodeId (this walk) vs the
-     * Phase 2 path string.
+     * [FileTransferClient.resolveNodeId] — kept `open` so test subclasses can override it on the
+     * root (production code always calls through this public method).
      */
     open suspend fun resolveNodeId(path: String): Int? = ftc.resolveNodeId(path)
 
     /**
-     * Enumerate the 9 EP-133 project slots (PROJ-01). Thin delegation to
+     * Enumerate the 9 EP-133 project slots. Thin delegation to
      * [FileTransferClient.listProjects].
      */
     open suspend fun listProjects(): List<ProjectSlot> = ftc.listProjects()
@@ -482,10 +462,10 @@ open class MIDIRepository internal constructor(
      */
     open suspend fun getFileBytes(nodeId: Int): ByteArray? = ftc.getFileBytes(nodeId)
 
-    // queryProjectsActiveNodeNoLock removed: it used the legacy path-string METADATA frame and
-    // a pendingMetadataDeferred that nothing completed after the reqId-first dispatcher refactor
-    // (backlog 999.4) — every listProjects() stalled its full 5 s timeout and the active pointer
-    // was always null. Caught by SimulatedDeviceTest against the wire-level device simulator.
+    // NOTE: don't resolve the active project via a legacy path-string METADATA frame — that form
+    // has no reqId to correlate against the reqId-first dispatcher, so its waiter never completes,
+    // every listProjects() stalls its full 5 s timeout, and the active pointer reads null. Active
+    // resolution goes through the nodeId-form path in PadAssignmentService instead.
 
     /**
      * Fetch metadata for [nodeId] using the nodeId-form GET (METADATA_GET = 2). Thin delegation
@@ -506,10 +486,9 @@ open class MIDIRepository internal constructor(
     /** Thin delegation to [FileTransferClient.getNodeInfo]. */
     suspend fun getNodeInfo(nodeId: Int): SysExProtocol.NodeInfo? = ftc.getNodeInfo(nodeId)
 
-    // ── Pad-assignment layer (999.5 Plan 02) ──────────────────────────────────────
+    // ── Pad-assignment layer (thin delegations to PadAssignmentService) ───────────
     // getActiveGroupIndex/setActiveGroup/assignSampleToPad/clearPad/clearProject/
-    // readGroupPadState and their NoLock helpers moved into PadAssignmentService (D-02),
-    // layered on FTC. These are now thin delegations to `pas`.
+    // readGroupPadState (and their NoLock helpers) live in `pas`, layered on FTC.
 
     /** Thin delegation to [PadAssignmentService.getActiveGroupIndex]. */
     open suspend fun getActiveGroupIndex(): Int? = pas.getActiveGroupIndex()
@@ -540,11 +519,10 @@ open class MIDIRepository internal constructor(
     /**
      * Resolve the /sounds directory node ID. Thin delegation to
      * [FileTransferClient.resolveSoundsNodeId] — retained on the root (protected open) for
-     * source-compatibility with any external subclass, but note that [putSampleFile] now calls
-     * FTC's own internal `resolveSoundsNodeId`, not this root method (D-01): a subclass
-     * overriding THIS method no longer affects `putSampleFile`'s behavior — override FTC's
-     * `resolveSoundsNodeId` instead (test doubles construct/subclass [FileTransferClient]
-     * directly per the 999.5 CONTEXT).
+     * source-compatibility with any external subclass, but note that [putSampleFile] calls FTC's
+     * own internal `resolveSoundsNodeId`, not this root method: a subclass overriding THIS method
+     * no longer affects `putSampleFile`'s behavior — override FTC's `resolveSoundsNodeId` instead
+     * (test doubles construct/subclass [FileTransferClient] directly).
      */
     protected open suspend fun resolveSoundsNodeId(): Int? = ftc.resolveSoundsNodeId()
 
@@ -654,12 +632,11 @@ open class MIDIRepository internal constructor(
     }
 
     companion object {
-        // The timeout constants (GET_INIT/GET_PAGE/PUT_ACK/FILE_LIST/METADATA/FILE_INIT/
-        // FORCE_CLOSE) moved into FileTransferClient (999.5 Plan 01) along with the file-op
-        // primitives that used them. The reqId-space constants below are kept here (not just
-        // on FTC) because production tests reference them as `MIDIRepository.PUT_INIT_REQUEST_ID`
-        // / `FILE_REQ_ID_MIN` / `FILE_REQ_ID_MAX` — both classes' counters share the same
-        // numeric space by construction (FTC's private counter uses identical bounds).
+        // The file-op timeout constants live in FileTransferClient with the primitives that use
+        // them. The reqId-space constants below are kept here (not just on FTC) because tests
+        // reference them as `MIDIRepository.PUT_INIT_REQUEST_ID` / `FILE_REQ_ID_MIN` /
+        // `FILE_REQ_ID_MAX` — both classes' counters share the same numeric space by construction
+        // (FTC's private counter uses identical bounds).
 
         // putSampleFile uses a transfer-local counter starting here; each frame increments it.
         // This is the INIT reqId; DATA pages and terminator get 31, 32, ... (masked to 14-bit).

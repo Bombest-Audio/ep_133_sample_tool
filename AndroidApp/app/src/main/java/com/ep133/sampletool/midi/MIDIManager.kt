@@ -74,7 +74,7 @@ class MIDIManager(
                 Log.i(TAG, "USB permission ${if (granted) "granted" else "denied"} for ${device?.productName}")
                 if (granted) {
                     // The authoritative trigger for re-enumeration after permission grant
-                    // is deviceCallback.onDeviceAdded() — no manual delay needed (D-09).
+                    // is deviceCallback.onDeviceAdded() — no manual delay needed.
                     currentPermissionState = PermissionState.GRANTED
                     notifyDevicesChanged()
                 } else {
@@ -158,7 +158,7 @@ class MIDIManager(
             if (!usbManager.hasPermission(device)) {
                 Log.i(TAG, "  Requesting permission for ${device.productName}")
                 // Set AWAITING BEFORE calling requestPermission — the system dialog appears
-                // asynchronously, so state must reflect "awaiting" while dialog is showing (D-19).
+                // asynchronously, so state must reflect "awaiting" while dialog is showing.
                 currentPermissionState = PermissionState.AWAITING
                 notifyDevicesChanged()
                 // Explicit Intent (setPackage) keeps the PendingIntent from being an

@@ -28,13 +28,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,6 +44,9 @@ import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.Mono
+import com.ep133.sampletool.ui.theme.accentRail
+import com.ep133.sampletool.ui.theme.dashedBorder
 import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -253,7 +251,6 @@ class SampleImportViewModel(
 // Screen composable
 // ─────────────────────────────────────────────────────────────────────────────
 
-private val Mono = FontFamily.Monospace
 
 /** Number of page cells in the per-file SysEx progress strip (mirrors the design's 12-cell grid). */
 private const val PAGE_CELLS = 12
@@ -261,8 +258,8 @@ private const val PAGE_CELLS = 12
 /**
  * Import screen: pick audio files from device storage and load them onto the EP-133.
  *
- * The app shell ([com.ep133.sampletool.ui.theme.Ep133Scaffold]) owns the header + bottom nav;
- * this renders the body only. A faceplate [Box] over [LocalEP133Tokens] backs a drop-zone hint,
+ * EP133App owns the faceplate header + bottom nav; this renders the body only.
+ * A faceplate [Box] over [LocalEP133Tokens] backs a drop-zone hint,
  * a [LazyColumn] of [StagedSampleRow] items (each a tactile paged-SysEx strip), a protocol note,
  * and the pick/import primary action.
  */
@@ -544,30 +541,3 @@ private fun ProtocolNote() {
 
 // ── Lightweight decoration modifiers ──────────────────────────────────────────
 
-/**
- * A dashed hairline border around the drop zone — the design's `1px dashed`. Drawn with a dashed
- * [Stroke] over the rounded shape so it reads as a pick affordance distinct from the solid panels.
- */
-private fun Modifier.dashedBorder(color: Color): Modifier = this.drawBehind {
-    val stroke = Stroke(
-        width = 1.dp.toPx(),
-        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()), 0f),
-    )
-    val radius = 3.dp.toPx()
-    drawRoundRect(
-        color = color,
-        cornerRadius = CornerRadius(radius, radius),
-        style = stroke,
-    )
-}
-
-/**
- * A 3dp colored left rail (the design's `border-left:3px solid`), drawn as a thin leading bar
- * inside the panel's rounded clip.
- */
-private fun Modifier.accentRail(color: Color): Modifier = this.drawBehind {
-    drawRect(
-        color = color,
-        size = androidx.compose.ui.geometry.Size(3.dp.toPx(), size.height),
-    )
-}

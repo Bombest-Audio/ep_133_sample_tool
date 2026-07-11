@@ -69,10 +69,9 @@ sealed interface FileWaiter {
 }
 
 /**
- * Thread-safe reqId → waiter map. Replaces the old mutable-global-flag dispatch model
- * (backlog 999.4): each outgoing file op registers a waiter under its unique reqId, and the
- * incoming-SysEx dispatcher routes every response strictly by the echoed reqId — never by which
- * global flag happens to be set.
+ * Thread-safe reqId → waiter map: each outgoing file op registers a waiter under its unique
+ * reqId, and the incoming-SysEx dispatcher routes every response strictly by the echoed reqId —
+ * never by which global flag happens to be set.
  *
  * The map is touched from two contexts: op coroutines ([register]/[remove], serialized by the
  * caller's file-op mutex) and the MIDI receive callback ([route], NOT under that mutex). A

@@ -6,11 +6,11 @@ import kotlinx.coroutines.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Pad-assignment layer extracted from [MIDIRepository] (999.5 Plan 02).
+ * Pad-assignment layer, split out from [MIDIRepository].
  *
  * Owns the active-group sync and pad-binding operations: [getActiveGroupIndex],
  * [setActiveGroup], [assignSampleToPad], [clearPad], [clearProject], and
- * [readGroupPadState], plus their NoLock helpers. Layered on [FileTransferClient] (D-02):
+ * [readGroupPadState], plus their NoLock helpers. Layered on [FileTransferClient]:
  * every multi-step device walk here runs inside a single [FileTransferClient.withFileOpLock]
  * acquisition and calls only FTC's NoLock primitives (never FTC's own locking wrappers) to
  * avoid re-entering the non-reentrant [kotlinx.coroutines.sync.Mutex] FTC owns.
@@ -38,7 +38,7 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
     private data class ActiveProject(val projNodeId: Int, val projName: String)
 
     /**
-     * Shared active-project resolution walk (999.5 Plan 03, D-05): folds the four repeated
+     * Shared active-project resolution walk: folds the four repeated
      * `/projects → METADATA active → FILE_INFO name` walks previously duplicated across
      * [getActiveGroupIndexNoLock], [setActiveGroup], [resolvePadNodeIdNoLock], and
      * [readGroupPadState] into one helper.
@@ -46,7 +46,7 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
      * MUST only be called from within an [FileTransferClient.withFileOpLock] context (same
      * constraint as the four call sites it replaces).
      *
-     * ### The `>0` vs `>=0` divergence (D-05)
+     * ### The `>0` vs `>=0` divergence
      * All four call sites folded here validate the active-project nodeId read from
      * `/projects` metadata with `.takeIf { it >= 0 }` — i.e. they treat nodeId `0` as a valid
      * active project. [FileTransferClient.listProjects] performs the *same* walk's first two
@@ -59,7 +59,7 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
      * four current callers already agreed on. If a future caller needs the `>0` contract, thread
      * it through this same [minActive] parameter rather than adding a fifth inline walk —
      * **true unification of all five sites to one validation contract is deferred as a
-     * hardware-gated follow-up** (see 999.5-CONTEXT.md "Deferred Ideas").
+     * hardware-gated follow-up.**
      *
      * @param minActive Minimum acceptable value for the active-project nodeId read from
      *   `/projects` metadata (inclusive). All four current callers pass `0` (the `>=0` semantics
@@ -145,7 +145,7 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
      */
     private suspend fun getActiveGroupIndexNoLock(): Int? {
         // Steps 1-2: resolve /projects and the active-project nodeId+name in one shared walk
-        // (999.5 Plan 03, D-05: resolveActiveProjectNoLock). minActive=0 preserves this site's
+        // resolveActiveProjectNoLock; minActive=0 preserves this site's
         // original `.takeIf { it >= 0 }` validation exactly.
         val (activeProjNodeId, projName) = resolveActiveProjectNoLock() ?: return null
         Log.d("EP133APP", "MIDI META: active project nodeId=$activeProjNodeId")
@@ -204,7 +204,7 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
         val channel = PadChannel.entries.getOrNull(index) ?: return false
         return ftc.withFileOpLock {
             try {
-                // Shared walk (999.5 Plan 03, D-05); minActive=0 preserves this site's original
+                // Shared walk; minActive=0 preserves this site's original
                 // `.takeIf { it >= 0 }` validation exactly.
                 val (_, projName) = resolveActiveProjectNoLock() ?: return@withFileOpLock false
                 val groupNode = ftc.resolveNodeIdInternal("/projects/$projName/groups/${channel.name}") ?: return@withFileOpLock false
@@ -312,7 +312,7 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
      * [clearPad].
      */
     private suspend fun resolvePadNodeIdNoLock(group: PadChannel, gridIndex: Int): Int? {
-        // Shared walk (999.5 Plan 03, D-05); minActive=0 preserves this site's original
+        // Shared walk; minActive=0 preserves this site's original
         // `.takeIf { it >= 0 }` validation exactly. Original per-step log lines are preserved
         // as a single combined warning since the helper doesn't distinguish which sub-step
         // failed (matches the folded call sites' logging fidelity).
@@ -402,7 +402,7 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
         return ftc.withFileOpLock {
             ftc.ensureFileSessionInitNoLock()
             try {
-                // Shared walk (999.5 Plan 03, D-05); minActive=0 preserves this site's original
+                // Shared walk; minActive=0 preserves this site's original
                 // `.takeIf { it >= 0 }` validation exactly.
                 val (_, projName) = resolveActiveProjectNoLock() ?: return@withFileOpLock emptyMap()
                 val groupDir = ftc.resolveNodeIdInternal("/projects/$projName/groups/${group.name}")

@@ -41,12 +41,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,6 +64,8 @@ import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.Mono
+import com.ep133.sampletool.ui.theme.accentRail
 import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -277,10 +276,9 @@ private fun shareBackup(context: Context, file: File) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Screen composable — the app shell ([Ep133Scaffold]) owns header + nav; this is the body.
+// Screen composable — EP133App owns the faceplate header + bottom nav; this renders the body only.
 // ─────────────────────────────────────────────────────────────────────────────
 
-private val Mono = FontFamily.Monospace
 
 /** Deterministic 4-bar mini "fill" meter per project/backup — purely decorative, keyed off a seed. */
 private fun miniBars(seed: Int): List<Float> =
@@ -912,7 +910,3 @@ private fun RestoreGateNote() {
     }
 }
 
-/** A 3dp colored left rail (the design's `border-left:3px solid`), drawn inside the rounded clip. */
-private fun Modifier.accentRail(color: Color): Modifier = this.drawBehind {
-    drawRect(color = color, size = Size(3.dp.toPx(), size.height))
-}
