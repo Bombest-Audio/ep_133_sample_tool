@@ -273,7 +273,7 @@ open class FileTransferClient(
         val portId = outputPortId() ?: throw IllegalStateException("no output port")
         return fileOpMutex.withLock {
             var nextReqId = PUT_INIT_REQUEST_ID
-            val initReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+            val initReqId = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK
             val initFrame = SysExProtocol.buildFilePutInitFrame(deviceId(), slotNodeId, tarBytes.size, requestId = initReqId)
             if (!putAckOk(awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS))) {
                 return@withLock false
@@ -283,7 +283,7 @@ open class FileTransferClient(
             while (offset < tarBytes.size) {
                 val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, tarBytes.size)
                 val chunk = tarBytes.copyOfRange(offset, end)
-                val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK
                 val dataFrame = SysExProtocol.buildFilePutDataFrame(deviceId(), page, chunk, requestId = dataReqId)
                 if (!putAckOk(awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS))) {
                     return@withLock false
@@ -370,7 +370,7 @@ open class FileTransferClient(
             var assignedNodeId: Int? = null
             try {
                 // INIT: announce parent dir, fileId=0 (new file), size, filename, metadata.
-                val initReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                val initReqId = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK
                 val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
                     deviceId(),
                     parentNodeId = parent,
@@ -409,14 +409,14 @@ open class FileTransferClient(
                 while (offset < pcmBytes.size) {
                     val end = minOf(offset + rawChunkSize, pcmBytes.size)
                     val chunk = pcmBytes.copyOfRange(offset, end)
-                    val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                    val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK
                     val dataFrame = SysExProtocol.buildFilePutDataFrame(deviceId(), page, chunk, requestId = dataReqId)
                     Log.d("EP133MIDI", "MIDI META: outbound PUT DATA page=$page reqId=$dataReqId chunkSize=${chunk.size}")
                     val dataResp = awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS)
                     if (!putAckOk(dataResp)) {
                         val devMsg = deviceErrorText(dataResp)
                         Log.e("EP133APP", "putSampleFile: DATA page $page rejected for $name — ${devMsg ?: "no ack (timeout)"}")
-                        val closeReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                        val closeReqId = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK
                         forceCloseTransfer(portId, page + 1, closeReqId)
                         if (devMsg != null) throw java.io.IOException(devMsg)
                         return@withLock null
@@ -426,7 +426,7 @@ open class FileTransferClient(
                 }
 
                 // Zero-length DATA terminator (required by the reference tool). Await its final ack.
-                val termReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
+                val termReqId = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK
                 val terminatorFrame = SysExProtocol.buildFilePutDataFrame(deviceId(), page, ByteArray(0), requestId = termReqId)
                 Log.d("EP133MIDI", "MIDI META: outbound PUT terminator page=$page reqId=$termReqId")
                 if (putAckOk(awaitFileOp(termReqId, FileOpKind.PUT_DATA, portId, terminatorFrame, PUT_ACK_TIMEOUT_MS))) {
@@ -486,14 +486,14 @@ open class FileTransferClient(
      * Clamped to [64, 440]. Falls back to 256 when chunkSize is 0 or unknown.
      */
     internal fun computeSampleChunkSize(chunkSize: Int): Int {
-        if (chunkSize <= 0) return 256
-        val o = 11
-        val s = chunkSize - 6
-        val inner = s - 1 - o
-        if (inner <= 0) return 64
-        val maxPayload = inner - (inner / 8)
-        val raw = maxPayload - 6
-        return raw.coerceIn(64, 440)
+        if (chunkSize <= 0) return DEFAULT_SAMPLE_CHUNK
+        val envelopeOverhead = 11          // 8 + 2 + 1 SysEx-envelope bytes
+        val usablePacketBytes = chunkSize - 6              // after the SysEx header
+        val packInputCapacity = usablePacketBytes - 1 - envelopeOverhead
+        if (packInputCapacity <= 0) return MIN_SAMPLE_CHUNK
+        val maxPayload = packInputCapacity - (packInputCapacity / 8)   // 7-bit packing expands by 1/8
+        val rawChunk = maxPayload - 6                      // headroom for DATA header bytes
+        return rawChunk.coerceIn(MIN_SAMPLE_CHUNK, MAX_SAMPLE_CHUNK)
     }
 
     // ── FILE_INIT session handshake (Task 3 — once per connection) ─────────────
@@ -812,5 +812,13 @@ open class FileTransferClient(
         internal const val FILE_REQ_ID_MIN = 100
         internal const val FILE_REQ_ID_MAX = 2046
         internal const val FILE_REQ_ID_INITIAL = 100
+
+        // reqId is a 14-bit field; every increment wraps within it.
+        private const val REQ_ID_MASK = 0x3FFF
+
+        // Sample-upload chunk sizing (see computeSampleChunkSize): fallback + clamp bounds.
+        private const val DEFAULT_SAMPLE_CHUNK = 256
+        private const val MIN_SAMPLE_CHUNK = 64
+        private const val MAX_SAMPLE_CHUNK = 440
     }
 }

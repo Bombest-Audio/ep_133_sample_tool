@@ -14,6 +14,9 @@ import java.util.zip.ZipOutputStream
 
 private const val TAG = "EP133BACKUP"
 
+/** ZIP local-file-header signature ("PK") — the first four bytes of any ZIP archive. */
+private val ZIP_LOCAL_FILE_HEADER = byteArrayOf(0x50, 0x4B, 0x03, 0x04)
+
 /** Progress events emitted by [BackupManager.createBackup]. */
 sealed class BackupProgress {
     /** Backup in progress: `current` files downloaded of `total`. */
@@ -121,12 +124,10 @@ class BackupManager(private val midi: MIDIRepository) {
      * on completion, or [RestoreProgress.Error] on an invalid archive, no connection, or a failed page.
      */
     fun restore(pakBytes: ByteArray): Flow<RestoreProgress> = flow {
-        // Validate ZIP magic: PK header [0x50, 0x4B, 0x03, 0x04].
-        if (pakBytes.size < 4 ||
-            pakBytes[0] != 0x50.toByte() ||
-            pakBytes[1] != 0x4B.toByte() ||
-            pakBytes[2] != 0x03.toByte() ||
-            pakBytes[3] != 0x04.toByte()
+        // A .pak is a ZIP archive, so it must start with the ZIP local-file-header signature.
+        val header = ZIP_LOCAL_FILE_HEADER
+        if (pakBytes.size < header.size ||
+            !pakBytes.copyOfRange(0, header.size).contentEquals(header)
         ) {
             emit(RestoreProgress.Error("Invalid PAK file — not a ZIP archive"))
             return@flow

@@ -613,6 +613,8 @@ private fun MonoFact(label: String, value: String, valueColor: Color) {
 }
 
 // ── Storage progress (M3 LinearProgressIndicator, accent track, mono readout) ──
+private const val BYTES_PER_MB = 1_048_576
+
 @Composable
 private fun StorageBar(state: DeviceState, loading: Boolean) {
     val t = LocalEP133Tokens.current
@@ -621,8 +623,8 @@ private fun StorageBar(state: DeviceState, loading: Boolean) {
     } else 0f
     val haveBytes = state.storageUsedBytes != null && state.storageTotalBytes != null
     val readout = if (haveBytes) {
-        val usedMb = state.storageUsedBytes!!.toFloat() / 1_048_576f
-        val totalMb = state.storageTotalBytes!!.toFloat() / 1_048_576f
+        val usedMb = state.storageUsedBytes!!.toFloat() / BYTES_PER_MB
+        val totalMb = state.storageTotalBytes!!.toFloat() / BYTES_PER_MB
         "%.1f / %.1f MB".format(usedMb, totalMb)
     } else null
 
@@ -667,8 +669,8 @@ private fun StorageBar(state: DeviceState, loading: Boolean) {
 private fun StatsGrid(state: DeviceState, channel: PadChannel) {
     val samplesValue = state.sampleCount?.toString() ?: "—"
     val storageValue = if (state.storageUsedBytes != null && state.storageTotalBytes != null) {
-        val usedMb = state.storageUsedBytes / 1_048_576
-        val totalMb = state.storageTotalBytes / 1_048_576
+        val usedMb = state.storageUsedBytes / BYTES_PER_MB
+        val totalMb = state.storageTotalBytes / BYTES_PER_MB
         "${usedMb}/${totalMb}MB"
     } else "—"
     val firmwareValue = state.firmwareVersion ?: "—"

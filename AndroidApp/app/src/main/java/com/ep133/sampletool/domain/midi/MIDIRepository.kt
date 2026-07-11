@@ -532,13 +532,13 @@ open class MIDIRepository internal constructor(
 
     // ── MIDI message senders ──
 
-    fun noteOn(note: Int, velocity: Int = 100, ch: Int = channel) {
+    fun noteOn(note: Int, velocity: Int = DEFAULT_VELOCITY, ch: Int = channel) {
         val portId = _deviceState.value.outputPortId ?: run {
             Log.w("EP133APP", "MIDI OUT: no output port! note=$note ch=$ch")
             return
         }
         Log.d("EP133APP", "MIDI OUT: noteOn note=$note vel=$velocity ch=$ch port=$portId")
-        val status = 0x90 or (ch and 0x0F)
+        val status = STATUS_NOTE_ON or (ch and 0x0F)
         midiManager.sendMidi(portId, byteArrayOf(
             status.toByte(),
             (note and 0x7F).toByte(),
@@ -548,7 +548,7 @@ open class MIDIRepository internal constructor(
 
     fun noteOff(note: Int, ch: Int = channel) {
         val portId = _deviceState.value.outputPortId ?: return
-        val status = 0x80 or (ch and 0x0F)
+        val status = STATUS_NOTE_OFF or (ch and 0x0F)
         midiManager.sendMidi(portId, byteArrayOf(
             status.toByte(),
             (note and 0x7F).toByte(),
@@ -558,7 +558,7 @@ open class MIDIRepository internal constructor(
 
     fun controlChange(control: Int, value: Int, ch: Int = channel) {
         val portId = _deviceState.value.outputPortId ?: return
-        val status = 0xB0 or (ch and 0x0F)
+        val status = STATUS_CONTROL_CHANGE or (ch and 0x0F)
         midiManager.sendMidi(portId, byteArrayOf(
             status.toByte(),
             (control and 0x7F).toByte(),
@@ -568,7 +568,7 @@ open class MIDIRepository internal constructor(
 
     fun programChange(program: Int, ch: Int = channel) {
         val portId = _deviceState.value.outputPortId ?: return
-        val status = 0xC0 or (ch and 0x0F)
+        val status = STATUS_PROGRAM_CHANGE or (ch and 0x0F)
         midiManager.sendMidi(portId, byteArrayOf(
             status.toByte(),
             (program and 0x7F).toByte(),
@@ -576,7 +576,7 @@ open class MIDIRepository internal constructor(
     }
 
     fun allNotesOff(ch: Int = channel) {
-        controlChange(123, 0, ch)
+        controlChange(CC_ALL_NOTES_OFF, 0, ch)
     }
 
     /**
@@ -599,21 +599,21 @@ open class MIDIRepository internal constructor(
     fun loadSoundToPad(soundNumber: Int, padNote: Int, padChannel: Int, ch: Int = channel) {
         val portId = _deviceState.value.outputPortId ?: return
         val index = (soundNumber - 1).coerceAtLeast(0)
-        val bankMsb = index / 128
-        val program = index % 128
+        val bankMsb = index / PROGRAMS_PER_BANK
+        val program = index % PROGRAMS_PER_BANK
         Log.d("EP133APP", "MIDI OUT: loadSound #$soundNumber → pad note=$padNote padCh=$padChannel bank=$bankMsb pc=$program ch=$ch")
 
-        val noteOnStatus = (0x90 or (padChannel and 0x0F)).toByte()
-        val noteOffStatus = (0x80 or (padChannel and 0x0F)).toByte()
-        val ccStatus = (0xB0 or (ch and 0x0F)).toByte()
-        val pcStatus = (0xC0 or (ch and 0x0F)).toByte()
+        val noteOnStatus = (STATUS_NOTE_ON or (padChannel and 0x0F)).toByte()
+        val noteOffStatus = (STATUS_NOTE_OFF or (padChannel and 0x0F)).toByte()
+        val ccStatus = (STATUS_CONTROL_CHANGE or (ch and 0x0F)).toByte()
+        val pcStatus = (STATUS_PROGRAM_CHANGE or (ch and 0x0F)).toByte()
         val padNoteByte = (padNote and 0x7F).toByte()
 
         midiManager.sendMidi(portId, byteArrayOf(
-            noteOnStatus, padNoteByte, 100.toByte(),
+            noteOnStatus, padNoteByte, DEFAULT_VELOCITY.toByte(),
             noteOffStatus, padNoteByte, 0,
-            ccStatus, 0, (bankMsb and 0x7F).toByte(),
-            ccStatus, 32, 0,
+            ccStatus, CC_BANK_SELECT_MSB.toByte(), (bankMsb and 0x7F).toByte(),
+            ccStatus, CC_BANK_SELECT_LSB.toByte(), 0,
             pcStatus, (program and 0x7F).toByte(),
         ))
     }
@@ -632,6 +632,18 @@ open class MIDIRepository internal constructor(
     }
 
     companion object {
+        // ── MIDI channel-voice message constants ──────────────────────────────────
+        // Status nibbles (OR'd with the 4-bit channel); CC numbers; and EP-133 sound-load values.
+        private const val STATUS_NOTE_ON = 0x90
+        private const val STATUS_NOTE_OFF = 0x80
+        private const val STATUS_CONTROL_CHANGE = 0xB0
+        private const val STATUS_PROGRAM_CHANGE = 0xC0
+        private const val CC_ALL_NOTES_OFF = 123
+        private const val CC_BANK_SELECT_MSB = 0
+        private const val CC_BANK_SELECT_LSB = 32
+        private const val PROGRAMS_PER_BANK = 128
+        private const val DEFAULT_VELOCITY = 100
+
         // The file-op timeout constants live in FileTransferClient with the primitives that use
         // them. The reqId-space constants below are kept here (not just on FTC) because tests
         // reference them as `MIDIRepository.PUT_INIT_REQUEST_ID` / `FILE_REQ_ID_MIN` /
