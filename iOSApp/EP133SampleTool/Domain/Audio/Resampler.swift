@@ -6,6 +6,14 @@ enum ResamplerError: Error, Equatable {
     case invalidArgument(String)
 }
 
+extension ResamplerError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .invalidArgument(let m): return m
+        }
+    }
+}
+
 /// Per-channel linear interpolation resampler targeting the EP-133 K.O. II's 46875 Hz rate.
 ///
 /// Swift port of AndroidApp/app/src/main/java/com/ep133/sampletool/domain/audio/Resampler.kt.

@@ -12,6 +12,15 @@ enum MIDIRepositoryError: Error, Equatable {
     case deviceRejected(String)
 }
 
+extension MIDIRepositoryError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .noOutputPort: return "No EP-133 connected"
+        case .invalidState(let m), .deviceRejected(let m): return m
+        }
+    }
+}
+
 /// Non-reentrant async mutex mirroring kotlinx.coroutines.sync.Mutex as MIDIRepository uses it.
 ///
 /// Main-actor isolation alone does NOT serialize whole file ops — every `await` inside an op is

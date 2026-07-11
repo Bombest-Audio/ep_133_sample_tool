@@ -9,6 +9,15 @@ enum AudioDecoderError: Error, Equatable {
     case unsupportedEncoding(Int)
 }
 
+extension AudioDecoderError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .cannotOpen(let m), .decodeFailed(let m), .pcmCapExceeded(let m): return m
+        case .unsupportedEncoding(let enc): return "unsupported PCM encoding: \(enc)"
+        }
+    }
+}
+
 /// Decodes an arbitrary audio file to raw 16-bit PCM via AVFoundation.
 ///
 /// Swift port of AndroidApp/app/src/main/java/com/ep133/sampletool/domain/audio/AudioDecoder.kt.

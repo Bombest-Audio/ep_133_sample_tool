@@ -9,6 +9,14 @@ enum SampleImportError: Error, Equatable {
     case invalidArgument(String)
 }
 
+extension SampleImportError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .cannotRead(let m), .malformedWav(let m), .invalidArgument(let m): return m
+        }
+    }
+}
+
 /// Result of `SampleImportManager.convert`: raw s16 LE PCM bytes ready for upload,
 /// plus the format parameters needed for the PUT INIT metadata JSON.
 ///
@@ -462,32 +470,10 @@ final class SampleImportManager {
 
     /// Extract a human-readable message from an error, mirroring Kotlin's
     /// `e.message ?: e` in the flow catch blocks.
+    /// The domain error enums conform to `LocalizedError`, so their messages live on the types.
+    /// Foreign errors (e.g. `CancellationError`) fall back to `String(describing:)`.
     private nonisolated static func errorMessage(_ error: Error) -> String {
-        switch error {
-        case let e as SampleImportError:
-            switch e {
-            case .cannotRead(let m), .malformedWav(let m), .invalidArgument(let m):
-                return m
-            }
-        case let e as MIDIRepositoryError:
-            switch e {
-            case .noOutputPort: return "no output port"
-            case .invalidState(let m), .deviceRejected(let m): return m
-            }
-        case let e as AudioDecoderError:
-            switch e {
-            case .cannotOpen(let m), .decodeFailed(let m), .pcmCapExceeded(let m):
-                return m
-            case .unsupportedEncoding(let enc):
-                return "unsupported PCM encoding: \(enc)"
-            }
-        case let e as ResamplerError:
-            switch e {
-            case .invalidArgument(let m): return m
-            }
-        default:
-            return String(describing: error)
-        }
+        (error as? LocalizedError)?.errorDescription ?? String(describing: error)
     }
 }
 

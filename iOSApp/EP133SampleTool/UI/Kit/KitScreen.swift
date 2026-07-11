@@ -674,21 +674,11 @@ private func substringBeforeLastDot(_ s: String) -> String {
 
 /// Short human-readable message for a convert/upload failure (the Kotlin `e.message` analog).
 /// Nil when the error carries no useful text — callers substitute their step-specific default.
+/// Message for a known domain error, or nil so the caller can supply a context-specific
+/// fallback ("Convert failed" / "Upload failed" / "Assign failed"). Messages live on the
+/// error enums via `LocalizedError`.
 private func importErrorMessage(_ error: Error) -> String? {
-    switch error {
-    case let e as SampleImportError:
-        switch e {
-        case .cannotRead(let m), .malformedWav(let m), .invalidArgument(let m): return m
-        }
-    case let e as MIDIRepositoryError:
-        switch e {
-        case .deviceRejected(let m): return m
-        case .invalidState(let m): return m
-        case .noOutputPort: return "No EP-133 connected"
-        }
-    default:
-        return nil
-    }
+    (error as? LocalizedError)?.errorDescription
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

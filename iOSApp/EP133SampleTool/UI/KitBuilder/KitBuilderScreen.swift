@@ -432,18 +432,9 @@ final class KitBuilderViewModel {
 }
 
 /// Short human-readable message for a load/audition failure (the Kotlin `e.message ?: "failed"`).
+/// Message for a known domain error (via `LocalizedError`), else a generic "failed".
 private func errorText(_ error: Error) -> String {
-    switch error {
-    case let e as SampleImportError:
-        switch e {
-        case .cannotRead(let m), .malformedWav(let m), .invalidArgument(let m): return m
-        }
-    case let e as MIDIRepositoryError:
-        if case .deviceRejected(let m) = e { return m }
-        return "failed"
-    default:
-        return "failed"
-    }
+    (error as? LocalizedError)?.errorDescription ?? "failed"
 }
 
 // ── Screen ──────────────────────────────────────────────────────────────────
