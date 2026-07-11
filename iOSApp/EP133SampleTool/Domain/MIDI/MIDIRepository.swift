@@ -596,7 +596,7 @@ class MIDIRepository {
         name: String,
         pcmBytes: [UInt8],
         channels: Int = 1,
-        sampleRate: Int = 46875
+        sampleRate: Int = EP133Device.sampleRate
     ) async throws -> Int? {
         guard let portId = deviceState.outputPortId else {
             throw MIDIRepositoryError.noOutputPort

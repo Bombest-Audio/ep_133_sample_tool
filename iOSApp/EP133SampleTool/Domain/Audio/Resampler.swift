@@ -18,9 +18,6 @@ enum ResamplerError: Error, Equatable {
 /// for testability only.
 enum Resampler {
 
-    /// The EP-133 K.O. II native sample rate — output is always capped here.
-    private static let deviceSampleRate = 46875
-
     /// Resample `pcm` from `srcRate` to `dstRate` (default 46875, the device rate).
     ///
     /// Fast-path: if `srcRate` == effective target, returns `pcm` unchanged (no copy,
@@ -51,7 +48,7 @@ enum Resampler {
     static func toRate(
         _ pcm: [Int16],
         srcRate: Int,
-        dstRate: Int = 46875,
+        dstRate: Int = EP133Device.sampleRate,
         channels: Int = 1
     ) throws -> [Int16] {
         // Input guards — prevent division by zero on channels or rates.
@@ -67,7 +64,7 @@ enum Resampler {
 
         // Clamp the target: the device never upsamples beyond its native rate, so a
         // dstRate above the device rate is capped rather than honored.
-        let targetRate = min(dstRate, deviceSampleRate)
+        let targetRate = min(dstRate, EP133Device.sampleRate)
 
         // Fast-path: no-op at the target rate (no resample artifact)
         if srcRate == targetRate { return pcm }

@@ -7,6 +7,14 @@ import Foundation
 /// `MIDIDevice` (MIDI/MIDIPort.swift) already fills that role and keeps the
 /// project's MIDI acronym casing.
 
+/// Fixed hardware constants for the EP-133 K.O. II. The native sample rate in particular was
+/// duplicated (under two names) across the audio pipeline and the file-transfer path; this is
+/// the single source of truth.
+enum EP133Device {
+    /// Native sample rate — samples are always resampled and encoded to this.
+    static let sampleRate = 46875
+}
+
 /// Pad group on the EP-133 (A–D).
 ///
 /// Official MIDI note map (teenage.engineering/guides/ep-133/system):

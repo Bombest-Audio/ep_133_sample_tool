@@ -27,9 +27,6 @@ import Foundation
 ///   offset 44  Int16 LE samples (interleaved for stereo)
 enum WavEncoder {
 
-    /// The EP-133 K.O. II native sample rate.
-    private static let deviceSampleRate = 46875
-
     /// The EP-133 K.O. II native bit depth.
     private static let deviceBitDepth = 16
 
@@ -48,7 +45,7 @@ enum WavEncoder {
     ///   - sampleRate: Sample rate to embed in the header (default 46875).
     ///   - channels: Number of audio channels: 1 (mono) or 2 (stereo).
     /// - Returns: Complete RIFF WAV bytes including the 44-byte header.
-    static func encodeWav(_ pcm: [Int16], sampleRate: Int = 46875, channels: Int = 1) -> Data {
+    static func encodeWav(_ pcm: [Int16], sampleRate: Int = EP133Device.sampleRate, channels: Int = 1) -> Data {
         let dataSize = pcm.count * 2             // 2 bytes per Int16 sample
         let chunkSize = 36 + dataSize            // everything after the 8-byte RIFF descriptor
         let byteRate = sampleRate * channels * 2 // bytes per second
@@ -124,7 +121,7 @@ enum WavEncoder {
 
         return audioFormat == 1 &&
             bitsPerSample == deviceBitDepth &&
-            sampleRate == deviceSampleRate &&
+            sampleRate == EP133Device.sampleRate &&
             (1...2).contains(channels)
     }
 

@@ -1,8 +1,5 @@
 import Foundation
 
-/// Target device sample rate — must match WavEncoder's device rate.
-private let DEVICE_SAMPLE_RATE = 46875
-
 /// Errors thrown by `SampleImportManager.convert` (Kotlin counterparts:
 /// `java.io.IOException` → `cannotRead` / `malformedWav`;
 /// `IllegalArgumentException` → `invalidArgument`).
@@ -20,7 +17,7 @@ enum SampleImportError: Error, Equatable {
 ///
 /// `pcm` is interleaved little-endian signed 16-bit PCM — NO RIFF/WAV header.
 /// `channels` is 1 (mono) or 2 (stereo).
-/// `sampleRate` is always `DEVICE_SAMPLE_RATE` (46875) after conversion.
+/// `sampleRate` is always `EP133Device.sampleRate` (46875) after conversion.
 struct ConvertedSample: Equatable {
     let pcm: [UInt8]
     let channels: Int
@@ -186,9 +183,9 @@ final class SampleImportManager {
         let converted: ConvertedSample
         if WavEncoder.isAlreadyDeviceFormat(wavBytes) {
             converted = sliceWavData(wavBytes)
-                ?? ConvertedSample(pcm: [UInt8](wavBytes), channels: 1, sampleRate: DEVICE_SAMPLE_RATE)
+                ?? ConvertedSample(pcm: [UInt8](wavBytes), channels: 1, sampleRate: EP133Device.sampleRate)
         } else {
-            converted = ConvertedSample(pcm: [UInt8](wavBytes), channels: 1, sampleRate: DEVICE_SAMPLE_RATE)
+            converted = ConvertedSample(pcm: [UInt8](wavBytes), channels: 1, sampleRate: EP133Device.sampleRate)
         }
 
         await uploadConverted(safeName: safeName, converted: converted, continuation: continuation)
@@ -299,11 +296,11 @@ final class SampleImportManager {
         }
 
         let resampled = try Resampler.toRate(
-            decoded.pcm, srcRate: srcRate, dstRate: DEVICE_SAMPLE_RATE, channels: channels)
+            decoded.pcm, srcRate: srcRate, dstRate: EP133Device.sampleRate, channels: channels)
         return ConvertedSample(
             pcm: shortArrayToLeBytes(resampled),
             channels: channels,
-            sampleRate: DEVICE_SAMPLE_RATE)
+            sampleRate: EP133Device.sampleRate)
     }
 
     /// Convert an `[Int16]` of s16 samples to interleaved little-endian PCM bytes.
