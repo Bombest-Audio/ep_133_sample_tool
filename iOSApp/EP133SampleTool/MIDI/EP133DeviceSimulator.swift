@@ -275,7 +275,7 @@ final class EP133DeviceSimulator: MIDIPort {
               frame[3] == SysExProtocol.TE_ID_2
         else { return }
         let flags = Int(frame[6])
-        let reqId = ((flags & 0x0F) << 7) | (Int(frame[7]) & 0x7F)
+        let reqId = SysExProtocol.decodeRequestId(flags: flags, low: Int(frame[7]))
         let command = Int(frame[8])
         let packed: [UInt8] = frame.count > 10 ? Array(frame[9..<(frame.count - 1)]) : []
         let body = packed.isEmpty ? [] : SysExProtocol.unpack7bit(packed)
@@ -377,7 +377,7 @@ final class EP133DeviceSimulator: MIDIPort {
             removeNode(node.id)
             respond(reqId: reqId, command: SysExProtocol.TE_SYSEX_FILE, status: 0, body: [])
 
-        case 5: // FILE_PLAYBACK start/stop
+        case SysExProtocol.TE_SYSEX_FILE_PLAYBACK: // start/stop preview playback
             respond(reqId: reqId, command: SysExProtocol.TE_SYSEX_FILE, status: 0, body: [])
 
         default:

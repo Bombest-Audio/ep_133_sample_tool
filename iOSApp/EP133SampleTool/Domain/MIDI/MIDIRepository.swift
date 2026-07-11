@@ -395,7 +395,7 @@ class MIDIRepository {
             // reqId-first routing: every file op registers a waiter under its unique reqId; an
             // unmatched reqId is a stale or duplicate response (the device sends each response
             // twice) and is dropped.
-            let responseReqId = ((Int(message[6]) & 0x0F) << 7) | (Int(message[7]) & 0x7F)
+            let responseReqId = SysExProtocol.decodeRequestId(flags: Int(message[6]), low: Int(message[7]))
             _ = fileWaiters.route(FileResponse(reqId: responseReqId, status: fileStatus, body: body))
 
         default:

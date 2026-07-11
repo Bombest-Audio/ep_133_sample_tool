@@ -45,6 +45,7 @@ enum SysExProtocol {
     static let TE_SYSEX_FILE_PUT = 2
     static let TE_SYSEX_FILE_GET = 3
     static let TE_SYSEX_FILE_LIST = 4
+    static let TE_SYSEX_FILE_PLAYBACK = 5   // start/stop preview playback (value collides with TE_SYSEX_FILE)
     static let TE_SYSEX_FILE_DELETE = 6
     static let TE_SYSEX_FILE_METADATA = 7
     static let TE_SYSEX_FILE_INFO = 11
@@ -183,6 +184,13 @@ enum SysExProtocol {
         output.append(contentsOf: packedPayload)
         output.append(MIDI_SYSEX_END)
         return output
+    }
+
+    /// Reconstruct the 14-bit request id from a response frame — the inverse of the split
+    /// `buildFrame` writes: the high nibble rides in the low 4 bits of `flags` (byte 6), the low
+    /// 7 bits are byte 7. Naming the split keeps the encode and decode sides provably symmetric.
+    static func decodeRequestId(flags: Int, low: Int) -> Int {
+        ((flags & 0x0F) << 7) | (low & 0x7F)
     }
 
     /// Build a GREET frame — queries firmware version, serial number, and device identity.
