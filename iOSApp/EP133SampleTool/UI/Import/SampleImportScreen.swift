@@ -216,9 +216,42 @@ private struct SampleImportScreenBody: View {
     let viewModel: SampleImportViewModel
     @State private var showPicker = false
 
+    private var staged: [StagedSample] { viewModel.stagedSamples }
+
     var body: some View {
-        // Batch summary for the header readout: count of done / errored files.
-        let staged = viewModel.stagedSamples
+        ZStack(alignment: .bottom) {
+            t.bg.ignoresSafeArea()
+
+            VStack(spacing: 11) {
+                statusHeader
+                    .padding(.top, 14)
+                dropZone
+                stagedList
+                pickButton
+                    .padding(.bottom, 14)
+            }
+            .padding(.horizontal, 14)
+
+            snackbarOverlay
+        }
+        .onAppear {
+            // MainActivity wired the SAF launcher into onRequestPick; here the screen fills
+            // the same seam with its fileImporter presentation flag.
+            viewModel.onRequestPick = { showPicker = true }
+        }
+        .fileImporter(
+            isPresented: $showPicker,
+            allowedContentTypes: [.audio],
+            allowsMultipleSelection: true
+        ) { result in
+            if case .success(let urls) = result {
+                viewModel.onFilesPicked(urls: urls)
+            }
+        }
+    }
+
+    /// Batch status readout — mono eyebrow + live/done/err tint (count of done / errored files).
+    private var statusHeader: some View {
         let doneCount = staged.filter { $0.isDone() }.count
         let errorCount = staged.filter { $0.isError() }.count
         let headLabel: String = if staged.isEmpty {
@@ -237,96 +270,78 @@ private struct SampleImportScreenBody: View {
         } else {
             t.text3
         }
-
-        ZStack(alignment: .bottom) {
-            t.bg.ignoresSafeArea()
-
-            VStack(spacing: 11) {
-                // Batch status readout — mono eyebrow + live/done/err tint.
-                HStack {
-                    EP133SectionLabel(text: "Sample Import")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(headLabel)
-                        .font(mono(9.5, .medium))
-                        .tracking(0.6)
-                        .foregroundStyle(headColor)
-                }
-                .padding(.top, 14)
-
-                // Drop / pick zone — dashed inset panel, conversion is offline-capable.
-                VStack(spacing: 6) {
-                    Text("DROP OR PICK · RIFF/PCM · s16 · ≤20s")
-                        .font(mono(10))
-                        .tracking(0.4)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(t.text3)
-                    Text("pick WAVs to upload")
-                        .font(.system(size: 15, weight: .bold))
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(t.text)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(16)
-                .background(RoundedRectangle(cornerRadius: panelRadius).fill(t.inset))
-                .overlay(
-                    // The design's `1px dashed` pick affordance, distinct from solid panels.
-                    RoundedRectangle(cornerRadius: panelRadius)
-                        .strokeBorder(t.rule, style: StrokeStyle(lineWidth: 1, dash: [6, 4]))
-                )
-
-                // Staged list — one tactile SysEx strip per file. Flexible so the action stays
-                // pinned at the bottom.
-                if !staged.isEmpty {
-                    ScrollView {
-                        LazyVStack(spacing: 9) {
-                            ForEach(Array(staged.enumerated()), id: \.offset) { _, sample in
-                                StagedSampleRow(sample: sample)
-                            }
-                            ProtocolNote()
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    // No files yet — keep the protocol note visible and absorb the slack.
-                    VStack {
-                        ProtocolNote()
-                        Spacer(minLength: 0)
-                    }
-                    .frame(maxHeight: .infinity)
-                }
-
-                // Primary action — pick files / re-pick to stage more.
-                EP133PrimaryButton(label: staged.isEmpty ? "PICK FILES" : "PICK MORE FILES") {
-                    viewModel.triggerPick()
-                }
-                .accessibilityIdentifier(TestTags.IMPORT_PICK_BUTTON)
-                .padding(.bottom, 14)
-            }
-            .padding(.horizontal, 14)
-
-            if let message = viewModel.snackbarMessage {
-                ImportSnackbarToast(message: message)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 16)
-                    .task(id: message) {
-                        try? await Task.sleep(nanoseconds: 2_500_000_000)
-                        viewModel.dismissSnackbar()
-                    }
-            }
+        return HStack {
+            EP133SectionLabel(text: "Sample Import")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(headLabel)
+                .font(mono(9.5, .medium))
+                .tracking(0.6)
+                .foregroundStyle(headColor)
         }
-        .onAppear {
-            // MainActivity wired the SAF launcher into onRequestPick; here the screen fills
-            // the same seam with its fileImporter presentation flag.
-            viewModel.onRequestPick = { showPicker = true }
+    }
+
+    /// Drop / pick zone — dashed inset panel, conversion is offline-capable.
+    private var dropZone: some View {
+        VStack(spacing: 6) {
+            Text("DROP OR PICK · RIFF/PCM · s16 · ≤20s")
+                .font(mono(10))
+                .tracking(0.4)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(t.text3)
+            Text("pick WAVs to upload")
+                .font(.system(size: 15, weight: .bold))
+                .multilineTextAlignment(.center)
+                .foregroundStyle(t.text)
         }
-        .fileImporter(
-            isPresented: $showPicker,
-            allowedContentTypes: [.audio],
-            allowsMultipleSelection: true
-        ) { result in
-            if case .success(let urls) = result {
-                viewModel.onFilesPicked(urls: urls)
+        .frame(maxWidth: .infinity)
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: panelRadius).fill(t.inset))
+        .overlay(
+            // The design's `1px dashed` pick affordance, distinct from solid panels.
+            RoundedRectangle(cornerRadius: panelRadius)
+                .strokeBorder(t.rule, style: StrokeStyle(lineWidth: 1, dash: [6, 4]))
+        )
+    }
+
+    /// Staged list — one tactile SysEx strip per file. Flexible so the action stays pinned at the
+    /// bottom; when empty, the protocol note stays visible and absorbs the slack.
+    @ViewBuilder private var stagedList: some View {
+        if !staged.isEmpty {
+            ScrollView {
+                LazyVStack(spacing: 9) {
+                    ForEach(Array(staged.enumerated()), id: \.offset) { _, sample in
+                        StagedSampleRow(sample: sample)
+                    }
+                    ProtocolNote()
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            VStack {
+                ProtocolNote()
+                Spacer(minLength: 0)
+            }
+            .frame(maxHeight: .infinity)
+        }
+    }
+
+    /// Primary action — pick files / re-pick to stage more.
+    private var pickButton: some View {
+        EP133PrimaryButton(label: staged.isEmpty ? "PICK FILES" : "PICK MORE FILES") {
+            viewModel.triggerPick()
+        }
+        .accessibilityIdentifier(TestTags.IMPORT_PICK_BUTTON)
+    }
+
+    @ViewBuilder private var snackbarOverlay: some View {
+        if let message = viewModel.snackbarMessage {
+            ImportSnackbarToast(message: message)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 16)
+                .task(id: message) {
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    viewModel.dismissSnackbar()
+                }
         }
     }
 }
