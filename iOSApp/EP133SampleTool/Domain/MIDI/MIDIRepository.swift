@@ -728,15 +728,16 @@ class MIDIRepository {
     /// Compute the raw PCM bytes per DATA page for /sounds uploads, bounded by the device's
     /// negotiated chunk size from the FILE_INIT handshake.
     ///
-    /// Mirrors the reference tool's calculateMaxPayloadLength formula (data/index.js):
-    ///   o = 11 (SysEx envelope overhead); s = chunkSize − 6; inner = s − 1 − o;
+    /// Mirrors the reference tool's calculateMaxPayloadLength formula (data/index.js), with the
+    /// JS single-letter names spelled out:
+    ///   envelopeOverhead = 11; chunkBudget = chunkSize − 6; inner = chunkBudget − 1 − envelopeOverhead;
     ///   maxPayload = inner − inner/8 (7-bit packing expands by 1/8); raw = maxPayload − 6.
     /// Clamped to [64, 440]. Falls back to 256 when chunkSize is 0 or unknown.
     func computeSampleChunkSize(_ chunkSize: Int) -> Int {
         if chunkSize <= 0 { return 256 }
-        let o = 11
-        let s = chunkSize - 6
-        let inner = s - 1 - o
+        let envelopeOverhead = 11
+        let chunkBudget = chunkSize - 6
+        let inner = chunkBudget - 1 - envelopeOverhead
         if inner <= 0 { return 64 }
         let maxPayload = inner - (inner / 8)
         let raw = maxPayload - 6
@@ -1051,13 +1052,7 @@ class MIDIRepository {
         if deviceState.outputPortId == nil { return false }
         return try await fileOpMutex.withLock { () async throws -> Bool in
             do {
-                guard let projectsNode = try await resolveNodeIdInternal("/projects") else {
-                    return false
-                }
-                guard let activeProjNodeId = jsonInt(try await getMetadataJson(projectsNode), "active")
-                    .flatMap({ $0 >= 0 ? $0 : nil })
-                else { return false }
-                guard let projName = try await getNodeInfo(activeProjNodeId)?.name else {
+                guard let projName = try await resolveActiveProjectNameNoLock() else {
                     return false
                 }
                 guard let groupNode = try await resolveNodeIdInternal(
@@ -1128,14 +1123,22 @@ class MIDIRepository {
     /// an empty pad's FILE_METADATA GET returns exactly `{"sym":0}`, so SET-ting it back unbinds.
     private let padEmptyJson = "{\"sym\":0}"
 
-    /// Resolve a pad node id at `/projects/<active>/groups/<X>/<NN>` inside a fileOpMutex-locked
-    /// context. Shared by `assignSampleToPad` and `clearPad`.
-    private func resolvePadNodeIdNoLock(group: PadChannel, gridIndex: Int) async throws -> Int? {
+    /// Walk `/projects` → its `"active"` metadata pointer → the active project's node name.
+    /// NoLock: callers are already inside `fileOpMutex.withLock`. nil if any hop is missing.
+    /// (`getActiveGroupIndexNoLock` keeps its own inline walk — it caches on the project *node id*,
+    /// which this name-only helper doesn't expose.)
+    private func resolveActiveProjectNameNoLock() async throws -> String? {
         guard let projectsNode = try await resolveNodeIdInternal("/projects") else { return nil }
         guard let activeProjNodeId = jsonInt(try await getMetadataJson(projectsNode), "active")
             .flatMap({ $0 >= 0 ? $0 : nil })
         else { return nil }
-        guard let projName = try await getNodeInfo(activeProjNodeId)?.name else { return nil }
+        return try await getNodeInfo(activeProjNodeId)?.name
+    }
+
+    /// Resolve a pad node id at `/projects/<active>/groups/<X>/<NN>` inside a fileOpMutex-locked
+    /// context. Shared by `assignSampleToPad` and `clearPad`.
+    private func resolvePadNodeIdNoLock(group: PadChannel, gridIndex: Int) async throws -> Int? {
+        guard let projName = try await resolveActiveProjectNameNoLock() else { return nil }
         let groupDirPath = "/projects/\(projName)/groups/\(group.rawValue)"
         guard let groupDirNode = try await resolveNodeIdInternal(groupDirPath) else { return nil }
         guard let body = try await listNodeBody(groupDirNode, requestId: nextFileReqId()) else {
@@ -1208,13 +1211,7 @@ class MIDIRepository {
         return try await fileOpMutex.withLock { () async throws -> [Int: String] in
             _ = try await ensureFileSessionInitNoLock()
             do {
-                guard let projectsNode = try await resolveNodeIdInternal("/projects") else {
-                    return [:]
-                }
-                guard let activeProjNodeId = jsonInt(try await getMetadataJson(projectsNode), "active")
-                    .flatMap({ $0 >= 0 ? $0 : nil })
-                else { return [:] }
-                guard let projName = try await getNodeInfo(activeProjNodeId)?.name else { return [:] }
+                guard let projName = try await resolveActiveProjectNameNoLock() else { return [:] }
                 guard let groupDir = try await resolveNodeIdInternal(
                     "/projects/\(projName)/groups/\(group.rawValue)")
                 else { return [:] }
