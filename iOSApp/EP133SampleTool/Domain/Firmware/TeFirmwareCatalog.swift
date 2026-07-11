@@ -85,7 +85,7 @@ final class TeFirmwareCatalog: FirmwareCatalog {
             let (data, response) = try await session.data(for: request)
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 200
             if statusCode != 200 {
-                print("[EP133APP] FW releases: HTTP \(statusCode)")
+                EP133Log.error(.app, "FW releases: HTTP \(statusCode)")
                 fetched = nil
             } else if let body = String(data: data, encoding: .utf8) {
                 fetched = parseReleases(body)
@@ -93,7 +93,7 @@ final class TeFirmwareCatalog: FirmwareCatalog {
                 fetched = nil
             }
         } catch {
-            print("[EP133APP] FW releases fetch failed: \(error)")
+            EP133Log.error(.app, "FW releases fetch failed: \(error)")
             fetched = nil
         }
         return floorToBundled(fetched)

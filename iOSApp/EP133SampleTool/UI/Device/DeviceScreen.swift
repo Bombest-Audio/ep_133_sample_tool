@@ -158,7 +158,7 @@ class DeviceViewModel {
         firmwareUpdate = .checking
         let rawFw = deviceState.firmwareVersion
         guard let current = FirmwareVersion.parse(rawFw) else {
-            print("[EP133APP] FW check: unparseable firmware '\(rawFw ?? "nil")'")
+            EP133Log.warning(.app, "FW check: unparseable firmware '\(rawFw ?? "nil")'")
             firmwareUpdate = .unknown
             return
         }

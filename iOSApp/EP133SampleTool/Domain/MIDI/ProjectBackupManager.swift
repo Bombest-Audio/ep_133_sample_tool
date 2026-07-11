@@ -111,7 +111,7 @@ final class ProjectBackupManager {
                 } catch is CancellationError {
                     return
                 } catch {
-                    print("[EP133APP] Project backup download failed for \(slot.name): \(error)")
+                    EP133Log.error(.backup, "Project backup download failed for \(slot.name): \(error)")
                     continuation.yield(.error(message: "Download failed: \(error)"))
                     return
                 }
@@ -124,7 +124,7 @@ final class ProjectBackupManager {
                     try Data(archive).write(to: out)   // opaque blob — written as-is
                     file = out
                 } catch {
-                    print("[EP133APP] Project backup write failed for \(slot.name): \(error)")
+                    EP133Log.error(.backup, "Project backup write failed for \(slot.name): \(error)")
                     continuation.yield(.error(message: "Write failed: \(error)"))
                     return
                 }
@@ -194,7 +194,7 @@ final class ProjectBackupManager {
                 do {
                     bytes = [UInt8](try Data(contentsOf: file))
                 } catch {
-                    print("[EP133APP] Project restore read failed for \(name): \(error)")
+                    EP133Log.error(.backup, "Project restore read failed for \(name): \(error)")
                     continuation.yield(.error(message: "Read failed: \(error)"))
                     return
                 }
@@ -224,7 +224,7 @@ final class ProjectBackupManager {
                 } catch is CancellationError {
                     return
                 } catch {
-                    print("[EP133APP] Project restore upload failed for \(name): \(error)")
+                    EP133Log.error(.backup, "Project restore upload failed for \(name): \(error)")
                     continuation.yield(.error(message: "Upload failed: \(error)"))
                     return
                 }

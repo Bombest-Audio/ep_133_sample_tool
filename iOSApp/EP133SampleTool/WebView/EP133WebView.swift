@@ -83,7 +83,7 @@ struct EP133WebView: UIViewRepresentable {
             forResource: "MIDIBridgePolyfill",
             withExtension: "js"
         ) else {
-            print("[EP133] Warning: MIDIBridgePolyfill.js not found in bundle")
+            EP133Log.warning(.midi, "MIDIBridgePolyfill.js not found in bundle")
             return nil
         }
         return try? String(contentsOf: url, encoding: .utf8)

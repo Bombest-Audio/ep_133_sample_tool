@@ -323,7 +323,7 @@ final class BackupManager {
                             if fileData[entry.name] == nil { order.append(entry.name) }
                             fileData[entry.name] = bytes
                         } else {
-                            print("[EP133BACKUP] skip '\(entry.name)' (node \(entry.nodeId)): GET returned no data")
+                            EP133Log.warning(.backup, "skip '\(entry.name)' (node \(entry.nodeId)): GET returned no data")
                         }
                     }
 
@@ -402,7 +402,7 @@ final class BackupManager {
                     } catch is CancellationError {
                         return
                     } catch {
-                        print("[EP133BACKUP] restore failed on '\(entry.name)': \(error)")
+                        EP133Log.error(.backup, "restore failed on '\(entry.name)': \(error)")
                         nodeId = nil
                     }
                     if nodeId == nil {

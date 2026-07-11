@@ -78,7 +78,7 @@ class PadsViewModel {
     func refreshActiveGroupFromDevice() {
         Task { [weak self] in
             guard let self else { return }
-            print("[EP133APP] MIDI META: poll tick → refreshActiveGroupFromDevice")
+            EP133Log.debug(.app, "MIDI META: poll tick → refreshActiveGroupFromDevice")
             // try? flattens the Int?? from `async throws -> Int?` — nil on error OR no device.
             guard let idx = try? await self.midi.getActiveGroupIndex(),
                   PadChannel.allCases.indices.contains(idx)

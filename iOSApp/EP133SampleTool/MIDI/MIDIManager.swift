@@ -28,7 +28,7 @@ final class MIDIManager: MIDIPort {
         }
 
         guard status == noErr else {
-            print("[EP133] Failed to create MIDI client: \(status)")
+            EP133Log.error(.midi, "Failed to create MIDI client: \(status)")
             return
         }
 
@@ -115,7 +115,7 @@ final class MIDIManager: MIDIPort {
         }
 
         guard destination != 0 else {
-            print("[EP133] MIDI destination not found: \(portId)")
+            EP133Log.warning(.midi, "MIDI destination not found: \(portId)")
             return
         }
 
