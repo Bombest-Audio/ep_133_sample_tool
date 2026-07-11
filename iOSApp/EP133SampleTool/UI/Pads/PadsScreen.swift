@@ -275,18 +275,9 @@ private struct PadCell: View {
     let state: PadState
 
     var body: some View {
-        let idColor: Color = switch state {
-        case .empty: Color(argb: 0xFF5D5E5F)
-        case .loaded: Color(argb: 0xFFC9CACB)
-        case .pressed: t.accent
-        case .inScale: t.live
-        }
-        let border: Color = switch state {
-        case .inScale: t.live
-        case .pressed: t.accent
-        default: t.padEdge
-        }
-        let face = state == .pressed ? t.padTop : t.padFace
+        let idColor = state.idColor(t)
+        let border = state.borderColor(t)
+        let face = state.faceColor(t)
 
         VStack(alignment: .leading, spacing: 3) {
             Text(id)

@@ -54,6 +54,32 @@ struct EP133StatusDot: View {
 // ── Pad cell ──────────────────────────────────────────────────────────────────
 enum PadState { case empty, loaded, pressed, inScale }
 
+extension PadState {
+    /// The pad's id-label color for this state.
+    func idColor(_ t: EP133Tokens) -> Color {
+        switch self {
+        case .empty: Color(argb: 0xFF5D5E5F)
+        case .loaded: Color(argb: 0xFFC9CACB)
+        case .pressed: t.accent
+        case .inScale: t.live
+        }
+    }
+
+    /// The pad's border color: teal in-scale hairline, accent when pressed, else the panel edge.
+    func borderColor(_ t: EP133Tokens) -> Color {
+        switch self {
+        case .inScale: t.live
+        case .pressed: t.accent
+        default: t.padEdge
+        }
+    }
+
+    /// The pad's face fill: the raised top when pressed, the normal face otherwise.
+    func faceColor(_ t: EP133Tokens) -> Color {
+        self == .pressed ? t.padTop : t.padFace
+    }
+}
+
 /// A rubber pad cell: faceplate-black face, hard corners, mono id + name. `state` drives the id
 /// color and the pressed glow / in-scale teal hairline, matching the design's pad variants.
 struct EP133Pad: View {
@@ -64,18 +90,9 @@ struct EP133Pad: View {
     var onClick: (() -> Void)? = nil
 
     var body: some View {
-        let idColor: Color = switch state {
-        case .empty: Color(argb: 0xFF5D5E5F)
-        case .loaded: Color(argb: 0xFFC9CACB)
-        case .pressed: t.accent
-        case .inScale: t.live
-        }
-        let border: Color = switch state {
-        case .inScale: t.live
-        case .pressed: t.accent
-        default: t.padEdge
-        }
-        let face = state == .pressed ? t.padTop : t.padFace
+        let idColor = state.idColor(t)
+        let border = state.borderColor(t)
+        let face = state.faceColor(t)
 
         VStack(alignment: .leading, spacing: 3) {
             Text(id)
