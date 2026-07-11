@@ -110,6 +110,7 @@ sealed class FirmwareUpdateState {
 class DeviceViewModel(
     private val midi: MIDIRepository,
     private val catalog: FirmwareCatalog = TeFirmwareCatalog(),
+    private val backups: BackupManager = BackupManager(midi),
 ) : ViewModel() {
 
     val deviceState: StateFlow<DeviceState> = midi.deviceState
@@ -170,7 +171,7 @@ class DeviceViewModel(
 
     fun triggerBackup() {
         if (_isBackupInProgress.value || _isRestoreInProgress.value) return
-        val name = BackupManager(midi).suggestedBackupFilename()
+        val name = backups.suggestedBackupFilename()
         onRequestBackup?.invoke(name)
     }
 
@@ -183,7 +184,7 @@ class DeviceViewModel(
         viewModelScope.launch {
             _isBackupInProgress.value = true
             _backupProgress.value = 0f
-            val backupManager = BackupManager(midi)
+            val backupManager = backups
             backupManager.createBackup().collect { progress ->
                 when (progress) {
                     is BackupProgress.Progress -> {
@@ -232,7 +233,7 @@ class DeviceViewModel(
         viewModelScope.launch {
             _isRestoreInProgress.value = true
             _restoreProgress.value = 0f
-            BackupManager(midi).restore(bytes).collect { progress ->
+            backups.restore(bytes).collect { progress ->
                 when (progress) {
                     is RestoreProgress.Progress -> {
                         if (progress.total > 0) {

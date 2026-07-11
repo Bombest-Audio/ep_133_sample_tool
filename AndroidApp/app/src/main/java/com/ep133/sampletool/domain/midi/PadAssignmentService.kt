@@ -78,6 +78,33 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
         return ActiveProject(activeProjNodeId, projName)
     }
 
+    /**
+     * Run a pad operation under FTC's file-op lock with the shared error handling every public
+     * method here needs: acquire [FileTransferClient.withFileOpLock], optionally initialise the
+     * file session, run [block], rethrow [CancellationException], and on any other failure log
+     * "[label] failed" and return [sentinel]. Inside [block], `return@withPadOp <value>` short-
+     * circuits to that value (it becomes the op's result).
+     *
+     * @param ensureInit whether to call [FileTransferClient.ensureFileSessionInitNoLock] first
+     *   (true for every op except setActiveGroup, which relies on an already-open session).
+     */
+    private suspend fun <T> withPadOp(
+        label: String,
+        sentinel: T,
+        ensureInit: Boolean = true,
+        block: suspend () -> T,
+    ): T = ftc.withFileOpLock {
+        if (ensureInit) ftc.ensureFileSessionInitNoLock()
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("EP133APP", "$label failed", e)
+            sentinel
+        }
+    }
+
     // ── Active-group sync: nodeId-form metadata round-trips (Step 1) ─────────────
     //
     // These implement the reference tool's group-select mechanism:
@@ -123,16 +150,8 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
             return null
         }
         return try {
-            ftc.withFileOpLock {
-                ftc.ensureFileSessionInitNoLock()
-                try {
-                    getActiveGroupIndexNoLock()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e("EP133APP", "MIDI META: getActiveGroupIndex failed", e)
-                    null
-                }
+            withPadOp("MIDI META: getActiveGroupIndex", sentinel = null) {
+                getActiveGroupIndexNoLock()
             }
         } finally {
             activeGroupPollInFlight.set(false)
@@ -202,20 +221,13 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
      */
     open suspend fun setActiveGroup(index: Int): Boolean {
         val channel = PadChannel.entries.getOrNull(index) ?: return false
-        return ftc.withFileOpLock {
-            try {
-                // Shared walk; minActive=0 preserves this site's original
-                // `.takeIf { it >= 0 }` validation exactly.
-                val (_, projName) = resolveActiveProjectNoLock() ?: return@withFileOpLock false
-                val groupNode = ftc.resolveNodeIdInternal("/projects/$projName/groups/${channel.name}") ?: return@withFileOpLock false
-                val groupsNode = ftc.resolveNodeIdInternal("/projects/$projName/groups") ?: return@withFileOpLock false
-                ftc.setMetadata(groupsNode, """{"active":$groupNode}""")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e("EP133APP", "MIDI META: setActiveGroup($index) failed", e)
-                false
-            }
+        // ensureInit=false: this op relies on an already-open file session (unlike the others).
+        return withPadOp("MIDI META: setActiveGroup($index)", sentinel = false, ensureInit = false) {
+            // Shared walk; minActive=0 preserves this site's original `.takeIf { it >= 0 }`.
+            val (_, projName) = resolveActiveProjectNoLock() ?: return@withPadOp false
+            val groupNode = ftc.resolveNodeIdInternal("/projects/$projName/groups/${channel.name}") ?: return@withPadOp false
+            val groupsNode = ftc.resolveNodeIdInternal("/projects/$projName/groups") ?: return@withPadOp false
+            ftc.setMetadata(groupsNode, """{"active":$groupNode}""")
         }
     }
 
@@ -262,21 +274,13 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
         playmode: String = "oneshot",
         muteGroup: Boolean = false,
     ): Boolean {
-        return ftc.withFileOpLock {
-            ftc.ensureFileSessionInitNoLock()
-            try {
-                val padNodeId = resolvePadNodeIdNoLock(group, gridIndex) ?: return@withFileOpLock false
+        return withPadOp("assignSampleToPad(${group.name}[$gridIndex])", sentinel = false) {
+            val padNodeId = resolvePadNodeIdNoLock(group, gridIndex) ?: return@withPadOp false
 
-                // Build and write the hardware-verified pad metadata JSON.
-                val json = buildPadAssignmentJson(sampleNodeId, sampleStart, sampleEnd, playmode, muteGroup)
-                Log.d("EP133APP", "assignSampleToPad: group=${group.name} gridIndex=$gridIndex padNode=$padNodeId json=$json")
-                ftc.setMetadata(padNodeId, json)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e("EP133APP", "assignSampleToPad(${group.name}[$gridIndex]) failed", e)
-                false
-            }
+            // Build and write the hardware-verified pad metadata JSON.
+            val json = buildPadAssignmentJson(sampleNodeId, sampleStart, sampleEnd, playmode, muteGroup)
+            Log.d("EP133APP", "assignSampleToPad: group=${group.name} gridIndex=$gridIndex padNode=$padNodeId json=$json")
+            ftc.setMetadata(padNodeId, json)
         }
     }
 
@@ -338,18 +342,10 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
      * plays nothing. Returns false if the pad can't be resolved.
      */
     open suspend fun clearPad(group: PadChannel, gridIndex: Int): Boolean {
-        return ftc.withFileOpLock {
-            ftc.ensureFileSessionInitNoLock()
-            try {
-                val padNodeId = resolvePadNodeIdNoLock(group, gridIndex) ?: return@withFileOpLock false
-                Log.d("EP133APP", "clearPad: group=${group.name} gridIndex=$gridIndex padNode=$padNodeId")
-                ftc.setMetadata(padNodeId, padEmptyJson)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e("EP133APP", "clearPad(${group.name}[$gridIndex]) failed", e)
-                false
-            }
+        return withPadOp("clearPad(${group.name}[$gridIndex])", sentinel = false) {
+            val padNodeId = resolvePadNodeIdNoLock(group, gridIndex) ?: return@withPadOp false
+            Log.d("EP133APP", "clearPad: group=${group.name} gridIndex=$gridIndex padNode=$padNodeId")
+            ftc.setMetadata(padNodeId, padEmptyJson)
         }
     }
 
@@ -361,29 +357,21 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
      * @return the number of pads emptied, or -1 on failure.
      */
     open suspend fun clearProject(projectName: String): Int {
-        return ftc.withFileOpLock {
-            ftc.ensureFileSessionInitNoLock()
-            try {
-                var cleared = 0
-                for (group in PadChannel.entries) {
-                    val groupDir = ftc.resolveNodeIdInternal("/projects/$projectName/groups/${group.name}")
-                        ?: continue
-                    val body = ftc.listNodeBody(groupDir, requestId = ftc.nextRequestId()) ?: continue
-                    val padNodes = SysExProtocol.parseFileListEntries(body)
-                        .filter { it.name.length == 2 && it.name.all(Char::isDigit) }  // pad dirs 01..12
-                        .map { it.nodeId }
-                    for (padNode in padNodes) {
-                        if (ftc.setMetadata(padNode, padEmptyJson)) cleared++
-                    }
+        return withPadOp("clearProject($projectName)", sentinel = -1) {
+            var cleared = 0
+            for (group in PadChannel.entries) {
+                val groupDir = ftc.resolveNodeIdInternal("/projects/$projectName/groups/${group.name}")
+                    ?: continue
+                val body = ftc.listNodeBody(groupDir, requestId = ftc.nextRequestId()) ?: continue
+                val padNodes = SysExProtocol.parseFileListEntries(body)
+                    .filter { it.name.length == 2 && it.name.all(Char::isDigit) }  // pad dirs 01..12
+                    .map { it.nodeId }
+                for (padNode in padNodes) {
+                    if (ftc.setMetadata(padNode, padEmptyJson)) cleared++
                 }
-                Log.d("EP133APP", "clearProject($projectName): emptied $cleared pads")
-                cleared
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e("EP133APP", "clearProject($projectName) failed", e)
-                -1
             }
+            Log.d("EP133APP", "clearProject($projectName): emptied $cleared pads")
+            cleared
         }
     }
 
@@ -399,34 +387,25 @@ open class PadAssignmentService(private val ftc: FileTransferClient) {
      * a FILE_INFO per occupied pad to name it). Returns an empty map on error.
      */
     open suspend fun readGroupPadState(group: PadChannel): Map<Int, String> {
-        return ftc.withFileOpLock {
-            ftc.ensureFileSessionInitNoLock()
-            try {
-                // Shared walk; minActive=0 preserves this site's original
-                // `.takeIf { it >= 0 }` validation exactly.
-                val (_, projName) = resolveActiveProjectNoLock() ?: return@withFileOpLock emptyMap()
-                val groupDir = ftc.resolveNodeIdInternal("/projects/$projName/groups/${group.name}")
-                    ?: return@withFileOpLock emptyMap()
-                val body = ftc.listNodeBody(groupDir, requestId = ftc.nextRequestId()) ?: return@withFileOpLock emptyMap()
-                val padEntries = SysExProtocol.parseFileListEntries(body)
-                    .filter { it.name.length == 2 && it.name.all(Char::isDigit) }  // pad dirs 01..12
-                val result = LinkedHashMap<Int, String>()
-                for (entry in padEntries) {
-                    val gridIndex = (entry.name.toIntOrNull() ?: continue) - 1
-                    if (gridIndex !in 0 until 12) continue
-                    val sym = ftc.getMetadataJson(entry.nodeId).optInt("sym", 0)
-                    if (sym == 0) continue
-                    val name = ftc.getNodeInfo(sym)?.name?.substringBeforeLast('.') ?: "sample"
-                    result[gridIndex] = name
-                }
-                Log.d("EP133APP", "readGroupPadState(${group.name}): ${result.size} occupied pads")
-                result
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e("EP133APP", "readGroupPadState(${group.name}) failed", e)
-                emptyMap()
+        return withPadOp("readGroupPadState(${group.name})", sentinel = emptyMap<Int, String>()) {
+            // Shared walk; minActive=0 preserves this site's original `.takeIf { it >= 0 }`.
+            val (_, projName) = resolveActiveProjectNoLock() ?: return@withPadOp emptyMap()
+            val groupDir = ftc.resolveNodeIdInternal("/projects/$projName/groups/${group.name}")
+                ?: return@withPadOp emptyMap()
+            val body = ftc.listNodeBody(groupDir, requestId = ftc.nextRequestId()) ?: return@withPadOp emptyMap()
+            val padEntries = SysExProtocol.parseFileListEntries(body)
+                .filter { it.name.length == 2 && it.name.all(Char::isDigit) }  // pad dirs 01..12
+            val result = LinkedHashMap<Int, String>()
+            for (entry in padEntries) {
+                val gridIndex = (entry.name.toIntOrNull() ?: continue) - 1
+                if (gridIndex !in 0 until 12) continue
+                val sym = ftc.getMetadataJson(entry.nodeId).optInt("sym", 0)
+                if (sym == 0) continue
+                val name = ftc.getNodeInfo(sym)?.name?.substringBeforeLast('.') ?: "sample"
+                result[gridIndex] = name
             }
+            Log.d("EP133APP", "readGroupPadState(${group.name}): ${result.size} occupied pads")
+            result
         }
     }
 }

@@ -116,13 +116,13 @@ class MIDIManager(
             for (port in info.ports) {
                 when (port.type) {
                     MidiDeviceInfo.PortInfo.TYPE_OUTPUT -> {
-                        val portId = "${deviceId}_out_${port.portNumber}"
+                        val portId = PortId(deviceId, PortId.DIR_OUT, port.portNumber).wire
                         val portName = port.name?.takeIf { it.isNotBlank() } ?: deviceName
                         inputs.add(MIDIPort.Device(portId, portName))
                         Log.d(TAG, "  Input port: $portId ($portName)")
                     }
                     MidiDeviceInfo.PortInfo.TYPE_INPUT -> {
-                        val portId = "${deviceId}_in_${port.portNumber}"
+                        val portId = PortId(deviceId, PortId.DIR_IN, port.portNumber).wire
                         val portName = port.name?.takeIf { it.isNotBlank() } ?: deviceName
                         outputs.add(MIDIPort.Device(portId, portName))
                         Log.d(TAG, "  Output port: $portId ($portName)")
@@ -182,12 +182,10 @@ class MIDIManager(
 
     override fun prewarmSendPort(portId: String) {
         if (openInputPorts.containsKey(portId)) return
-        val parts = portId.split("_")
-        if (parts.size < 3) return
-        val deviceId = parts[0].toIntOrNull() ?: return
-        val portNumber = parts[2].toIntOrNull() ?: return
+        val pid = PortId.parse(portId) ?: return
+        val portNumber = pid.portNumber
         Log.d(TAG, "Pre-warming send port $portId")
-        openOrGetDevice(deviceId) { device ->
+        openOrGetDevice(pid.deviceId) { device ->
             if (device == null) return@openOrGetDevice
             val inputPort = device.openInputPort(portNumber)
             if (inputPort != null) {
@@ -209,18 +207,15 @@ class MIDIManager(
             }
         }
 
-        val parts = portId.split("_")
-        if (parts.size < 3) {
+        val pid = PortId.parse(portId) ?: run {
             Log.e(TAG, "Invalid portId format: $portId")
             return
         }
+        val portNumber = pid.portNumber
 
-        val deviceId = parts[0].toIntOrNull() ?: return
-        val portNumber = parts[2].toIntOrNull() ?: return
-
-        openOrGetDevice(deviceId) { device ->
+        openOrGetDevice(pid.deviceId) { device ->
             if (device == null) {
-                Log.e(TAG, "Could not open MIDI device $deviceId")
+                Log.e(TAG, "Could not open MIDI device ${pid.deviceId}")
                 return@openOrGetDevice
             }
 
@@ -233,7 +228,7 @@ class MIDIManager(
                     Log.e(TAG, "Failed to send MIDI: ${e.message}")
                 }
             } else {
-                Log.e(TAG, "Could not open input port $portNumber on device $deviceId")
+                Log.e(TAG, "Could not open input port $portNumber on device ${pid.deviceId}")
             }
         }
     }
@@ -252,21 +247,18 @@ class MIDIManager(
     override fun startListening(portId: String) {
         if (openOutputPorts.containsKey(portId)) return
 
-        val parts = portId.split("_")
-        if (parts.size < 3) return
-
-        val deviceId = parts[0].toIntOrNull() ?: return
-        val portNumber = parts[2].toIntOrNull() ?: return
+        val pid = PortId.parse(portId) ?: return
+        val portNumber = pid.portNumber
 
         // Synchronous dedup: if an openOutputPort() for this port is already in flight, bail —
         // otherwise a second enumeration connects a duplicate receiver (every message twice).
         if (!startingOutputPorts.add(portId)) return
 
-        Log.d(TAG, "startListening: opening device $deviceId for port $portId")
-        openOrGetDevice(deviceId) { device ->
+        Log.d(TAG, "startListening: opening device ${pid.deviceId} for port $portId")
+        openOrGetDevice(pid.deviceId) { device ->
             try {
                 if (device == null) {
-                    Log.e(TAG, "startListening: device $deviceId open failed")
+                    Log.e(TAG, "startListening: device ${pid.deviceId} open failed")
                     return@openOrGetDevice
                 }
                 // Re-check after the async hop in case another path already connected while
