@@ -319,61 +319,26 @@ final class KitViewModel {
                 return
             }
 
-            // Per-slice upload + assign — same path as kit mode.
+            // Per-slice upload + assign via the shared hardware tail.
             for i in slices.indices {
                 let slicePcm = slices[i]
                 let sliceFrames = slicePcm.count / bytesPerFrame
                 let sliceName = "\(substringBeforeLastDot(safeName))_\(i + 1).wav"
                 self.updateItem(group, i) { $0.state = .working }
-
-                let sliceNodeId: Int?
-                do {
-                    sliceNodeId = try await self.deviceMutex.withLock {
-                        try await self.midi.putSampleFile(
-                            name: sliceName, pcmBytes: [UInt8](slicePcm),
-                            channels: chopChannels, sampleRate: converted.sampleRate)
-                    }
-                } catch is CancellationError {
+                let sample = ConvertedSample(
+                    pcm: [UInt8](slicePcm), channels: chopChannels, sampleRate: converted.sampleRate)
+                switch await self.uploadAndAssign(
+                    sample, frames: sliceFrames, to: group, index: i, name: sliceName, chokeOn: chokeOn) {
+                case .cancelled:
                     return
-                } catch {
-                    let msg = importErrorMessage(error) ?? "Upload failed"
-                    self.updateItem(group, i) { $0.state = .error; $0.errorMessage = msg }
+                case .uploadFailed(let msg):
                     self.snackbarMessage = "Slice \(i + 1) upload failed: \(msg)"
-                    continue
-                }
-
-                guard let nodeId = sliceNodeId else {
-                    self.updateItem(group, i) {
-                        $0.state = .error; $0.errorMessage = "Upload rejected by device"
-                    }
+                case .uploadRejected:
                     self.snackbarMessage = "Slice \(i + 1) upload rejected — reconnect and retry"
-                    continue
-                }
-
-                let ok: Bool
-                do {
-                    ok = try await self.deviceMutex.withLock {
-                        try await self.midi.assignSampleToPad(
-                            group: group,
-                            gridIndex: i < PAD_FILL_ORDER.count ? PAD_FILL_ORDER[i] : i,
-                            sampleNodeId: nodeId, sampleStart: 0, sampleEnd: sliceFrames,
-                            muteGroup: chokeOn)
-                    }
-                } catch is CancellationError {
-                    return
-                } catch {
-                    let msg = importErrorMessage(error) ?? "Assign failed"
-                    self.updateItem(group, i) { $0.state = .error; $0.errorMessage = msg }
+                case .assignFailed(let msg):
                     self.snackbarMessage = "Slice \(i + 1) assign failed: \(msg)"
-                    continue
-                }
-
-                if ok {
-                    self.updateItem(group, i) { $0.state = .done }
-                } else {
-                    self.updateItem(group, i) {
-                        $0.state = .error; $0.errorMessage = "Assign rejected by device"
-                    }
+                case .success, .assignRejected:
+                    break
                 }
             }
 
@@ -428,10 +393,19 @@ final class KitViewModel {
                 }
                 let frames = converted.pcm.count / 2 / converted.channels
 
-                await self.uploadAndAssign(
-                    group: group, index: i, name: safeName, pcm: Data(converted.pcm),
-                    channels: converted.channels, sampleRate: converted.sampleRate,
-                    frames: frames, chokeOn: chokeOn, notifyViaSnackbar: true)
+                switch await self.uploadAndAssign(
+                    converted, frames: frames, to: group, index: i, name: safeName, chokeOn: chokeOn) {
+                case .cancelled:
+                    return
+                case .uploadFailed(let msg):
+                    self.snackbarMessage = "Upload failed for \(safeName): \(msg)"
+                case .uploadRejected:
+                    self.snackbarMessage = "Upload rejected for \(safeName) — reconnect and retry"
+                case .assignFailed(let msg):
+                    self.snackbarMessage = "Assign failed for \(safeName): \(msg)"
+                case .success, .assignRejected:
+                    break
+                }
             }
         }
     }
@@ -452,7 +426,7 @@ final class KitViewModel {
     ///   - pcm: Raw s16 LE PCM bytes (no RIFF header).
     ///   - channels: 1 or 2.
     ///   - sampleRate: Device sample rate (default 46875).
-    func chopFromPcm(name: String, pcm: Data, channels: Int = 1, sampleRate: Int = 46875) {
+    func chopFromPcm(name: String, pcm: Data, channels: Int = 1, sampleRate: Int = EP133Device.sampleRate) {
         let group = session.selected
         let sliceCount = resolvedSliceCountFor(group)
         let chokeOn = session.chokeFor(group)
@@ -489,59 +463,24 @@ final class KitViewModel {
                 return
             }
 
-            // Per-slice upload + assign.
+            // Per-slice upload + assign via the shared hardware tail.
             for i in slices.indices {
                 let slicePcm = slices[i]
                 let sliceFrames = slicePcm.count / bytesPerFrame
                 let sliceName = "\(substringBeforeLastDot(safeName))_\(i + 1).wav"
                 self.updateItem(group, i) { $0.state = .working }
-
-                let sliceNodeId: Int?
-                do {
-                    sliceNodeId = try await self.deviceMutex.withLock {
-                        try await self.midi.putSampleFile(
-                            name: sliceName, pcmBytes: [UInt8](slicePcm),
-                            channels: channels, sampleRate: sampleRate)
-                    }
-                } catch is CancellationError {
+                let sample = ConvertedSample(
+                    pcm: [UInt8](slicePcm), channels: channels, sampleRate: sampleRate)
+                switch await self.uploadAndAssign(
+                    sample, frames: sliceFrames, to: group, index: i, name: sliceName, chokeOn: chokeOn) {
+                case .cancelled:
                     return
-                } catch {
-                    let msg = importErrorMessage(error) ?? "Upload failed"
-                    self.updateItem(group, i) { $0.state = .error; $0.errorMessage = msg }
+                case .uploadFailed(let msg):
                     self.snackbarMessage = "Slice \(i + 1) upload failed: \(msg)"
-                    continue
-                }
-
-                guard let nodeId = sliceNodeId else {
-                    self.updateItem(group, i) {
-                        $0.state = .error; $0.errorMessage = "Upload rejected by device"
-                    }
+                case .uploadRejected:
                     self.snackbarMessage = "Slice \(i + 1) upload rejected — reconnect and retry"
-                    continue
-                }
-
-                let ok: Bool
-                do {
-                    ok = try await self.deviceMutex.withLock {
-                        try await self.midi.assignSampleToPad(
-                            group: group,
-                            gridIndex: i < PAD_FILL_ORDER.count ? PAD_FILL_ORDER[i] : i,
-                            sampleNodeId: nodeId, sampleStart: 0, sampleEnd: sliceFrames,
-                            muteGroup: chokeOn)
-                    }
-                } catch is CancellationError {
-                    return
-                } catch {
-                    let msg = importErrorMessage(error) ?? "Assign failed"
-                    self.updateItem(group, i) { $0.state = .error; $0.errorMessage = msg }
-                    continue
-                }
-                if ok {
-                    self.updateItem(group, i) { $0.state = .done }
-                } else {
-                    self.updateItem(group, i) {
-                        $0.state = .error; $0.errorMessage = "Assign rejected by device"
-                    }
+                case .success, .assignFailed, .assignRejected:
+                    break
                 }
             }
         }
@@ -574,48 +513,56 @@ final class KitViewModel {
                 }
                 self.updateItem(group, i) { $0.state = .working }
 
-                await self.uploadAndAssign(
-                    group: group, index: i, name: safeName, pcm: pcm,
-                    channels: channels, sampleRate: sampleRate, frames: frames,
-                    chokeOn: chokeOn, notifyViaSnackbar: false)
+                let sample = ConvertedSample(pcm: [UInt8](pcm), channels: channels, sampleRate: sampleRate)
+                if case .cancelled = await self.uploadAndAssign(
+                    sample, frames: frames, to: group, index: i, name: safeName, chokeOn: chokeOn) {
+                    return
+                }
             }
         }
     }
 
-    /// Shared kit-mode tail: putSampleFile → assignSampleToPad(full trim) for one file, driving
-    /// item `index`'s state. `notifyViaSnackbar` matches the Kotlin split: the picker path
-    /// surfaces failures as toasts, the PCM test seam only marks the row.
+    /// Outcome of one `uploadAndAssign`. The row's error state is always set inside the helper;
+    /// the outcome lets each caller apply its own messaging — the chop paths prefix a slice
+    /// number, the picker path names the file, the test seams stay silent.
+    enum PadUploadOutcome {
+        case success
+        case cancelled
+        case uploadFailed(String)
+        case uploadRejected
+        case assignFailed(String)
+        case assignRejected
+    }
+
+    /// The single hardware tail shared by the chop and kit flows: putSampleFile →
+    /// assignSampleToPad(full trim) for one sample, driving item `index`'s row state. Returns the
+    /// outcome so the caller can surface it; `.cancelled` means the caller should stop its batch.
     private func uploadAndAssign(
-        group: PadChannel,
+        _ sample: ConvertedSample,
+        frames: Int,
+        to group: PadChannel,
         index: Int,
         name: String,
-        pcm: Data,
-        channels: Int,
-        sampleRate: Int,
-        frames: Int,
-        chokeOn: Bool,
-        notifyViaSnackbar: Bool
-    ) async {
+        chokeOn: Bool
+    ) async -> PadUploadOutcome {
         // Upload + assign serialized via deviceMutex.
         let sampleNodeId: Int?
         do {
             sampleNodeId = try await deviceMutex.withLock {
                 try await self.midi.putSampleFile(
-                    name: name, pcmBytes: [UInt8](pcm), channels: channels, sampleRate: sampleRate)
+                    name: name, pcmBytes: sample.pcm, channels: sample.channels, sampleRate: sample.sampleRate)
             }
         } catch is CancellationError {
-            return
+            return .cancelled
         } catch {
             let msg = importErrorMessage(error) ?? "Upload failed"
             updateItem(group, index) { $0.state = .error; $0.errorMessage = msg }
-            if notifyViaSnackbar { snackbarMessage = "Upload failed for \(name): \(msg)" }
-            return
+            return .uploadFailed(msg)
         }
 
         guard let nodeId = sampleNodeId else {
             updateItem(group, index) { $0.state = .error; $0.errorMessage = "Upload rejected by device" }
-            if notifyViaSnackbar { snackbarMessage = "Upload rejected for \(name) — reconnect and retry" }
-            return
+            return .uploadRejected
         }
 
         let ok: Bool
@@ -627,18 +574,19 @@ final class KitViewModel {
                     sampleNodeId: nodeId, sampleStart: 0, sampleEnd: frames, muteGroup: chokeOn)
             }
         } catch is CancellationError {
-            return
+            return .cancelled
         } catch {
             let msg = importErrorMessage(error) ?? "Assign failed"
             updateItem(group, index) { $0.state = .error; $0.errorMessage = msg }
-            if notifyViaSnackbar { snackbarMessage = "Assign failed for \(name): \(msg)" }
-            return
+            return .assignFailed(msg)
         }
 
         if ok {
             updateItem(group, index) { $0.state = .done }
+            return .success
         } else {
             updateItem(group, index) { $0.state = .error; $0.errorMessage = "Assign rejected by device" }
+            return .assignRejected
         }
     }
 
