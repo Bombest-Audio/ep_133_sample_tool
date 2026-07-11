@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -54,6 +55,7 @@ import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderScreen
+import com.ep133.sampletool.ui.kitbuilder.KitBuilderState
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 import com.ep133.sampletool.ui.theme.Ep133GroupChokeBar
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
@@ -1056,20 +1058,6 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
         }
     }
 
-    val doneCount = items.count { it.isDone() }
-    val errorCount = items.count { it.isError() }
-    val headLabel = when {
-        items.isEmpty() -> "IDLE"
-        errorCount > 0 -> "$errorCount ERR · $doneCount OK"
-        doneCount == items.size -> "ALL DONE"
-        else -> "$doneCount / ${items.size} OK"
-    }
-    val headColor = when {
-        errorCount > 0 -> t.accent
-        items.isNotEmpty() && doneCount == items.size -> t.live
-        else -> t.text3
-    }
-
     Box(modifier = Modifier.fillMaxSize().background(t.bg)) {
         Column(modifier = Modifier.fillMaxSize()) {
           // Header + mode switch stay pinned above both modes.
@@ -1080,56 +1068,10 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
             verticalArrangement = Arrangement.spacedBy(11.dp),
           ) {
             // Section header + batch status (chop-only status).
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Ep133SectionLabel(
-                    if (mode == KitMode.CHOP) "Loop Chopper" else "Kit Builder",
-                    modifier = Modifier.weight(1f),
-                )
-                if (mode == KitMode.CHOP) {
-                    Text(
-                        text = headLabel,
-                        color = headColor,
-                        fontFamily = Mono,
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        letterSpacing = 0.6.sp,
-                    )
-                }
-            }
+            KitHeader(mode = mode, items = items)
 
             // Designation segmented control: CHOP | KIT — sets what the SELECTED group is.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                KitMode.entries.forEach { m ->
-                    val selected = mode == m
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(PanelRadius)
-                            .background(if (selected) t.accent else t.inset, PanelRadius)
-                            .border(1.dp, if (selected) t.accent else t.rule, PanelRadius)
-                            .clickable { viewModel.onModeChange(m) }
-                            .padding(vertical = 9.dp)
-                            .testTag(if (m == KitMode.CHOP) TestTags.KIT_MODE_CHOP else TestTags.KIT_MODE_KIT),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = if (m == KitMode.CHOP) "CHOP" else "KIT",
-                            color = if (selected) t.onAccent else t.text2,
-                            fontFamily = Mono,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                }
-            }
+            ModeSegmentedControl(mode = mode, onModeChange = viewModel::onModeChange)
 
             // Shared group + choke bar — ONE control backed by the shared GroupSession, so both
             // workflows always agree on the selected group and its choke. Each chip is tagged with
@@ -1152,119 +1094,32 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 11.dp),
             )
           } else {
-          // Scrollable chop content; the PICK button below stays pinned so it's always reachable.
-          Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp)
-                .verticalScroll(scrollState)
-                .padding(top = 11.dp),
-            verticalArrangement = Arrangement.spacedBy(11.dp),
-          ) {
-
-            // The pad grid is both the chop slice-count SELECTOR (idle) and the upload PROGRESS
-            // indicator (once a chop or kit build is running/done). One grid, two modes.
-            when {
-                items.isNotEmpty() -> {
-                    ChopProgress(items = items, modifier = Modifier.fillMaxWidth())
-                }
-                mode == KitMode.CHOP -> {
-                    SlicePadSelector(
-                        count = resolvedSliceCount,
-                        onCountChange = { viewModel.onSliceCountChange(it.toString()) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            }
-
-            // Drop / pick hint panel — tappable (it reads as a button), triggers the same pick.
-            // Capture the collected state into a local so the null-checks below smart-cast
-            // (a delegated `by collectAsState()` var can't, which is what forced the old `!!`).
-            val loop = stagedLoop
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(PanelRadius)
-                    .background(t.inset, PanelRadius)
-                    .dashedBorder(t.rule)
-                    .clickable { viewModel.triggerPick() }
-                    .padding(16.dp)
-                    .testTag(TestTags.KIT_PICK_PANEL),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text(
-                    text = when {
-                        mode == KitMode.CHOP && loop != null ->
-                            "READY · CHOP INTO $resolvedSliceCount SLICES → GROUP ${selectedGroup.name}"
-                        mode == KitMode.CHOP ->
-                            "PICK ONE LOOP · CHOP INTO $resolvedSliceCount SLICES → GROUP ${selectedGroup.name}"
-                        else ->
-                            "PICK UP TO $MAX_SLICES ONE-SHOTS → GROUP ${selectedGroup.name}"
-                    },
-                    color = t.text3,
-                    fontFamily = Mono,
-                    fontSize = 10.sp,
-                    letterSpacing = 0.4.sp,
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    text = when {
-                        mode == KitMode.CHOP && loop != null -> loop.name
-                        mode == KitMode.CHOP -> "pick loop to chop"
-                        else -> "pick one-shots to build kit"
-                    },
-                    color = t.text,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center,
-                )
-                if (mode == KitMode.CHOP && loop != null) {
-                    Text(
-                        text = "TAP TO PICK A DIFFERENT LOOP",
-                        color = t.text3, fontFamily = Mono, fontSize = 8.sp,
-                        letterSpacing = 1.sp, textAlign = TextAlign.Center,
-                    )
-                }
-            }
-
-          }
+            // Scrollable chop content; the PUSH button below stays pinned so it's always reachable.
+            ChopBody(
+                items = items,
+                mode = mode,
+                resolvedSliceCount = resolvedSliceCount,
+                stagedLoop = stagedLoop,
+                selectedGroupName = selectedGroup.name,
+                scrollState = scrollState,
+                onSliceCountChange = { viewModel.onSliceCountChange(it.toString()) },
+                onPick = viewModel::triggerPick,
+                modifier = Modifier.weight(1f),
+            )
           }
 
             // Shared PUSH TO DEVICE button — pinned below both workflows. In a CHOP group it picks
             // then chops the staged loop; in a KIT group it picks a pack then loads the staged kit.
-            val chopReady = stagedLoop != null
-            val pushLabel = if (mode == KitMode.CHOP) {
-                if (chopReady) "PUSH TO DEVICE · $resolvedSliceCount SLICES → ${selectedGroup.name}"
-                else "PICK LOOP"
-            } else {
-                when {
-                    builderState.packLoading -> "READING PACK…"
-                    builderState.pack == null -> "PICK PACK FOLDER"
-                    builderState.loading -> "PUSHING…"
-                    builderState.assignments.isEmpty() -> "ASSIGN PADS FIRST"
-                    else -> "PUSH TO DEVICE · ${builderState.assignments.size} PADS → ${selectedGroup.name}"
-                }
-            }
-            Ep133PrimaryButton(
-                label = pushLabel,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp)
-                    .padding(top = 11.dp, bottom = 14.dp)
-                    .testTag(TestTags.KIT_PUSH_BUTTON),
-                onClick = {
-                    if (mode == KitMode.CHOP) {
-                        if (chopReady) viewModel.chopStagedLoop(context) else viewModel.triggerPick()
-                    } else {
-                        when {
-                            builderState.packLoading || builderState.loading -> {}
-                            builderState.pack == null -> builderViewModel.triggerPackPick()
-                            builderState.assignments.isNotEmpty() -> builderViewModel.onLoadKit(context)
-                        }
-                    }
-                },
+            KitPushButton(
+                mode = mode,
+                chopReady = stagedLoop != null,
+                resolvedSliceCount = resolvedSliceCount,
+                selectedGroupName = selectedGroup.name,
+                builderState = builderState,
+                onChopPush = { viewModel.chopStagedLoop(context) },
+                onPickLoop = viewModel::triggerPick,
+                onPickPack = builderViewModel::triggerPackPick,
+                onLoadKit = { builderViewModel.onLoadKit(context) },
             )
         }
 
@@ -1275,5 +1130,196 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 .padding(bottom = 70.dp),
         )
     }
+}
+
+// ── Header — section label + (chop-only) batch status summary ─────────────────
+@Composable
+private fun KitHeader(mode: KitMode, items: List<KitResultItem>) {
+    val t = LocalEP133Tokens.current
+    val doneCount = items.count { it.isDone() }
+    val errorCount = items.count { it.isError() }
+    val headLabel = when {
+        items.isEmpty() -> "IDLE"
+        errorCount > 0 -> "$errorCount ERR · $doneCount OK"
+        doneCount == items.size -> "ALL DONE"
+        else -> "$doneCount / ${items.size} OK"
+    }
+    val headColor = when {
+        errorCount > 0 -> t.accent
+        items.isNotEmpty() && doneCount == items.size -> t.live
+        else -> t.text3
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Ep133SectionLabel(
+            if (mode == KitMode.CHOP) "Loop Chopper" else "Kit Builder",
+            modifier = Modifier.weight(1f),
+        )
+        if (mode == KitMode.CHOP) {
+            Text(
+                text = headLabel, color = headColor, fontFamily = Mono,
+                fontSize = 9.5.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.6.sp,
+            )
+        }
+    }
+}
+
+// ── CHOP | KIT segmented control — sets the selected group's designation ──────
+@Composable
+private fun ModeSegmentedControl(mode: KitMode, onModeChange: (KitMode) -> Unit) {
+    val t = LocalEP133Tokens.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        KitMode.entries.forEach { m ->
+            val selected = mode == m
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(PanelRadius)
+                    .background(if (selected) t.accent else t.inset, PanelRadius)
+                    .border(1.dp, if (selected) t.accent else t.rule, PanelRadius)
+                    .clickable { onModeChange(m) }
+                    .padding(vertical = 9.dp)
+                    .testTag(if (m == KitMode.CHOP) TestTags.KIT_MODE_CHOP else TestTags.KIT_MODE_KIT),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = if (m == KitMode.CHOP) "CHOP" else "KIT",
+                    color = if (selected) t.onAccent else t.text2,
+                    fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+    }
+}
+
+// ── Chop body — the scrollable slice grid (selector or progress) + pick panel ─
+@Composable
+private fun ChopBody(
+    items: List<KitResultItem>,
+    mode: KitMode,
+    resolvedSliceCount: Int,
+    stagedLoop: StagedLoop?,
+    selectedGroupName: String,
+    scrollState: ScrollState,
+    onSliceCountChange: (Int) -> Unit,
+    onPick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val t = LocalEP133Tokens.current
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp)
+            .verticalScroll(scrollState)
+            .padding(top = 11.dp),
+        verticalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        // The pad grid is both the chop slice-count SELECTOR (idle) and the upload PROGRESS
+        // indicator (once a chop or kit build is running/done). One grid, two modes.
+        when {
+            items.isNotEmpty() -> ChopProgress(items = items, modifier = Modifier.fillMaxWidth())
+            mode == KitMode.CHOP -> SlicePadSelector(
+                count = resolvedSliceCount,
+                onCountChange = { onSliceCountChange(it) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        // Drop / pick hint panel — tappable (it reads as a button), triggers the pick.
+        // Capture the staged loop into a local so the null-checks below smart-cast.
+        val loop = stagedLoop
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(PanelRadius)
+                .background(t.inset, PanelRadius)
+                .dashedBorder(t.rule)
+                .clickable { onPick() }
+                .padding(16.dp)
+                .testTag(TestTags.KIT_PICK_PANEL),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = when {
+                    mode == KitMode.CHOP && loop != null ->
+                        "READY · CHOP INTO $resolvedSliceCount SLICES → GROUP $selectedGroupName"
+                    mode == KitMode.CHOP ->
+                        "PICK ONE LOOP · CHOP INTO $resolvedSliceCount SLICES → GROUP $selectedGroupName"
+                    else ->
+                        "PICK UP TO $MAX_SLICES ONE-SHOTS → GROUP $selectedGroupName"
+                },
+                color = t.text3, fontFamily = Mono, fontSize = 10.sp,
+                letterSpacing = 0.4.sp, textAlign = TextAlign.Center,
+            )
+            Text(
+                text = when {
+                    mode == KitMode.CHOP && loop != null -> loop.name
+                    mode == KitMode.CHOP -> "pick loop to chop"
+                    else -> "pick one-shots to build kit"
+                },
+                color = t.text, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+            )
+            if (mode == KitMode.CHOP && loop != null) {
+                Text(
+                    text = "TAP TO PICK A DIFFERENT LOOP",
+                    color = t.text3, fontFamily = Mono, fontSize = 8.sp,
+                    letterSpacing = 1.sp, textAlign = TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+// ── Shared PUSH TO DEVICE button — label + dispatch differ per CHOP/KIT mode ──
+@Composable
+private fun KitPushButton(
+    mode: KitMode,
+    chopReady: Boolean,
+    resolvedSliceCount: Int,
+    selectedGroupName: String,
+    builderState: KitBuilderState,
+    onChopPush: () -> Unit,
+    onPickLoop: () -> Unit,
+    onPickPack: () -> Unit,
+    onLoadKit: () -> Unit,
+) {
+    val pushLabel = if (mode == KitMode.CHOP) {
+        if (chopReady) "PUSH TO DEVICE · $resolvedSliceCount SLICES → $selectedGroupName"
+        else "PICK LOOP"
+    } else {
+        when {
+            builderState.packLoading -> "READING PACK…"
+            builderState.pack == null -> "PICK PACK FOLDER"
+            builderState.loading -> "PUSHING…"
+            builderState.assignments.isEmpty() -> "ASSIGN PADS FIRST"
+            else -> "PUSH TO DEVICE · ${builderState.assignments.size} PADS → $selectedGroupName"
+        }
+    }
+    Ep133PrimaryButton(
+        label = pushLabel,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp)
+            .padding(top = 11.dp, bottom = 14.dp)
+            .testTag(TestTags.KIT_PUSH_BUTTON),
+        onClick = {
+            if (mode == KitMode.CHOP) {
+                if (chopReady) onChopPush() else onPickLoop()
+            } else {
+                when {
+                    builderState.packLoading || builderState.loading -> {}
+                    builderState.pack == null -> onPickPack()
+                    builderState.assignments.isNotEmpty() -> onLoadKit()
+                }
+            }
+        },
+    )
 }
 
