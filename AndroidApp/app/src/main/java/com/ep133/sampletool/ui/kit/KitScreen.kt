@@ -294,9 +294,19 @@ class KitViewModel(
         data class AssignFailed(val error: Throwable) : UploadOutcome
     }
 
+    /** One converted slice ready for the device leg: the sample payload plus its frame count. */
+    private class SliceUpload(
+        val name: String,
+        val pcm: ByteArray,
+        val channels: Int,
+        val sampleRate: Int,
+        val frames: Int,
+    )
+
     /**
-     * The shared device leg of every kit/chop upload: put [pcm] as [name], then assign the returned
-     * node to [padIndex] of [group], driving row [i] to Done or Error. Serialized on [deviceMutex].
+     * The shared device leg of every kit/chop upload: put [upload] as a new sample, then assign the
+     * returned node to [padIndex] of [group], driving row [i] to Done or Error. Serialized on
+     * [deviceMutex].
      *
      * This is the one copy of a sequence that was duplicated across [runChop], [onKitFilesPicked],
      * [chopFromPcm] and [kitFromPcm]. It owns the item state transitions (which the tests assert);
@@ -307,20 +317,16 @@ class KitViewModel(
         group: PadChannel,
         i: Int,
         padIndex: Int,
-        name: String,
-        pcm: ByteArray,
-        channels: Int,
-        sampleRate: Int,
-        frames: Int,
+        upload: SliceUpload,
         chokeOn: Boolean,
         logLabel: String,
     ): UploadOutcome {
         val nodeId: Int? = try {
-            deviceMutex.withLock { midi.putSampleFile(name, pcm, channels, sampleRate) }
+            deviceMutex.withLock { midi.putSampleFile(upload.name, upload.pcm, upload.channels, upload.sampleRate) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "KitViewModel $logLabel: putSampleFile failed for $name", e)
+            Log.e(TAG, "KitViewModel $logLabel: putSampleFile failed for ${upload.name}", e)
             updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
             return UploadOutcome.UploadFailed(e)
         }
@@ -332,7 +338,7 @@ class KitViewModel(
 
         val ok = try {
             deviceMutex.withLock {
-                midi.assignSampleToPad(group, padIndex, nodeId, 0, frames, muteGroup = chokeOn)
+                midi.assignSampleToPad(group, padIndex, nodeId, 0, upload.frames, muteGroup = chokeOn)
             }
         } catch (e: CancellationException) {
             throw e
@@ -445,7 +451,7 @@ class KitViewModel(
 
                 when (val outcome = uploadAndAssign(
                     group, i, PAD_FILL_ORDER.getOrElse(i) { i },
-                    sliceName, slicePcm, chopChannels, converted.sampleRate, sliceFrames, chokeOn, "chop",
+                    SliceUpload(sliceName, slicePcm, chopChannels, converted.sampleRate, sliceFrames), chokeOn, "chop",
                 )) {
                     is UploadOutcome.UploadFailed ->
                         _snackbarMessage.value = "Slice ${i + 1} upload failed: ${outcome.error.message ?: outcome.error}"
@@ -512,7 +518,7 @@ class KitViewModel(
                 // Upload + assign serialized via deviceMutex (see uploadAndAssign).
                 when (val outcome = uploadAndAssign(
                     group, i, PAD_FILL_ORDER.getOrElse(i) { i },
-                    safeName, converted.pcm, converted.channels, converted.sampleRate, frames, chokeOn, "kit",
+                    SliceUpload(safeName, converted.pcm, converted.channels, converted.sampleRate, frames), chokeOn, "kit",
                 )) {
                     is UploadOutcome.UploadFailed ->
                         _snackbarMessage.value = "Upload failed for $safeName: ${outcome.error.message ?: outcome.error}"
@@ -584,7 +590,7 @@ class KitViewModel(
 
                 when (val outcome = uploadAndAssign(
                     group, i, PAD_FILL_ORDER.getOrElse(i) { i },
-                    sliceName, slicePcm, channels, sampleRate, sliceFrames, chokeOn, "chopFromPcm",
+                    SliceUpload(sliceName, slicePcm, channels, sampleRate, sliceFrames), chokeOn, "chopFromPcm",
                 )) {
                     is UploadOutcome.UploadFailed ->
                         _snackbarMessage.value = "Slice ${i + 1} upload failed: ${outcome.error.message ?: outcome.error}"
@@ -628,7 +634,7 @@ class KitViewModel(
                 // Test seam: no snackbars; uploadAndAssign drives the row's Working→Done/Error state.
                 uploadAndAssign(
                     group, i, PAD_FILL_ORDER.getOrElse(i) { i },
-                    safeName, pcm, channels, sampleRate, frames, chokeOn, "kitFromPcm",
+                    SliceUpload(safeName, pcm, channels, sampleRate, frames), chokeOn, "kitFromPcm",
                 )
             }
         }
