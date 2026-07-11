@@ -320,44 +320,52 @@ open class MIDIRepository internal constructor(
     }
 
     private suspend fun queryDeviceStatsInner(portId: String): Boolean {
-        // Step 1: GREET (firmware + device identity). reqId=1 is the conventional greet ID;
-        // it is not a FILE op so it does not draw from nextFileReqId() and there is no
-        // awaitedFileReqId set for it (greet uses CMD_GREET, not TE_SYSEX_FILE).
+        if (!queryFirmwareVersion(portId)) return false
+
+        // Sample count + storage from /sounds, over the reqId-correlated file ops (the same
+        // primitives the active-group walk and backup ride), now owned by FTC. This whole method
+        // already holds FTC's file-op mutex (see queryDeviceStats), so these are NoLock-equivalent
+        // nested calls and must go through FTC's *NoLock primitives, not its locking wrapper.
+        ftc.ensureFileSessionInitNoLock()
+        val soundsNode = ftc.resolveNodeIdInternal("/sounds") ?: return true
+        querySampleCount(soundsNode)
+        queryStorage(soundsNode)
+        return true
+    }
+
+    /**
+     * GREET the device for firmware + identity and record the firmware version. Returns false on
+     * timeout. reqId=1 is the conventional greet ID; it is not a FILE op, so it does not draw from
+     * nextFileReqId() (greet uses CMD_GREET, not TE_SYSEX_FILE).
+     */
+    private suspend fun queryFirmwareVersion(portId: String): Boolean {
         val greetDeferred = CompletableDeferred<Map<String, String>>()
         pendingGreetDeferred = greetDeferred
         val greetFrame = SysExProtocol.buildGreetFrame(currentDeviceId, requestId = 1)
         midiManager.sendMidi(portId, greetFrame)
         val greetResult = withTimeoutOrNull(5_000) { greetDeferred.await() }
             ?: run { pendingGreetDeferred = null; return false }
-        val firmware = greetResult["sw_version"] ?: ""
-        _deviceState.value = _deviceState.value.copy(firmwareVersion = firmware)
-
-        // Steps 2–3: sample count + storage from /sounds, over the reqId-correlated file ops
-        // (the same primitives the active-group walk and backup ride), now owned by FTC.
-        // Runs inside FTC's own file-op mutex via withFileOpLock — this whole method already
-        // holds the SAME mutex instance (see queryDeviceStats), so this is a NoLock-equivalent
-        // nested call and must go through FTC's *NoLock primitives, not its locking wrapper.
-        ftc.ensureFileSessionInitNoLock()
-        val soundsNode = ftc.resolveNodeIdInternal("/sounds")
-        if (soundsNode != null) {
-            // Sample count = entries in /sounds (named files only).
-            val body = ftc.listNodeBody(soundsNode, requestId = ftc.nextRequestId())
-            if (body != null) {
-                val count = SysExProtocol.parseFileListEntries(body).count { it.name.isNotBlank() }
-                _deviceState.value = _deviceState.value.copy(sampleCount = count)
-            }
-            // Storage from the /sounds node metadata. The device reports max_capacity +
-            // free_space_in_bytes (hardware-verified 2026-06-27), so used = max − free.
-            val meta = ftc.getMetadataJson(soundsNode)
-            val total = meta.optLong("max_capacity", -1L).takeIf { it >= 0 }
-            val free = meta.optLong("free_space_in_bytes", -1L).takeIf { it >= 0 }
-            if (total != null) {
-                val used = if (free != null) (total - free).coerceAtLeast(0) else null
-                _deviceState.value = _deviceState.value.copy(storageUsedBytes = used, storageTotalBytes = total)
-            }
-        }
-
+        _deviceState.value = _deviceState.value.copy(firmwareVersion = greetResult["sw_version"] ?: "")
         return true
+    }
+
+    /** Sample count = named entries in /sounds. Assumes an open file session. */
+    private suspend fun querySampleCount(soundsNode: Int) {
+        val body = ftc.listNodeBody(soundsNode, requestId = ftc.nextRequestId()) ?: return
+        val count = SysExProtocol.parseFileListEntries(body).count { it.name.isNotBlank() }
+        _deviceState.value = _deviceState.value.copy(sampleCount = count)
+    }
+
+    /**
+     * Storage used/total from the /sounds node metadata. The device reports max_capacity +
+     * free_space_in_bytes (hardware-verified 2026-06-27), so used = max − free.
+     */
+    private suspend fun queryStorage(soundsNode: Int) {
+        val meta = ftc.getMetadataJson(soundsNode)
+        val total = meta.optLong("max_capacity", -1L).takeIf { it >= 0 } ?: return
+        val free = meta.optLong("free_space_in_bytes", -1L).takeIf { it >= 0 }
+        val used = if (free != null) (total - free).coerceAtLeast(0) else null
+        _deviceState.value = _deviceState.value.copy(storageUsedBytes = used, storageTotalBytes = total)
     }
 
     // ── Paged project archive transfer (delegates to FileTransferClient) ──────────

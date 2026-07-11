@@ -353,83 +353,21 @@ open class FileTransferClient(
             val pageCount = if (pcmBytes.isEmpty()) 0 else (pcmBytes.size + rawChunkSize - 1) / rawChunkSize
             Log.d("EP133APP", "putSampleFile: chunkSize=$rawChunkSize pages=$pageCount for $name (${pcmBytes.size} bytes, ch=$channels sr=$sampleRate, deviceChunkSize=$deviceChunkSize)")
 
-            // Metadata JSON must match the hardware-verified upload (the Python spike that
-            // successfully uploaded + played samples): channels/samplerate alone get the PUT INIT
-            // rejected — the device needs the sample `format`, a `name`, and a `sound.playmode`.
-            val metaName = name.substringBeforeLast('.', name)
-            val metadataJson =
-                """{"channels":$channels,"samplerate":$sampleRate,"format":"s16","name":"$metaName","sound.playmode":"oneshot"}"""
-
             // Transfer-local reqId counter (INIT=30, then each DATA page + terminator). Each frame
             // registers its own OneShot waiter under its reqId via awaitFileOp; only one is ever
-            // live at a time (await-then-remove), so a stale/duplicate ack can't mis-route.
+            // live at a time (await-then-remove), so a stale/duplicate ack can't mis-route. The
+            // [next] closure advances it; the raw var stays readable for the cancellation cleanup.
             var nextReqId = PUT_INIT_REQUEST_ID  // 30
+            val next = { val v = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK; v }
             var initAcked = false
-            // Device-assigned node ID, parsed from the PUT INIT response body[0..1] u16 BE.
-            // Hardware-verified (2026-06-29): a 0.3s test upload returned nodeId 193 via this path.
-            var assignedNodeId: Int? = null
             try {
-                // INIT: announce parent dir, fileId=0 (new file), size, filename, metadata.
-                val initReqId = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK
-                val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
-                    deviceId(),
-                    parentNodeId = parent,
-                    fileSize = pcmBytes.size,
-                    filename = name,
-                    requestId = initReqId,
-                    metadataJson = metadataJson,
-                )
-                Log.d("EP133MIDI", "MIDI META: outbound PUT INIT reqId=$initReqId name=$name size=${pcmBytes.size}")
-                val initResp = awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS)
-                if (!putAckOk(initResp)) {
-                    val devMsg = deviceErrorText(initResp)
-                    Log.e("EP133APP", "putSampleFile: PUT INIT rejected for $name — ${devMsg ?: "no ack (timeout)"}")
-                    // Surface the device's own reason (e.g. "not enough space") to the caller;
-                    // fall back to null only when the device said nothing (genuine timeout).
-                    if (devMsg != null) throw java.io.IOException(devMsg)
-                    return@withLock null
-                }
-                // Parse device-assigned node ID from body[0..1] as unsigned 16-bit big-endian.
-                // Hardware-verified (2026-06-29): body carries the new file's node ID so callers
-                // can use it directly for pad-metadata assignment without a subsequent FILE_LIST.
-                if (initResp != null && initResp.body.size >= 2) {
-                    assignedNodeId = ((initResp.body[0].toInt() and 0xFF) shl 8) or
-                        (initResp.body[1].toInt() and 0xFF)
-                    Log.d("EP133APP", "putSampleFile: device assigned nodeId=$assignedNodeId for $name")
-                } else {
-                    Log.w("EP133APP", "putSampleFile: PUT INIT response body too short to parse nodeId — body=${initResp?.body?.size ?: 0} bytes")
-                }
+                val initResp = sendSampleInit(portId, parent, name, pcmBytes, channels, sampleRate, next())
+                    ?: return@withLock null
+                val assignedNodeId = parseAssignedNodeId(initResp, name)
                 initAcked = true
                 Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name")
 
-                // DATA pages: serial, awaiting each page's ack before sending the next (USB-MIDI
-                // has no flow control; the reference tool sends serially with await).
-                var page = 0
-                var offset = 0
-                while (offset < pcmBytes.size) {
-                    val end = minOf(offset + rawChunkSize, pcmBytes.size)
-                    val chunk = pcmBytes.copyOfRange(offset, end)
-                    val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK
-                    val dataFrame = SysExProtocol.buildFilePutDataFrame(deviceId(), page, chunk, requestId = dataReqId)
-                    Log.d("EP133MIDI", "MIDI META: outbound PUT DATA page=$page reqId=$dataReqId chunkSize=${chunk.size}")
-                    val dataResp = awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS)
-                    if (!putAckOk(dataResp)) {
-                        val devMsg = deviceErrorText(dataResp)
-                        Log.e("EP133APP", "putSampleFile: DATA page $page rejected for $name — ${devMsg ?: "no ack (timeout)"}")
-                        val closeReqId = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK
-                        forceCloseTransfer(portId, page + 1, closeReqId)
-                        if (devMsg != null) throw java.io.IOException(devMsg)
-                        return@withLock null
-                    }
-                    offset = end
-                    page = (page + 1) and 0xFFFF
-                }
-
-                // Zero-length DATA terminator (required by the reference tool). Await its final ack.
-                val termReqId = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK
-                val terminatorFrame = SysExProtocol.buildFilePutDataFrame(deviceId(), page, ByteArray(0), requestId = termReqId)
-                Log.d("EP133MIDI", "MIDI META: outbound PUT terminator page=$page reqId=$termReqId")
-                if (putAckOk(awaitFileOp(termReqId, FileOpKind.PUT_DATA, portId, terminatorFrame, PUT_ACK_TIMEOUT_MS))) {
+                if (sendSamplePages(portId, pcmBytes, rawChunkSize, name, next)) {
                     // Return the device-assigned node ID from the INIT response body. If the body
                     // didn't carry one, resolve the just-created file by path instead — callers
                     // bind pads to this ID (pad metadata "sym"), so a sentinel like -1 must never
@@ -446,6 +384,103 @@ open class FileTransferClient(
                 throw e
             }
         } // end fileOpMutex.withLock
+    }
+
+    /** Metadata JSON for a sample PUT INIT — the hardware-verified key set the device requires. */
+    private fun buildSampleMetadataJson(name: String, channels: Int, sampleRate: Int): String {
+        // channels/samplerate alone get the PUT INIT rejected — the device also needs the sample
+        // `format`, a `name`, and a `sound.playmode` (verified against the successful Python spike).
+        val metaName = name.substringBeforeLast('.', name)
+        return """{"channels":$channels,"samplerate":$sampleRate,"format":"s16","name":"$metaName","sound.playmode":"oneshot"}"""
+    }
+
+    /**
+     * Send the sample PUT INIT (parent dir, fileId=0, size, filename, metadata) and await its ack.
+     * Returns the INIT response on success, or null on a genuine timeout (no device message).
+     * Throws [java.io.IOException] carrying the device's own reason when it rejects with one.
+     */
+    private suspend fun sendSampleInit(
+        portId: String,
+        parent: Int,
+        name: String,
+        pcmBytes: ByteArray,
+        channels: Int,
+        sampleRate: Int,
+        initReqId: Int,
+    ): FileResponse? {
+        val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
+            deviceId(),
+            parentNodeId = parent,
+            fileSize = pcmBytes.size,
+            filename = name,
+            requestId = initReqId,
+            metadataJson = buildSampleMetadataJson(name, channels, sampleRate),
+        )
+        Log.d("EP133MIDI", "MIDI META: outbound PUT INIT reqId=$initReqId name=$name size=${pcmBytes.size}")
+        val initResp = awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS)
+        if (!putAckOk(initResp)) {
+            val devMsg = deviceErrorText(initResp)
+            Log.e("EP133APP", "putSampleFile: PUT INIT rejected for $name — ${devMsg ?: "no ack (timeout)"}")
+            // Surface the device's own reason (e.g. "not enough space"); fall back to null only
+            // when the device said nothing (genuine timeout).
+            if (devMsg != null) throw java.io.IOException(devMsg)
+            return null
+        }
+        return initResp
+    }
+
+    /**
+     * Parse the device-assigned node ID from a PUT INIT response body[0..1] (u16 big-endian).
+     * Hardware-verified (2026-06-29): the body carries the new file's node ID, so callers can bind
+     * pads to it without a follow-up FILE_LIST. Returns null (with a log) if the body is too short.
+     */
+    private fun parseAssignedNodeId(resp: FileResponse?, name: String): Int? {
+        if (resp != null && resp.body.size >= 2) {
+            val nodeId = ((resp.body[0].toInt() and 0xFF) shl 8) or (resp.body[1].toInt() and 0xFF)
+            Log.d("EP133APP", "putSampleFile: device assigned nodeId=$nodeId for $name")
+            return nodeId
+        }
+        Log.w("EP133APP", "putSampleFile: PUT INIT response body too short to parse nodeId — body=${resp?.body?.size ?: 0} bytes")
+        return null
+    }
+
+    /**
+     * Send the PCM as serial DATA pages (await each ack — USB-MIDI has no flow control) followed by
+     * the zero-length terminator. On a DATA-page reject, force-closes the wedged transfer and either
+     * throws the device's error text or returns false (timeout). Returns whether the terminator was
+     * acked. [next] advances the transfer-local reqId counter.
+     */
+    private suspend fun sendSamplePages(
+        portId: String,
+        pcmBytes: ByteArray,
+        rawChunkSize: Int,
+        name: String,
+        next: () -> Int,
+    ): Boolean {
+        var page = 0
+        var offset = 0
+        while (offset < pcmBytes.size) {
+            val end = minOf(offset + rawChunkSize, pcmBytes.size)
+            val chunk = pcmBytes.copyOfRange(offset, end)
+            val dataReqId = next()
+            val dataFrame = SysExProtocol.buildFilePutDataFrame(deviceId(), page, chunk, requestId = dataReqId)
+            Log.d("EP133MIDI", "MIDI META: outbound PUT DATA page=$page reqId=$dataReqId chunkSize=${chunk.size}")
+            val dataResp = awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS)
+            if (!putAckOk(dataResp)) {
+                val devMsg = deviceErrorText(dataResp)
+                Log.e("EP133APP", "putSampleFile: DATA page $page rejected for $name — ${devMsg ?: "no ack (timeout)"}")
+                forceCloseTransfer(portId, page + 1, next())
+                if (devMsg != null) throw java.io.IOException(devMsg)
+                return false
+            }
+            offset = end
+            page = (page + 1) and 0xFFFF
+        }
+        // Zero-length DATA terminator (required by the reference tool). Await its final ack.
+        val termReqId = next()
+        val terminatorFrame = SysExProtocol.buildFilePutDataFrame(deviceId(), page, ByteArray(0), requestId = termReqId)
+        Log.d("EP133MIDI", "MIDI META: outbound PUT terminator page=$page reqId=$termReqId")
+        return putAckOk(awaitFileOp(termReqId, FileOpKind.PUT_DATA, portId, terminatorFrame, PUT_ACK_TIMEOUT_MS))
     }
 
     /**
