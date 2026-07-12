@@ -164,6 +164,15 @@ open class FileTransferClient(
      */
     fun routeFileFrame(message: ByteArray) {
         if (message.size < 10) return
+        // Defensive classification (mirrors MIDIRepository.dispatchSysEx): when FTC is used
+        // standalone, its self-wired parser (see the init block) routes EVERY incoming SysEx here,
+        // not just file-command frames. Without this check, a GREET or other TE SysEx would be
+        // parsed as if it were a file response — extracting a bogus reqId from bytes[6..7] and
+        // potentially mis-routing it into an unrelated fileWaiters entry.
+        val isTEManufacturer = message[1] == SysExProtocol.TE_ID_0 &&
+            message[2] == SysExProtocol.TE_ID_1 &&
+            message[3] == SysExProtocol.TE_ID_2
+        if (!isTEManufacturer || message[8].toInt() and 0xFF != SysExProtocol.TE_SYSEX_FILE) return
         val payload = if (message.size > 10) message.copyOfRange(9, message.size - 1) else ByteArray(0)
         // Hardware-verified (2026-06-24) — responses carry a STATUS byte BEFORE the packed
         // body (reference data/index.js: `let o=9; if(response) status=s[o++]`). So payload[0]

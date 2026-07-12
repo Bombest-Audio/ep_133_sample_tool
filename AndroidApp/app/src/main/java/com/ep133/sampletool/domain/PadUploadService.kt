@@ -42,25 +42,23 @@ class PadUploadService(
         padIndex: Int,
         upload: SliceUpload,
         chokeOn: Boolean,
-    ): PadUploadResult {
+    ): PadUploadResult = deviceMutex.withLock {
         val nodeId = try {
-            deviceMutex.withLock { midi.putSampleFile(upload.name, upload.pcm, upload.channels, upload.sampleRate) }
+            midi.putSampleFile(upload.name, upload.pcm, upload.channels, upload.sampleRate)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return PadUploadResult.UploadFailed(e)
+            return@withLock PadUploadResult.UploadFailed(e)
         }
-        if (nodeId == null) return PadUploadResult.UploadRejected
+        if (nodeId == null) return@withLock PadUploadResult.UploadRejected
 
         val ok = try {
-            deviceMutex.withLock {
-                midi.assignSampleToPad(group, padIndex, nodeId, 0, upload.frames, muteGroup = chokeOn)
-            }
+            midi.assignSampleToPad(group, padIndex, nodeId, 0, upload.frames, muteGroup = chokeOn)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return PadUploadResult.AssignFailed(e)
+            return@withLock PadUploadResult.AssignFailed(e)
         }
-        return if (ok) PadUploadResult.Done else PadUploadResult.AssignRejected
+        if (ok) PadUploadResult.Done else PadUploadResult.AssignRejected
     }
 }

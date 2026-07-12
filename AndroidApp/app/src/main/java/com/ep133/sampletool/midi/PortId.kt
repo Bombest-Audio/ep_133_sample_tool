@@ -16,13 +16,17 @@ internal data class PortId(val deviceId: Int, val direction: String, val portNum
         const val DIR_OUT = "out"
         const val DIR_IN = "in"
 
-        /** Parse a wire-form port id, or null if it isn't the expected `id_dir_num` shape. */
+        /**
+         * Parse a wire-form port id, or null if it isn't exactly the `id_dir_num` shape (three
+         * underscore-separated segments, a numeric id/portNumber, and [DIR_OUT]/[DIR_IN]).
+         */
         fun parse(wire: String): PortId? {
             val parts = wire.split("_")
-            if (parts.size < 3) return null
+            if (parts.size != 3) return null
             val deviceId = parts[0].toIntOrNull() ?: return null
+            val direction = parts[1].takeIf { it == DIR_OUT || it == DIR_IN } ?: return null
             val portNumber = parts[2].toIntOrNull() ?: return null
-            return PortId(deviceId, parts[1], portNumber)
+            return PortId(deviceId, direction, portNumber)
         }
     }
 }
