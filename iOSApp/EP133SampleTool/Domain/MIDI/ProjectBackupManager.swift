@@ -15,9 +15,13 @@ import Foundation
 /// (Kotlin `BACKUPS_DIR` under app-specific external storage).
 private let backupsDirName = "backups"
 
-/// A restore filename must be a project archive: optional prefix, then `P{NN}.tar`
-/// (Kotlin `PROJECT_TAR_REGEX`; anchored — Kotlin `matches()` is a full match).
-private let projectTarPattern = #"^\w*P(\d{2})\.tar$"#
+/// A restore filename must be a project archive. Matches both the plain legacy form
+/// (`[prefix]P{NN}.tar`) and the form `suggestedProjectFilename` actually writes
+/// (`[{customName}-]EP133-P{NN}-{yyyy-MM-dd-HHmm}.tar`) — the old `^\w*P(\d{2})\.tar$`
+/// rejected every backup the app itself created because `\w*` can't span the hyphens/date,
+/// so restore could never find its own files. Anchored full match; the character classes
+/// exclude `/`, `\`, and `.` (outside `.tar`), so a traversal name can never match.
+private let projectTarPattern = #"^(?:[A-Za-z0-9_]+-)?(?:EP133-)?P(\d{2})(?:-\d{4}-\d{2}-\d{2}-\d{4})?\.tar$"#
 
 /// Progress events emitted by `ProjectBackupManager.backupProject` / `restoreProject`.
 ///
@@ -184,7 +188,10 @@ final class ProjectBackupManager {
                     return
                 }
 
-                guard (0...8).contains(slotIndex) else {
+                // Device project slots are named 01..09, so valid indices are 1...9. The old
+                // 0...8 bound was off by one: it rejected a legitimate P09 restore and admitted
+                // a nonexistent P00.
+                guard (1...9).contains(slotIndex) else {
                     continuation.yield(.error(
                         message: "Backup filename slot out of range: \(name)"))
                     return
