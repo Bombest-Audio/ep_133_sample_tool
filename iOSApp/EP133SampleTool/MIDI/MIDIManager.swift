@@ -119,30 +119,17 @@ final class MIDIManager: MIDIPort {
             return
         }
 
-        // Build and send the MIDI event list
-        data.withUnsafeBufferPointer { buffer in
-            guard let baseAddress = buffer.baseAddress else { return }
-
-            let wordCount = (data.count + 3) / 4  // UInt32 words needed
-            var eventList = MIDIEventList()
-            var packet = MIDIEventListInit(&eventList, ._1_0)
-
-            // Convert bytes to UInt32 words (MIDI 1.0 UMP format)
-            // For sysex and multi-byte messages, we send raw bytes
-            if data.count > 3 || (data.first ?? 0) == 0xF0 {
-                // Sysex or large message — use MIDISend with packet list
-                sendRawBytes(to: destination, data: data)
-                return
-            }
-
-            // Regular short MIDI message — pack into a single UInt32
-            var word: UInt32 = 0
-            for (idx, byte) in data.enumerated() where idx < 4 {
-                word |= UInt32(byte) << (8 * (3 - idx))
-            }
-            packet = MIDIEventListAdd(&eventList, 1024, packet, 0, 1, &word)
-            MIDISendEventList(outputPort, destination, &eventList)
-        }
+        // Send every message as raw MIDI 1.0 bytes over the legacy MIDIPacketList API.
+        // The device speaks raw MIDI 1.0, and the input path uses the same legacy API on
+        // purpose (see setup()). The UMP MIDIEventList encoder is deliberately not used:
+        // packing a short message into a single UInt32 by left-aligning the bytes omits the
+        // message-type nibble the UMP _1_0 protocol requires in the top 4 bits, so the status
+        // byte lands in the MT slot and the word is an invalid/undefined UMP message. That
+        // silently broke every note, CC, Program Change, and system-real-time transport byte
+        // (0xF8/0xFA/0xFC) on real hardware. sendRawBytes carries sysex and short messages
+        // identically, with no encoding to get wrong.
+        guard !data.isEmpty else { return }
+        sendRawBytes(to: destination, data: data)
     }
 
     /// Sends raw bytes (including sysex) using the legacy MIDIPacketList API
