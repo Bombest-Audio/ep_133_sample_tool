@@ -17,8 +17,16 @@ private const val TAG = "EP133APP"
 /** Subdirectory under app-specific external storage holding project `.tar` backups. */
 private const val BACKUPS_DIR = "backups"
 
-/** A restore filename must be a project archive: optional prefix, then `P{NN}.tar`. */
-private val PROJECT_TAR_REGEX = Regex("""\w*P(\d{2})\.tar""")
+/**
+ * A restore filename must be a project archive. Matches both the plain legacy form
+ * (`[prefix]P{NN}.tar`) and the form [suggestedProjectFilename] actually writes
+ * (`[{customName}-]EP133-P{NN}-{yyyy-MM-dd-HHmm}.tar`, e.g. `EP133-P03-2026-07-11-1230.tar`).
+ * The old `\w*P(\d{2})\.tar` couldn't span the hyphens/date, so the app rejected its own
+ * backups (issue #26). Anchored `^…$` and the character classes exclude `/`, `\`, and stray
+ * `.`, so a traversal name can never match. Capture group 1 is the two-digit slot number.
+ */
+private val PROJECT_TAR_REGEX =
+    Regex("""^(?:[A-Za-z0-9_]+-)?(?:EP133-)?P(\d{2})(?:-\d{4}-\d{2}-\d{2}-\d{4})?\.tar$""")
 
 /**
  * Progress events emitted by [ProjectBackupManager.backupProject] / [restoreProject].
@@ -125,8 +133,8 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
     /**
      * Restore a single project archive to the device (destructive PUT).
      *
-     * Validates the filename against `P(\d{2})\.tar` before any device write (threat T-04-06):
-     * the regex also rejects path separators, so a traversal name ("../") can never match.
+     * Validates the filename against [PROJECT_TAR_REGEX] before any device write (threat T-04-06):
+     * the anchored regex also rejects path separators, so a traversal name ("../") can never match.
      * Reads the bytes under [Dispatchers.IO], then uploads via the paged PUT.
      *
      * Restore is wired and validated, but the user-facing button stays gated on a hardware
@@ -134,7 +142,8 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
      * PUT requires that confirmation before invocation.
      */
     fun restoreProject(file: File, context: Context): Flow<ProjectBackupProgress> = flow {
-        if (!PROJECT_TAR_REGEX.matches(file.name)) {
+        val slotIndex = tarSlotIndex(file.name)
+        if (slotIndex == null) {
             emit(ProjectBackupProgress.Error("Invalid backup filename: ${file.name} (expected P{NN}.tar)"))
             return@flow
         }
@@ -150,8 +159,9 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
             return@flow
         }
 
-        val slotIndex = PROJECT_TAR_REGEX.find(file.name)?.groupValues?.get(1)?.toIntOrNull()
-        if (slotIndex == null || slotIndex !in 0..8) {
+        // Device project slots are named 01..09, so valid indices are 1..9. The old 0..8 bound
+        // rejected a legitimate P09 restore and admitted a nonexistent P00 (issue #26).
+        if (slotIndex !in 1..9) {
             emit(ProjectBackupProgress.Error("Backup filename slot out of range: ${file.name}"))
             return@flow
         }
@@ -209,6 +219,15 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
         Regex("""(\d{1,2})""").find(name)?.groupValues?.get(1)?.toIntOrNull() ?: 0
 
     companion object {
+        /**
+         * Full-match [name] against [PROJECT_TAR_REGEX] and return the captured two-digit slot
+         * number, or null if it is not a valid project-archive name. The valid-slot range check
+         * (1..9) is the caller's — this only decodes the name. Internal so the restore filename
+         * validation (issue #26) is directly unit-testable without a Context or device.
+         */
+        internal fun tarSlotIndex(name: String): Int? =
+            PROJECT_TAR_REGEX.matchEntire(name)?.groupValues?.get(1)?.toIntOrNull()
+
         /**
          * Pure backup-library enumeration: `.tar` files in [dir], newest first. Hardware-free
          * and Context-free so it is directly unit-testable against a temp directory (PROJ-03).
