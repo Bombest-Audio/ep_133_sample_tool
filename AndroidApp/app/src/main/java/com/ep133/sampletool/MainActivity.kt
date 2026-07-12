@@ -113,7 +113,7 @@ class MainActivity : ComponentActivity() {
                         it, Intent.FLAG_GRANT_READ_URI_PERMISSION,
                     )
                 } catch (e: SecurityException) {
-                    Log.w("EP133", "takePersistableUriPermission failed", e)
+                    Log.w("EP133APP", "takePersistableUriPermission failed", e)
                 }
                 kitBuilderViewModel.onPackPicked(it, this)
             }

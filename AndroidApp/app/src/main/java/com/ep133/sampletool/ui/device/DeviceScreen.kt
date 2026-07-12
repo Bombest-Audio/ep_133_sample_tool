@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -51,7 +50,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -71,6 +69,7 @@ import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.domain.model.PermissionState
 import com.ep133.sampletool.domain.model.Scale
 import com.ep133.sampletool.ui.TestTags
+import com.ep133.sampletool.ui.theme.Ep133ConfirmDialog
 import com.ep133.sampletool.ui.theme.Ep133GhostButton
 import com.ep133.sampletool.ui.theme.Ep133GroupChip
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
@@ -78,6 +77,7 @@ import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.Ep133StatReadout
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.Mono
 import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -110,6 +110,7 @@ sealed class FirmwareUpdateState {
 class DeviceViewModel(
     private val midi: MIDIRepository,
     private val catalog: FirmwareCatalog = TeFirmwareCatalog(),
+    private val backups: BackupManager = BackupManager(midi),
 ) : ViewModel() {
 
     val deviceState: StateFlow<DeviceState> = midi.deviceState
@@ -170,7 +171,7 @@ class DeviceViewModel(
 
     fun triggerBackup() {
         if (_isBackupInProgress.value || _isRestoreInProgress.value) return
-        val name = BackupManager(midi).suggestedBackupFilename()
+        val name = backups.suggestedBackupFilename()
         onRequestBackup?.invoke(name)
     }
 
@@ -183,7 +184,7 @@ class DeviceViewModel(
         viewModelScope.launch {
             _isBackupInProgress.value = true
             _backupProgress.value = 0f
-            val backupManager = BackupManager(midi)
+            val backupManager = backups
             backupManager.createBackup().collect { progress ->
                 when (progress) {
                     is BackupProgress.Progress -> {
@@ -232,7 +233,7 @@ class DeviceViewModel(
         viewModelScope.launch {
             _isRestoreInProgress.value = true
             _restoreProgress.value = 0f
-            BackupManager(midi).restore(bytes).collect { progress ->
+            backups.restore(bytes).collect { progress ->
                 when (progress) {
                     is RestoreProgress.Progress -> {
                         if (progress.total > 0) {
@@ -361,7 +362,6 @@ class DeviceViewModel(
     }
 }
 
-private val Mono = FontFamily.Monospace
 
 @Composable
 fun DeviceScreen(
@@ -614,6 +614,8 @@ private fun MonoFact(label: String, value: String, valueColor: Color) {
 }
 
 // ── Storage progress (M3 LinearProgressIndicator, accent track, mono readout) ──
+private const val BYTES_PER_MB = 1_048_576
+
 @Composable
 private fun StorageBar(state: DeviceState, loading: Boolean) {
     val t = LocalEP133Tokens.current
@@ -622,8 +624,8 @@ private fun StorageBar(state: DeviceState, loading: Boolean) {
     } else 0f
     val haveBytes = state.storageUsedBytes != null && state.storageTotalBytes != null
     val readout = if (haveBytes) {
-        val usedMb = state.storageUsedBytes!!.toFloat() / 1_048_576f
-        val totalMb = state.storageTotalBytes!!.toFloat() / 1_048_576f
+        val usedMb = state.storageUsedBytes!!.toFloat() / BYTES_PER_MB
+        val totalMb = state.storageTotalBytes!!.toFloat() / BYTES_PER_MB
         "%.1f / %.1f MB".format(usedMb, totalMb)
     } else null
 
@@ -668,8 +670,8 @@ private fun StorageBar(state: DeviceState, loading: Boolean) {
 private fun StatsGrid(state: DeviceState, channel: PadChannel) {
     val samplesValue = state.sampleCount?.toString() ?: "—"
     val storageValue = if (state.storageUsedBytes != null && state.storageTotalBytes != null) {
-        val usedMb = state.storageUsedBytes / 1_048_576
-        val totalMb = state.storageTotalBytes / 1_048_576
+        val usedMb = state.storageUsedBytes / BYTES_PER_MB
+        val totalMb = state.storageTotalBytes / BYTES_PER_MB
         "${usedMb}/${totalMb}MB"
     } else "—"
     val firmwareValue = state.firmwareVersion ?: "—"
@@ -1025,31 +1027,12 @@ private fun RestoreConfirmDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val t = LocalEP133Tokens.current
-    AlertDialog(
-        onDismissRequest = onDismiss,
+    Ep133ConfirmDialog(
+        title = "Restore EP-133?",
+        message = "This will overwrite all content on your EP-133. This cannot be undone.",
+        confirmLabel = "Restore",
+        onConfirm = onConfirm,
+        onDismiss = onDismiss,
         modifier = Modifier.testTag(TestTags.DEVICE_RESTORE_CONFIRM_DIALOG),
-        containerColor = t.panel,
-        titleContentColor = t.text,
-        textContentColor = t.text2,
-        shape = PanelRadius,
-        title = { Text("Restore EP-133?", fontWeight = FontWeight.Bold) },
-        text = { Text("This will overwrite all content on your EP-133. This cannot be undone.") },
-        confirmButton = {
-            TextButton(
-                onClick = onConfirm,
-                colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
-            ) {
-                Text("Restore", fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
-            ) {
-                Text("Cancel")
-            }
-        },
     )
 }

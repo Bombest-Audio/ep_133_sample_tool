@@ -103,9 +103,8 @@ object EP133Pads {
             Pad(label, note = channel.baseNote + offset, defaultSound = DEFAULT_DRUM_MAP[label])
         }
 
-    /** Detect which group + pad index from an incoming MIDI event. */
-    @Suppress("UNUSED_PARAMETER")
-    fun resolveIncoming(note: Int, ch: Int): Pair<PadChannel, Int>? {
+    /** Detect which group + pad index from an incoming MIDI note (group derives from the note range). */
+    fun resolveIncoming(note: Int): Pair<PadChannel, Int>? {
         val group = when (note) {
             in 36..47 -> PadChannel.A
             in 48..59 -> PadChannel.B

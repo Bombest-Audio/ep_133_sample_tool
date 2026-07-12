@@ -71,7 +71,7 @@ sealed class SampleImportProgress {
  * device-connection guard first, IO-dispatched reads, name sanitization before any device
  * write, storage pre-flight, and CancellationException rethrown before generic catch.
  *
- * Wave 2 entry points:
+ * Entry points:
  * - [importSample]: accepts a content:// URI; decodes via [AudioDecoder], converts via
  *   [Resampler] + [WavEncoder], uploads via [MIDIRepository.putSampleFile].
  * - [importSampleBytes]: testability seam — accepts pre-read WAV bytes (no URI, no decode),
@@ -86,7 +86,8 @@ sealed class SampleImportProgress {
  * Security (T-05-03):
  * - T-05-03-02: name is sanitized to a safe basename + ".wav" before any device write.
  * - T-05-03-03: converted size is pre-flighted against available /sounds storage.
- * - T-05-03-04: [importSample] reads bytes inside the caller's picker-callback grant (Landmine 7).
+ * - T-05-03-04: [importSample] reads bytes inside the caller's picker-callback grant (content://
+ *   URI read permission is only valid for the lifetime of that callback — never defer the read).
  */
 class SampleImportManager(private val midi: MIDIRepository) {
 
@@ -103,7 +104,8 @@ class SampleImportManager(private val midi: MIDIRepository) {
      * 46875/s16 WAV (or pass-through if already in device format) → storage pre-flight →
      * upload via [MIDIRepository.putSampleFile].
      *
-     * Reads must happen inside the picker-callback grant — never defer (Landmine 7).
+     * Reads must happen inside the picker-callback grant — never defer (the content:// read
+     * permission is only valid for the callback's lifetime).
      *
      * @param rawName    Original filename (not yet sanitized).
      * @param uri        SAF content:// URI — valid for the current picker grant only.
@@ -226,8 +228,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
     /**
      * Convert a content:// audio URI to raw s16 LE PCM bytes ready for device upload.
      *
-     * Must be called inside the picker-callback grant for [uri] (Landmine 7). Runs the
-     * full convert pipeline:
+     * Must be called inside the picker-callback grant for [uri]. Runs the full convert pipeline:
      *  - Fast path: if the file is already WAV/s16/46875/(1|2)ch → slice out the data chunk
      *    (strip the RIFF header) and return the raw PCM bytes + fmt parameters.
      *  - Slow path: [AudioDecoder.decode] → [Resampler.toRate] → convert ShortArray to
@@ -238,8 +239,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
      *
      * Runs under [Dispatchers.IO] for the initial byte read; [AudioDecoder] switches to
      * its own IO context for the decode loop.
-     */
-    /**
+     *
      * @param enforceMaxLength when true (single-sample import), reject sources longer than the
      *   device's 20 s single-sample cap up front. The loop chopper passes **false**: it needs the
      *   full-length PCM to slice, and each resulting slice is size-checked against the device's
@@ -251,7 +251,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
         enforceMaxLength: Boolean = true,
     ): ConvertedSample =
         withContext(Dispatchers.IO) {
-            // Read raw bytes inside the grant (Landmine 7 — content:// URI lifetime).
+            // Read raw bytes inside the grant (content:// URI read permission is callback-scoped).
             val rawBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: throw java.io.IOException("Cannot read URI: $uri")
 
@@ -431,7 +431,7 @@ class SampleImportManager(private val midi: MIDIRepository) {
      * by [MIDIRepository.queryDeviceStats] via FILE_METADATA on /sounds). If storage info
      * is not yet available, allows the upload (best-effort — the device will reject if full).
      *
-     * Landmine 6 mitigation: never start a write that would overflow device storage.
+     * Never start a write that would overflow device storage.
      */
     private fun preflightStorage(wavSize: Int): Boolean {
         val state = midi.deviceState.value

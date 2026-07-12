@@ -2,6 +2,7 @@ package com.ep133.sampletool.ui.theme
 
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 
 /**
@@ -12,6 +13,9 @@ import androidx.compose.ui.unit.dp
  * here so there is a single source of truth; the color *tokens* (theme-dependent) stay in
  * [EP133Tokens], while these are theme-independent hardware constants.
  */
+
+/** The monospace face used for every hardware-display readout (pad labels, BPM, levels). */
+internal val Mono = FontFamily.Monospace
 
 /** Corner radius for inset panels / cards across every screen. */
 internal val PanelRadius = RoundedCornerShape(3.dp)

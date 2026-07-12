@@ -41,12 +41,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -64,9 +61,12 @@ import com.ep133.sampletool.domain.model.DeviceState
 import com.ep133.sampletool.domain.project.InMemoryProjectNameStore
 import com.ep133.sampletool.domain.project.ProjectNameStore
 import com.ep133.sampletool.ui.TestTags
+import com.ep133.sampletool.ui.theme.Ep133ConfirmDialog
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.Mono
+import com.ep133.sampletool.ui.theme.accentRail
 import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -277,10 +277,9 @@ private fun shareBackup(context: Context, file: File) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Screen composable — the app shell ([Ep133Scaffold]) owns header + nav; this is the body.
+// Screen composable — EP133App owns the faceplate header + bottom nav; this renders the body only.
 // ─────────────────────────────────────────────────────────────────────────────
 
-private val Mono = FontFamily.Monospace
 
 /** Deterministic 4-bar mini "fill" meter per project/backup — purely decorative, keyed off a seed. */
 private fun miniBars(seed: Int): List<Float> =
@@ -323,31 +322,13 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
     }
 
     slotToClear?.let { slot ->
-        AlertDialog(
-            onDismissRequest = { slotToClear = null },
-            containerColor = t.panel,
-            titleContentColor = t.text,
-            textContentColor = t.text2,
-            shape = PanelRadius,
-            title = { Text("Clear project ${slot.name}?", fontWeight = FontWeight.Bold) },
-            text = {
-                Text(
-                    "Empties every pad in all four groups of project ${slot.name} on the EP-133. " +
-                        "The project slot itself stays. This can't be undone.",
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = { viewModel.clearProject(slot); slotToClear = null },
-                    colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
-                ) { Text("Clear", fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { slotToClear = null },
-                    colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
-                ) { Text("Cancel") }
-            },
+        Ep133ConfirmDialog(
+            title = "Clear project ${slot.name}?",
+            message = "Empties every pad in all four groups of project ${slot.name} on the EP-133. " +
+                "The project slot itself stays. This can't be undone.",
+            confirmLabel = "Clear",
+            onConfirm = { viewModel.clearProject(slot); slotToClear = null },
+            onDismiss = { slotToClear = null },
         )
     }
 
@@ -395,27 +376,13 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
     }
 
     if (showRestoreConfirm) {
-        AlertDialog(
-            onDismissRequest = { viewModel.cancelRestore() },
+        Ep133ConfirmDialog(
+            title = "Restore project?",
+            message = "This will overwrite the matching slot on your EP-133. This cannot be undone.",
+            confirmLabel = "Restore",
+            onConfirm = { viewModel.confirmRestore(context) },
+            onDismiss = { viewModel.cancelRestore() },
             modifier = Modifier.testTag(TestTags.PROJECTS_RESTORE_CONFIRM_DIALOG),
-            containerColor = t.panel,
-            titleContentColor = t.text,
-            textContentColor = t.text2,
-            shape = PanelRadius,
-            title = { Text("Restore project?", fontWeight = FontWeight.Bold) },
-            text = { Text("This will overwrite the matching slot on your EP-133. This cannot be undone.") },
-            confirmButton = {
-                TextButton(
-                    onClick = { viewModel.confirmRestore(context) },
-                    colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
-                ) { Text("Restore", fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { viewModel.cancelRestore() },
-                    colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
-                ) { Text("Cancel") }
-            },
         )
     }
 
@@ -650,50 +617,21 @@ private fun SlotCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(PanelRadius)
-                        .border(1.dp, t.rule, PanelRadius)
-                        .clickable(enabled = !isClearing) { onBackup() }
-                        .padding(vertical = 9.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.SaveAlt,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp),
-                        tint = t.accent,
-                    )
-                    Text(
-                        text = "BACKUP",
-                        color = t.accent,
-                        fontFamily = Mono,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.6.sp,
-                    )
-                }
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(PanelRadius)
-                        .border(1.dp, t.rule, PanelRadius)
-                        .clickable(enabled = !isClearing) { onClear() }
-                        .padding(vertical = 9.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = if (isClearing) "CLEARING…" else "CLEAR",
-                        color = t.text2,
-                        fontFamily = Mono,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.6.sp,
-                    )
-                }
+                ActionButton(
+                    label = "BACKUP",
+                    icon = Icons.Filled.SaveAlt,
+                    enabled = !isClearing,
+                    contentColor = t.accent,
+                    modifier = Modifier.weight(1f),
+                    onClick = onBackup,
+                )
+                ActionButton(
+                    label = if (isClearing) "CLEARING…" else "CLEAR",
+                    enabled = !isClearing,
+                    contentColor = t.text2,
+                    modifier = Modifier.weight(1f),
+                    onClick = onClear,
+                )
             }
         }
     }
@@ -776,17 +714,25 @@ private fun BackupCard(
     }
 }
 
-/** Outline action button — mono label + leading icon; dims its content when disabled. */
+/**
+ * Outline action button — mono label + optional leading icon; dims its content when disabled.
+ * [contentColor] overrides the default text ink (e.g. accent for backup, text2 for clear).
+ */
 @Composable
 private fun ActionButton(
     label: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
     enabled: Boolean,
     modifier: Modifier = Modifier,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    contentColor: Color? = null,
     onClick: () -> Unit,
 ) {
     val t = LocalEP133Tokens.current
-    val content = if (enabled) t.text else t.text3.copy(alpha = 0.5f)
+    val content = when {
+        contentColor != null -> if (enabled) contentColor else contentColor.copy(alpha = 0.5f)
+        enabled -> t.text
+        else -> t.text3.copy(alpha = 0.5f)
+    }
     Row(
         modifier = modifier
             .clip(PanelRadius)
@@ -796,12 +742,14 @@ private fun ActionButton(
         horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(14.dp),
-            tint = content,
-        )
+        if (icon != null) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = content,
+            )
+        }
         Text(
             text = label,
             color = content,
@@ -912,7 +860,3 @@ private fun RestoreGateNote() {
     }
 }
 
-/** A 3dp colored left rail (the design's `border-left:3px solid`), drawn inside the rounded clip. */
-private fun Modifier.accentRail(color: Color): Modifier = this.drawBehind {
-    drawRect(color = color, size = Size(3.dp.toPx(), size.height))
-}

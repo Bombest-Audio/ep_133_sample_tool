@@ -21,12 +21,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * High-level MIDI interface for the EP-133.
@@ -34,94 +30,66 @@ import java.util.concurrent.atomic.AtomicInteger
  * Wraps a [MIDIPort] implementation with typed helpers for Note On/Off, CC,
  * and Program Change. Exposes device state as a [StateFlow] for Compose observation.
  *
- * Phase 2 additions:
- * - SysEx accumulation buffer for fragmented SysEx messages (D-09, D-10)
+ * Also provides:
+ * - a SysEx accumulation buffer for fragmented SysEx messages
  * - [sendRawBytes] for MIDI system real-time messages (Start, Stop, Clock)
- * - [channelFlow] as [StateFlow] for cross-screen channel sharing (D-16)
- * - [queryDeviceStats] for firmware version, storage, and sample count (D-12)
- * - [selectedScale] and [selectedRootNote] as shared state flows (D-17)
+ * - [channelFlow] as [StateFlow] for cross-screen channel sharing
+ * - [queryDeviceStats] for firmware version, storage, and sample count
+ * - [selectedScale] and [selectedRootNote] as shared state flows
  */
-open class MIDIRepository(private var midiManager: MIDIPort) {
+open class MIDIRepository internal constructor(
+    private var midiManager: MIDIPort,
+    injectedCollaborators: Pair<FileTransferClient, PadAssignmentService>?,
+) {
 
     /**
-     * Serialises all device file operations so that only one file op can hold the shared mutable
-     * state at a time.  Acquiring threads on [fileOpMutex] will suspend (not block) until the
-     * current holder releases, preventing poll-vs-import state corruption.
-     *
-     * CRITICAL: kotlinx [Mutex] is NOT reentrant.  Every function that acquires [fileOpMutex]
-     * MUST call internal *NoLock helpers for any nested file ops — never call another
-     * [withLock] from within a [withLock] body.  See [ensureFileSessionInitNoLock] and
-     * [resolveNodeIdInternal] for the NoLock pattern.
+     * Public one-arg constructor (production path — [MainActivity] et al.). Constructs
+     * [FileTransferClient] then [PadAssignmentService] and wires them via the primary
+     * constructor above.
      */
-    private val fileOpMutex = Mutex()
+    constructor(midiManager: MIDIPort) : this(midiManager, injectedCollaborators = null)
 
     /**
-     * Monotonic request-ID counter for all FILE ops.
-     *
-     * Wraps in the 11-bit space 1..2046 (skips 0 and 2047=0x7FF which some devices treat as
-     * reserved). The fixed greet reqId (1) is skipped on wrap-around to avoid aliasing with
-     * [queryDeviceStatsInner]'s GREET frame; PUT_INIT_REQUEST_ID (30) is NOT in this counter's
-     * range because [putSampleFile] manages its own transfer-local counter starting at 30.
-     *
-     * Using a single shared counter means every FILE frame in flight (regardless of op type)
-     * has a globally unique reqId — stale or duplicate responses from a prior op can never
-     * satisfy [awaitedFileReqId] of a different op.
+     * Internal constructor for test injection: accepts pre-built [ftc] / [pas] collaborators so
+     * tests can construct a repo around fakes without going through the production wiring path.
+     * The public one-arg constructor above remains the only production construction site
+     * (see MainActivity.kt).
      */
-    private val fileReqIdCounter = AtomicInteger(FILE_REQ_ID_INITIAL)
+    internal constructor(
+        midiManager: MIDIPort,
+        ftc: FileTransferClient,
+        pas: PadAssignmentService,
+    ) : this(midiManager, injectedCollaborators = ftc to pas)
 
     /**
-     * Return the next globally-unique file request ID, wrapping within [FILE_REQ_ID_MIN]..[FILE_REQ_ID_MAX].
-     * Skips 0 (invalid) and greet/put reserved IDs.
+     * Stateful file-transfer core. Owns the file-op mutex, the reqId correlation registry,
+     * node-ID resolution, metadata primitives, and paged GET/PUT transfers. This root stays
+     * the single owner of [_deviceState] / [currentDeviceId]; FTC reads them live via the
+     * trailing lambda constructor params.
      */
-    private fun nextFileReqId(): Int {
-        while (true) {
-            val cur = fileReqIdCounter.get()
-            val next = if (cur >= FILE_REQ_ID_MAX) FILE_REQ_ID_MIN else cur + 1
-            if (fileReqIdCounter.compareAndSet(cur, next)) {
-                // Skip IDs reserved for fixed ops: greet=1, PUT_INIT=30 range starts at 30.
-                // Greet is CMD_GREET (not a FILE op), but its reqId=1 appears in raw frames
-                // so avoid aliasing. PUT range 30..~60 is owned by putSampleFile's local counter.
-                if (next == 1 || next in 30..99) continue
-                return next
-            }
-        }
-    }
+    private var ftc: FileTransferClient = injectedCollaborators?.first ?: FileTransferClient(
+        midiManager,
+        outputPortId = { _deviceState.value.outputPortId },
+        deviceId = { currentDeviceId },
+    )
 
     /**
-     * Guard for the active-group poll: set to true while a [getActiveGroupIndex] call is
-     * running.  Checked BEFORE acquiring [fileOpMutex] so that a queued poll (suspended on the
-     * mutex) does not accumulate behind a running poll — the second call returns null immediately
-     * rather than stacking up.
-     *
-     * This is an AtomicBoolean so it can be read from any thread without synchronisation.
-     * The fileOpMutex still serialises the actual op body; this flag is purely an entry guard.
+     * Pad-assignment layer. Layered on [ftc] by constructor dependency; owns
+     * getActiveGroupIndex/setActiveGroup/assignSampleToPad/clearPad/clearProject/
+     * readGroupPadState.
      */
-    private val activeGroupPollInFlight = AtomicBoolean(false)
-
-    // ── Active-group structure caches ─────────────────────────────────────────
-    // These eliminate the repeated FILE_LIST of /projects on every 1.5s poll tick.
-    //
-    // groupsNodeCache:     activeProjNodeId → groupsNodeId  (resolved once per project)
-    // groupNodeNameCache:  groupsNodeId     → map of (groupNodeId → name "A".."D")
-    //
-    // Both are invalidated on device greet (new connection) or when outputPortId goes null.
-    // If the cached value leads to a failed METADATA GET (device returns no "active"), the
-    // cache entries are left in place (structure is unlikely to change mid-session).
-    //
-    // HashMap is fine here — access is single-threaded (always inside fileOpMutex.withLock).
-    private val groupsNodeCache     = HashMap<Int, Int>()
-    private val groupNodeNameCache  = HashMap<Int, Map<Int, String>>()
+    private var pas: PadAssignmentService = injectedCollaborators?.second ?: PadAssignmentService(ftc)
 
     protected val _deviceState = MutableStateFlow(DeviceState())
     open val deviceState: StateFlow<DeviceState> = _deviceState.asStateFlow()
 
-    /** Incoming MIDI events: Triple(statusByte, note, velocity). */
+    /** Incoming MIDI event: status byte, note, velocity, and channel. */
     data class MidiEvent(val status: Int, val note: Int, val velocity: Int, val channel: Int)
 
     private val _incomingMidi = MutableSharedFlow<MidiEvent>(extraBufferCapacity = 64)
     val incomingMidi: SharedFlow<MidiEvent> = _incomingMidi.asSharedFlow()
 
-    // ── Channel state (D-16) ──
+    // ── Channel state ──
     private val _channel = MutableStateFlow(0)
     /** Currently selected MIDI channel (0-15) as StateFlow for cross-screen sharing. */
     val channelFlow: StateFlow<Int> = _channel.asStateFlow()
@@ -129,7 +97,7 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
     /** Currently selected MIDI channel (0-15). Backed by [channelFlow]. */
     val channel: Int get() = _channel.value
 
-    // ── Scale state (D-17) ──
+    // ── Scale state ──
     private val _selectedScale = MutableStateFlow<Scale?>(null)
     /** Currently selected scale for scale-lock highlighting. Null = no scale (all pads normal). */
     val selectedScale: StateFlow<Scale?> = _selectedScale.asStateFlow()
@@ -148,42 +116,21 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
         onChannelMessage = { _incomingMidi.tryEmit(it) },
     )
 
-    // ── SysEx response deferreds (D-12) ──
-    // reqId→waiter correlation registry (backlog 999.4). Migrated file ops register a waiter
-    // under their unique reqId and the dispatcher routes responses by reqId via [fileWaiters].
-    // Ops not yet migrated still use the pending*Deferred fields below + the legacy fallback in
-    // dispatchFileResponse. As each op moves onto the registry its legacy branch is deleted.
-    private val fileWaiters = FileWaiterRegistry()
-
+    // ── SysEx response deferreds ──
+    // FTC owns the reqId→waiter correlation registry for file-transfer responses; the root keeps
+    // only the device-state deferreds below.
     private var pendingGreetDeferred: CompletableDeferred<Map<String, String>>? = null
     private var pendingFileListCountDeferred: CompletableDeferred<Int>? = null
     private var fileListEntryCount: Int = 0
     private var currentDeviceId: Int = 0
     @Volatile private var statsQueryInFlight = false
 
-    // ── FILE_INIT session state (Task 3 — hardware-required handshake) ──
-    // The device returns "can't list unless initialized" until a FILE_INIT (subcmd=1) is
-    // sent. This is a one-time-per-connection handshake; the negotiated chunkSize is used
-    // to bound response sizes. Reset to false on greet (new connection).
-    @Volatile private var fileSessionInitialized = false
-    private var deviceChunkSize: Int = 512
-    // (pendingFileInitDeferred removed — FILE_INIT now correlates by reqId via fileWaiters)
-
-    // ── Paged project transfer state (Phase 4 GATE) ──
-    // fileOpMutex serializes whole file ops (the device tolerates one transfer at a time), and
-    // each op registers a reqId-keyed waiter in fileWaiters — so there is no shared in-flight
-    // state to track. (transferInFlight / pendingPut* / awaited*ReqId removed with backlog 999.4.)
-
-    // ── Project enumeration state (Phase 4 Wave 2) ──
-    // FILE_LIST by node ID returns concatenated directory entries; the dispatcher hands the
-    // accumulated body to a CompletableDeferred keyed by nodeListInFlight.
-    // (pendingNodeListDeferred / nodeListBuffer removed — node FILE_LIST correlates by reqId)
-
-    // ── Metadata JSON round-trip state (Step 1 — active-group sync) ──
-    // (metadata GET/SET in-flight flags + deferreds removed — both now correlate by reqId via
-    //  fileWaiters; see getMetadataJson / setMetadata.)
-
-    // (pendingNodeInfoDeferred removed — FILE_INFO now correlates by reqId via fileWaiters)
+    // FTC's fileOpMutex serializes whole file ops (the device tolerates one transfer at a time),
+    // and each op registers a reqId-keyed waiter — so there is no shared in-flight transfer state
+    // to track here. Node FILE_LIST, FILE_INFO, and metadata GET/SET all correlate by reqId via
+    // those waiters (see getMetadataJson / setMetadata). Session state, fileWaiters, and the group
+    // node caches live in FileTransferClient; the root reaches them via `ftc.*` (e.g. resetting on
+    // greet/port-swap through ftc.onDeviceGreet() / ftc.onPortSwapped()).
 
     // ── File protocol flows (for BackupManager) ──
     data class FileListEntry(val path: String, val nodeId: Int)
@@ -247,7 +194,7 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
         // Pre-warm send port so sequencer noteOn is immediate
         devices.outputs.firstOrNull()?.id?.let { midiManager.prewarmSendPort(it) }
 
-        // Auto-trigger stats query on device connect (D-13)
+        // Auto-trigger stats query on device connect
         if (connected && !wasConnected) {
             repositoryScope.launch { queryDeviceStats() }
         }
@@ -278,14 +225,9 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
                     currentDeviceId = reportedDeviceId
                     Log.d("EP133MIDI", "GREET: adopted deviceId=0x${reportedDeviceId.toString(16)}")
                 }
-                // Reset file session and structure caches on new greet (new connection).
-                fileSessionInitialized = false
-                groupsNodeCache.clear()
-                groupNodeNameCache.clear()
-                Log.d("EP133MIDI", "GREET: cleared structure caches (new connection)")
-                // A greet means a (re)connection — fail any file ops still awaiting on the
-                // registry so they don't hang to timeout against a device that just reset.
-                fileWaiters.failAll(IllegalStateException("device greet/reconnect"))
+                // Reset file session, structure caches, and fail in-flight file waiters —
+                // all owned by FTC.
+                ftc.onDeviceGreet()
 
                 val parsed = SysExProtocol.parseGreetResponse(payload)
                 Log.d("EP133APP", "GREET response: $parsed")
@@ -293,42 +235,13 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
                 pendingGreetDeferred = null
             }
             SysExProtocol.TE_SYSEX_FILE -> {
-                // Task 4: hardware-verified (2026-06-23) — file responses arrive under command=5,
-                // NOT command=127. Payload is already unpacked by parseMidiInput accumulation;
-                // however the frame body is 7-bit packed so we must unpack it here.
-                // We log the raw bytes first for HW capture greppability.
-                val hexDump = payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
-                Log.d("EP133MIDI", "MIDI META: inbound FILE response cmd=5 payload[${payload.size}] $hexDump")
-                // Hardware-verified (2026-06-24) — responses carry a STATUS byte BEFORE the packed
-                // body (reference data/index.js: `let o=9; if(response) status=s[o++]`). So payload[0]
-                // is the status; the 7-bit-packed body starts at payload[1]. Unpacking from payload[0]
-                // shifts every group boundary and corrupts the data.
-                val fileStatus = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: 0
-                val packedBody = if (payload.size > 1) payload.copyOfRange(1, payload.size) else ByteArray(0)
-                val body = if (packedBody.isNotEmpty()) SysExProtocol.unpack7bit(packedBody) else ByteArray(0)
-                Log.d("EP133MIDI", "MIDI META: FILE response status=$fileStatus body[${body.size}] ${body.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }}")
-                // NOTE: do NOT early-return when body is empty — a status-only empty-body response
-                // is a valid PUT DATA page ack (hardware-confirmed 2026-06-25). Bailing here drops
-                // the ack before reqId-matching, leaving the page-0 deferred pending until timeout.
-                // Guard only when there is no status byte at all (payload itself is empty).
-                if (payload.isEmpty()) return
-
-                // reqId-first routing (backlog 999.4): every file op registers a waiter under its
-                // unique reqId, and route() delivers each response to the waiter that owns it. An
-                // unmatched reqId is a stale or duplicate response (the device sends each response
-                // twice) and is dropped.
-                val responseReqId = ((message[6].toInt() and 0x0F) shl 7) or (message[7].toInt() and 0x7F)
-                val routed = fileWaiters.route(FileResponse(responseReqId, fileStatus, body))
-                if (routed == FileWaiterRegistry.RouteResult.Unmatched) {
-                    Log.w("EP133MIDI", "MIDI META: unrouted FILE response reqId=$responseReqId status=$fileStatus — dropped")
-                }
+                // File-correlation frames route through FTC — the same seam FTC's own tests inject
+                // into. Every file response correlates by reqId through fileWaiters, and each
+                // awaiting op parses its own response body (the dispatcher just routes).
+                ftc.routeFileFrame(message)
             }
         }
     }
-
-    // dispatchFileResponse / dispatchPagedPutResponse removed — every file response now routes by
-    // reqId through fileWaiters (see the TE_SYSEX_FILE branch in dispatchSysEx). The per-op body
-    // parsing lives in each awaiting op, not the dispatcher.
 
     /** Refresh device state from MIDIManager. */
     fun refreshDeviceState() {
@@ -362,9 +275,17 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
         midiManager = newPort
         // Reset per-connection session state: the new port needs a fresh FILE_INIT
         // handshake, and stale firmware/stats/port ids must not leak across ports.
-        fileSessionInitialized = false
-        groupsNodeCache.clear()
-        groupNodeNameCache.clear()
+        ftc.onPortSwapped()
+        // FTC's `port` reference is fixed at construction, so re-construct FTC bound to the
+        // new port. The state that would leak (caches, session-init) was already cleared above.
+        ftc = FileTransferClient(
+            newPort,
+            outputPortId = { _deviceState.value.outputPortId },
+            deviceId = { currentDeviceId },
+        )
+        // PAS holds `ftc` by constructor reference, so it must be rebuilt on the new `ftc`
+        // instance too — otherwise PAS would keep calling the old (detached) FTC.
+        pas = PadAssignmentService(ftc)
         _deviceState.value = DeviceState()
         // Rewire exactly as the init block does, then enumerate the new port.
         newPort.onDevicesChanged = { updateDeviceStateOnly() }
@@ -386,9 +307,9 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
         // runs would race on the shared pending-deferred fields and could call complete() twice
         // on the same CompletableDeferred — an IllegalStateException on the MIDI dispatch path.
         if (statsQueryInFlight) return false
-        return fileOpMutex.withLock {
+        return ftc.withFileOpLock {
             // Re-check after acquiring the lock — another call may have started while we waited.
-            if (statsQueryInFlight) return@withLock false
+            if (statsQueryInFlight) return@withFileOpLock false
             statsQueryInFlight = true
             try {
                 queryDeviceStatsInner(portId)
@@ -399,122 +320,63 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
     }
 
     private suspend fun queryDeviceStatsInner(portId: String): Boolean {
-        // Step 1: GREET (firmware + device identity). reqId=1 is the conventional greet ID;
-        // it is not a FILE op so it does not draw from nextFileReqId() and there is no
-        // awaitedFileReqId set for it (greet uses CMD_GREET, not TE_SYSEX_FILE).
+        if (!queryFirmwareVersion(portId)) return false
+
+        // Sample count + storage from /sounds, over the reqId-correlated file ops (the same
+        // primitives the active-group walk and backup ride), now owned by FTC. This whole method
+        // already holds FTC's file-op mutex (see queryDeviceStats), so these are NoLock-equivalent
+        // nested calls and must go through FTC's *NoLock primitives, not its locking wrapper.
+        ftc.ensureFileSessionInitNoLock()
+        val soundsNode = ftc.resolveNodeIdInternal("/sounds") ?: return true
+        querySampleCount(soundsNode)
+        queryStorage(soundsNode)
+        return true
+    }
+
+    /**
+     * GREET the device for firmware + identity and record the firmware version. Returns false on
+     * timeout. reqId=1 is the conventional greet ID; it is not a FILE op, so it does not draw from
+     * nextFileReqId() (greet uses CMD_GREET, not TE_SYSEX_FILE).
+     */
+    private suspend fun queryFirmwareVersion(portId: String): Boolean {
         val greetDeferred = CompletableDeferred<Map<String, String>>()
         pendingGreetDeferred = greetDeferred
         val greetFrame = SysExProtocol.buildGreetFrame(currentDeviceId, requestId = 1)
         midiManager.sendMidi(portId, greetFrame)
         val greetResult = withTimeoutOrNull(5_000) { greetDeferred.await() }
             ?: run { pendingGreetDeferred = null; return false }
-        val firmware = greetResult["sw_version"] ?: ""
-        _deviceState.value = _deviceState.value.copy(firmwareVersion = firmware)
-
-        // Steps 2–3: sample count + storage from /sounds, over the reqId-correlated file ops
-        // (the same primitives the active-group walk and backup ride). The old path-form
-        // pending*Deferred fields are never completed under the inverted dispatcher, so they
-        // always timed out — that's why the Device screen showed "—" for both.
-        ensureFileSessionInitNoLock()
-        val soundsNode = resolveNodeIdInternal("/sounds")
-        if (soundsNode != null) {
-            // Sample count = entries in /sounds (named files only).
-            val body = listNodeBody(soundsNode, requestId = nextFileReqId())
-            if (body != null) {
-                val count = SysExProtocol.parseFileListEntries(body).count { it.name.isNotBlank() }
-                _deviceState.value = _deviceState.value.copy(sampleCount = count)
-            }
-            // Storage from the /sounds node metadata. The device reports max_capacity +
-            // free_space_in_bytes (hardware-verified 2026-06-27), so used = max − free.
-            val meta = getMetadataJson(soundsNode)
-            val total = meta.optLong("max_capacity", -1L).takeIf { it >= 0 }
-            val free = meta.optLong("free_space_in_bytes", -1L).takeIf { it >= 0 }
-            if (total != null) {
-                val used = if (free != null) (total - free).coerceAtLeast(0) else null
-                _deviceState.value = _deviceState.value.copy(storageUsedBytes = used, storageTotalBytes = total)
-            }
-        }
-
+        _deviceState.value = _deviceState.value.copy(firmwareVersion = greetResult["sw_version"] ?: "")
         return true
     }
 
-    // ── Paged project archive transfer (Phase 4 GATE) ──
+    /** Sample count = named entries in /sounds. Assumes an open file session. */
+    private suspend fun querySampleCount(soundsNode: Int) {
+        val body = ftc.listNodeBody(soundsNode, requestId = ftc.nextRequestId()) ?: return
+        val count = SysExProtocol.parseFileListEntries(body).count { it.name.isNotBlank() }
+        _deviceState.value = _deviceState.value.copy(sampleCount = count)
+    }
+
+    /**
+     * Storage used/total from the /sounds node metadata. The device reports max_capacity +
+     * free_space_in_bytes (hardware-verified 2026-06-27), so used = max − free.
+     */
+    private suspend fun queryStorage(soundsNode: Int) {
+        val meta = ftc.getMetadataJson(soundsNode)
+        val total = meta.optLong("max_capacity", -1L).takeIf { it >= 0 } ?: return
+        val free = meta.optLong("free_space_in_bytes", -1L).takeIf { it >= 0 }
+        val used = if (free != null) (total - free).coerceAtLeast(0) else null
+        _deviceState.value = _deviceState.value.copy(storageUsedBytes = used, storageTotalBytes = total)
+    }
+
+    // ── Paged project archive transfer (delegates to FileTransferClient) ──────────
 
     /**
      * Download a full project archive via the device's two-phase INIT/DATA protocol.
-     *
-     * Sends GET_INIT, awaits the parsed {fileSize, fileName}, then loops GET_DATA(page)
-     * requests until `fileSize` bytes are assembled or an empty-data page terminates early.
-     * Each DATA response must match the expected page (page mismatch throws). The pending
-     * handler stays registered across STATUS_SPECIFIC_SUCCESS_START and resolves on STATUS_OK.
-     *
-     * An absolute outer timeout guards a never-terminating stream (threat T-04-04); the
-     * per-page receive is also bounded. Returns the assembled `.tar` bytes.
+     * Thin delegation to [FileTransferClient.getProjectArchive] — see FTC for the protocol.
      *
      * @throws IllegalStateException on page mismatch, buffer overflow, or device error.
      */
-    suspend fun getProjectArchive(nodeId: Int): ByteArray {
-        val portId = _deviceState.value.outputPortId
-            ?: throw IllegalStateException("no output port")
-        return fileOpMutex.withLock {
-            // INIT: one request -> one response (OneShot via the registry).
-            val initReqId = nextFileReqId()
-            val initFrame = SysExProtocol.buildFileGetInitFrame(currentDeviceId, nodeId, requestId = initReqId)
-            val initResp = awaitFileOp(initReqId, FileOpKind.GET_INIT, portId, initFrame, GET_INIT_TIMEOUT_MS)
-                ?: throw IllegalStateException("GET INIT timed out")
-            val init = SysExProtocol.parseGetInitResponse(initResp.body)
-            Log.d("EP133APP", "Project GET init: ${init.fileName} ${init.fileSize} bytes")
-
-            val out = java.io.ByteArrayOutputStream(init.fileSize.coerceAtLeast(0))
-            val cap = init.fileSize + SysExProtocol.MAX_PAGE_BYTES
-            var page = 0
-            while (out.size() < init.fileSize) {
-                // Each GET_DATA page is its own request -> its own response (OneShot by reqId).
-                val dataReqId = nextFileReqId()
-                val dataFrame = SysExProtocol.buildFileGetDataFrame(currentDeviceId, page, requestId = dataReqId)
-                val resp = awaitFileOp(dataReqId, FileOpKind.GET_DATA, portId, dataFrame, GET_PAGE_TIMEOUT_MS)
-                    ?: throw IllegalStateException("GET DATA page $page timed out")
-                if (resp.status != SysExProtocol.STATUS_OK &&
-                    resp.status < SysExProtocol.STATUS_SPECIFIC_SUCCESS_START
-                ) {
-                    throw IllegalStateException("GET DATA page $page device error status ${resp.status}")
-                }
-                val data = SysExProtocol.parseGetDataResponse(resp.body)
-                check(data.page == page) { "unexpected page ${data.page}, expected $page" }
-                if (data.data.isEmpty()) break
-                check(out.size() + data.data.size <= cap) {
-                    "GET overflow: ${out.size() + data.data.size} bytes exceeds cap $cap"
-                }
-                out.write(data.data)
-                page = data.nextPage
-            }
-            out.toByteArray()
-        }
-    }
-
-    /**
-     * Upload a project archive via the device's two-phase INIT/DATA protocol (restore).
-     *
-     * Sends PUT_INIT announcing the byte count, then PUT_DATA(page, chunk) frames carrying
-     * the archive in `MAX_PAGE_BYTES`-sized slices, awaiting a STATUS_OK acknowledgement.
-     * Archive bytes are 7-bit packed by the frame builder.
-     */
-    /** True if a PUT ack FileResponse signals success (STATUS_OK or a continuation status). */
-    private fun putAckOk(resp: FileResponse?): Boolean =
-        resp != null && (resp.status == SysExProtocol.STATUS_OK ||
-            resp.status >= SysExProtocol.STATUS_SPECIFIC_SUCCESS_START)
-
-    /**
-     * Printable ASCII text from a device error response body, or null if there is none.
-     * The EP-133 returns a human-readable reason on rejection (e.g. "not enough space");
-     * surfacing it beats a generic "upload rejected" message.
-     */
-    private fun deviceErrorText(resp: FileResponse?): String? {
-        val body = resp?.body ?: return null
-        if (body.isEmpty()) return null
-        val text = String(body, Charsets.US_ASCII).filter { it.code in 32..126 }.trim()
-        return text.ifBlank { null }
-    }
+    suspend fun getProjectArchive(nodeId: Int): ByteArray = ftc.getProjectArchive(nodeId)
 
     /**
      * Free device sample storage in bytes from the latest device stats, or null if unknown.
@@ -528,64 +390,17 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
         return (total - used).coerceAtLeast(0L)
     }
 
-    suspend fun putProjectArchive(slotNodeId: Int, tarBytes: ByteArray): Boolean {
-        val portId = _deviceState.value.outputPortId
-            ?: throw IllegalStateException("no output port")
-        return fileOpMutex.withLock {
-            var nextReqId = PUT_INIT_REQUEST_ID
-            val initReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
-            val initFrame = SysExProtocol.buildFilePutInitFrame(currentDeviceId, slotNodeId, tarBytes.size, requestId = initReqId)
-            if (!putAckOk(awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS))) {
-                return@withLock false
-            }
-            var page = 0
-            var offset = 0
-            while (offset < tarBytes.size) {
-                val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, tarBytes.size)
-                val chunk = tarBytes.copyOfRange(offset, end)
-                val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
-                val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = dataReqId)
-                if (!putAckOk(awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS))) {
-                    return@withLock false
-                }
-                offset = end
-                page = (page + 1) and 0xFFFF
-            }
-            val termReqId = nextReqId
-            val termFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = termReqId)
-            putAckOk(awaitFileOp(termReqId, FileOpKind.PUT_DATA, portId, termFrame, PUT_ACK_TIMEOUT_MS))
-        }
-    }
+    /** Upload a project archive via the device's two-phase INIT/DATA protocol (restore). */
+    suspend fun putProjectArchive(slotNodeId: Int, tarBytes: ByteArray): Boolean =
+        ftc.putProjectArchive(slotNodeId, tarBytes)
 
-    // ── Sample file upload to /sounds (Phase 5 Wave 2, SAMPLE-03) ──
+    // ── Sample file upload to /sounds (delegates to FileTransferClient) ───────────
 
     /**
      * Upload raw s16 LE PCM bytes to /sounds by creating a new file via the device's node-ID
-     * INIT protocol, matching the reference tool (data/index.js uploadSound / fileHandler.put).
+     * INIT protocol. Thin delegation to [FileTransferClient.putSampleFile] — see FTC for the
+     * full protocol description.
      *
-     * Protocol (verified verbatim from data/index.js):
-     *  1. Resolve the /sounds directory to a numeric node ID BEFORE starting the transfer,
-     *     so its FILE_LIST round-trips don't interleave with the PUT frames.
-     *  2. Build metadata JSON `{"channels":<n>,"samplerate":<r>}` (exact key names from
-     *     data/index.js `prepareTeenageMeta`) and pass it to [SysExProtocol.buildFileCreatePutInitFrame].
-     *  3. Send FILE_PUT INIT via [SysExProtocol.buildFileCreatePutInitFrame]: parentId=/sounds
-     *     node, fileId=0 (device assigns), fileSize=pcmBytes.size, filename=name, metadataJson.
-     *  4. Page the PCM bytes in [SysExProtocol.MAX_PAGE_BYTES] slices via
-     *     [SysExProtocol.buildFilePutDataFrame] (existing, unchanged).
-     *  5. Send a zero-length DATA frame as the terminator (reference: "sendSysExFileRequest
-     *     serial, new SysExFilePutDataRequest(page, new Uint8Array(0))").
-     *  6. Await STATUS_OK; on success return the device-assigned node ID parsed from the INIT
-     *     response body[0..1] (u16 BE, hardware-verified 2026-06-29 — test upload returned 193).
-     *
-     * @param name      Sanitized basename + ".wav" (caller must ensure no path separators).
-     * @param pcmBytes  Raw interleaved s16 LE PCM — NO RIFF/WAV header. Must be > 0 bytes.
-     * @param channels  Number of audio channels (1 = mono, 2 = stereo).
-     * @param sampleRate Sample rate in Hz (always 46875 for device-format audio).
-     * @return          Device-assigned node ID (positive Int) on success — parsed from the INIT
-     *                  response body, or resolved via `/sounds/<name>` when the body lacks it.
-     *                  Null on timeout / device error / unresolvable /sounds node, and also when
-     *                  the upload was acked but no node ID could be determined either way: callers
-     *                  bind pads to the returned ID, so an unverifiable ID must read as failure.
      * @throws IllegalStateException if no output port is connected or a transfer is in flight.
      * @throws CancellationException if the coroutine is cancelled.
      */
@@ -594,220 +409,26 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
         pcmBytes: ByteArray,
         channels: Int = 1,
         sampleRate: Int = 46875,
-    ): Int? {
-        val portId = _deviceState.value.outputPortId
-            ?: throw IllegalStateException("no output port")
-
-        return fileOpMutex.withLock {
-            // Ensure the FILE_INIT handshake (once per connection) before resolving node IDs.
-            ensureFileSessionInitNoLock()
-
-            val parent = resolveSoundsNodeId()
-            if (parent == null) {
-                Log.e("EP133APP", "putSampleFile: cannot resolve /sounds node — aborting upload of $name")
-                return@withLock null
-            }
-
-            // ~420-byte raw chunks (within the device's 512-byte budget) get STATUS_OK; 4096 was
-            // rejected ("unexpected page") because it 7-bit-packs past the budget.
-            val rawChunkSize = computeSampleChunkSize(deviceChunkSize)
-            val pageCount = if (pcmBytes.isEmpty()) 0 else (pcmBytes.size + rawChunkSize - 1) / rawChunkSize
-            Log.d("EP133APP", "putSampleFile: chunkSize=$rawChunkSize pages=$pageCount for $name (${pcmBytes.size} bytes, ch=$channels sr=$sampleRate, deviceChunkSize=$deviceChunkSize)")
-
-            // Metadata JSON must match the hardware-verified upload (the Python spike that
-            // successfully uploaded + played samples): channels/samplerate alone get the PUT INIT
-            // rejected — the device needs the sample `format`, a `name`, and a `sound.playmode`.
-            val metaName = name.substringBeforeLast('.', name)
-            val metadataJson =
-                """{"channels":$channels,"samplerate":$sampleRate,"format":"s16","name":"$metaName","sound.playmode":"oneshot"}"""
-
-            // Transfer-local reqId counter (INIT=30, then each DATA page + terminator). Each frame
-            // registers its own OneShot waiter under its reqId via awaitFileOp; only one is ever
-            // live at a time (await-then-remove), so a stale/duplicate ack can't mis-route.
-            var nextReqId = PUT_INIT_REQUEST_ID  // 30
-            var initAcked = false
-            // Device-assigned node ID, parsed from the PUT INIT response body[0..1] u16 BE.
-            // Hardware-verified (2026-06-29): a 0.3s test upload returned nodeId 193 via this path.
-            var assignedNodeId: Int? = null
-            try {
-                // INIT: announce parent dir, fileId=0 (new file), size, filename, metadata.
-                val initReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
-                val initFrame = SysExProtocol.buildFileCreatePutInitFrame(
-                    currentDeviceId,
-                    parentNodeId = parent,
-                    fileSize = pcmBytes.size,
-                    filename = name,
-                    requestId = initReqId,
-                    metadataJson = metadataJson,
-                )
-                Log.d("EP133MIDI", "MIDI META: outbound PUT INIT reqId=$initReqId name=$name size=${pcmBytes.size}")
-                val initResp = awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS)
-                if (!putAckOk(initResp)) {
-                    val devMsg = deviceErrorText(initResp)
-                    Log.e("EP133APP", "putSampleFile: PUT INIT rejected for $name — ${devMsg ?: "no ack (timeout)"}")
-                    // Surface the device's own reason (e.g. "not enough space") to the caller;
-                    // fall back to null only when the device said nothing (genuine timeout).
-                    if (devMsg != null) throw java.io.IOException(devMsg)
-                    return@withLock null
-                }
-                // Parse device-assigned node ID from body[0..1] as unsigned 16-bit big-endian.
-                // Hardware-verified (2026-06-29): body carries the new file's node ID so callers
-                // can use it directly for pad-metadata assignment without a subsequent FILE_LIST.
-                if (initResp != null && initResp.body.size >= 2) {
-                    assignedNodeId = ((initResp.body[0].toInt() and 0xFF) shl 8) or
-                        (initResp.body[1].toInt() and 0xFF)
-                    Log.d("EP133APP", "putSampleFile: device assigned nodeId=$assignedNodeId for $name")
-                } else {
-                    Log.w("EP133APP", "putSampleFile: PUT INIT response body too short to parse nodeId — body=${initResp?.body?.size ?: 0} bytes")
-                }
-                initAcked = true
-                Log.d("EP133APP", "putSampleFile: PUT INIT ack OK — sending DATA pages for $name")
-
-                // DATA pages: serial, awaiting each page's ack before sending the next (USB-MIDI
-                // has no flow control; the reference tool sends serially with await).
-                var page = 0
-                var offset = 0
-                while (offset < pcmBytes.size) {
-                    val end = minOf(offset + rawChunkSize, pcmBytes.size)
-                    val chunk = pcmBytes.copyOfRange(offset, end)
-                    val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
-                    val dataFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, chunk, requestId = dataReqId)
-                    Log.d("EP133MIDI", "MIDI META: outbound PUT DATA page=$page reqId=$dataReqId chunkSize=${chunk.size}")
-                    val dataResp = awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS)
-                    if (!putAckOk(dataResp)) {
-                        val devMsg = deviceErrorText(dataResp)
-                        Log.e("EP133APP", "putSampleFile: DATA page $page rejected for $name — ${devMsg ?: "no ack (timeout)"}")
-                        val closeReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
-                        forceCloseTransfer(portId, page + 1, closeReqId)
-                        if (devMsg != null) throw java.io.IOException(devMsg)
-                        return@withLock null
-                    }
-                    offset = end
-                    page = (page + 1) and 0xFFFF
-                }
-
-                // Zero-length DATA terminator (required by the reference tool). Await its final ack.
-                val termReqId = nextReqId; nextReqId = (nextReqId + 1) and 0x3FFF
-                val terminatorFrame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, page, ByteArray(0), requestId = termReqId)
-                Log.d("EP133MIDI", "MIDI META: outbound PUT terminator page=$page reqId=$termReqId")
-                if (putAckOk(awaitFileOp(termReqId, FileOpKind.PUT_DATA, portId, terminatorFrame, PUT_ACK_TIMEOUT_MS))) {
-                    // Return the device-assigned node ID from the INIT response body. If the body
-                    // didn't carry one, resolve the just-created file by path instead — callers
-                    // bind pads to this ID (pad metadata "sym"), so a sentinel like -1 must never
-                    // escape here. If neither source yields an ID, report failure (null).
-                    assignedNodeId ?: resolveNodeIdInternal("/sounds/$name").also {
-                        if (it == null) Log.e("EP133APP", "putSampleFile: upload acked but no node ID for $name")
-                    }
-                } else {
-                    null
-                }
-            } catch (e: CancellationException) {
-                // A dangling incomplete PUT wedges the device — best-effort close if INIT was acked.
-                if (initAcked) forceCloseTransfer(portId, 0, nextReqId)
-                throw e
-            }
-        } // end fileOpMutex.withLock
-    }
+    ): Int? = ftc.putSampleFile(name, pcmBytes, channels, sampleRate)
 
     /**
-     * Best-effort: send a zero-length DATA terminator to close an incomplete PUT transfer.
-     *
-     * A dangling incomplete PUT wedges the device — it ignores subsequent PUTs until power-cycle
-     * (hardware-proven, 2026-06-24). Called on any DATA page ack failure after the INIT has been
-     * acked, so the device can properly close the transfer and accept the next PUT.
-     *
-     * Uses a short timeout (FORCE_CLOSE_TIMEOUT_MS) and ignores the result — this is best-effort
-     * cleanup, not a blocking requirement.
+     * Compute the raw PCM bytes per DATA page for /sounds uploads. Thin delegation to
+     * [FileTransferClient.computeSampleChunkSize] (kept `internal` here for test compatibility).
      */
-    private suspend fun forceCloseTransfer(portId: String, terminatorPage: Int, reqId: Int) {
-        try {
-            val frame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, terminatorPage, ByteArray(0), requestId = reqId)
-            Log.w("EP133MIDI", "MIDI META: force-closing incomplete transfer page=$terminatorPage reqId=$reqId")
-            awaitFileOp(reqId, FileOpKind.PUT_DATA, portId, frame, FORCE_CLOSE_TIMEOUT_MS)
-        } catch (_: CancellationException) {
-            // Intentionally NOT rethrown (the one place in this file that doesn't): this is best-effort
-            // cleanup that itself runs during cancellation, so a fresh CancellationException from the
-            // suspending awaitFileOp is expected here and must not abort the cleanup.
-        } catch (_: Exception) {
-            // Best-effort — ignore all other errors.
-        }
-    }
+    internal fun computeSampleChunkSize(chunkSize: Int): Int = ftc.computeSampleChunkSize(chunkSize)
+
+    // ── FILE_INIT session handshake — once per connection (delegates to FileTransferClient) ──
 
     /**
-     * Compute the raw PCM bytes per DATA page for /sounds uploads, bounded by the device's
-     * negotiated chunk size from the FILE_INIT handshake.
-     *
-     * Mirrors the reference tool's calculateMaxPayloadLength formula (data/index.js):
-     *   o = 8 + 2 + 1 = 11  (overhead bytes in the SysEx envelope)
-     *   s = chunkSize - 6   (usable bytes in one USB packet after SysEx header)
-     *   inner = s - 1 - o   (7-bit-pack input capacity minus framing)
-     *   maxPayload = inner - (inner / 8)   (7-bit packing expands by 1/8)
-     *   rawChunk = maxPayload - 6          (leave headroom for DATA header bytes)
-     *
-     * Clamped to [64, 440]. Falls back to 256 when chunkSize is 0 or unknown.
-     */
-    internal fun computeSampleChunkSize(chunkSize: Int): Int {
-        if (chunkSize <= 0) return 256
-        val o = 11
-        val s = chunkSize - 6
-        val inner = s - 1 - o
-        if (inner <= 0) return 64
-        val maxPayload = inner - (inner / 8)
-        val raw = maxPayload - 6
-        return raw.coerceIn(64, 440)
-    }
-
-    // ── FILE_INIT session handshake (Task 3 — once per connection) ─────────────
-
-    /**
-     * Ensure the FILE_INIT handshake has been completed for this connection.
-     *
-     * Hardware-verified: the device returns "can't list unless initialized" until
-     * a FILE_INIT (subcommand 1) is sent. This is a one-shot-per-connection call;
-     * subsequent calls return immediately if [fileSessionInitialized] is already set.
-     *
-     * Resets on greet (new connection via [dispatchSysEx] CMD_GREET branch).
-     *
-     * This public entry-point acquires [fileOpMutex].  Code that already holds the mutex
-     * (e.g. [putSampleFile], [getActiveGroupIndex]) must call [ensureFileSessionInitNoLock]
-     * directly to avoid a re-entrancy deadlock.
+     * Ensure the FILE_INIT handshake has been completed for this connection. Thin delegation to
+     * [FileTransferClient.ensureFileSessionInit].
      *
      * @return true if the session is initialized (immediately or after the handshake),
      *         false if no port is connected or the INIT timed out.
      */
-    suspend fun ensureFileSessionInit(): Boolean = fileOpMutex.withLock { ensureFileSessionInitNoLock() }
+    suspend fun ensureFileSessionInit(): Boolean = ftc.ensureFileSessionInit()
 
-    /**
-     * NoLock core for [ensureFileSessionInit].
-     *
-     * MUST only be called from within a [fileOpMutex] locked context — calling this without
-     * holding the mutex can corrupt the shared [pendingFileInitDeferred] / [awaitedFileReqId]
-     * state if another file op is concurrently in flight.
-     */
-    private suspend fun ensureFileSessionInitNoLock(): Boolean {
-        if (fileSessionInitialized) return true
-        val portId = _deviceState.value.outputPortId ?: return false
-        val reqId = nextFileReqId()
-        val frame = SysExProtocol.buildFileInitFrame(currentDeviceId, requestId = reqId)
-        Log.d("EP133MIDI", "MIDI META: outbound FILE_INIT reqId=$reqId")
-        val resp = awaitFileOp(reqId, FileOpKind.INIT, portId, frame, FILE_INIT_TIMEOUT_MS)
-        return if (resp != null) {
-            // chunkSize parse is approximate (real HW capture `00 0C 00 00 02 00` yields a large
-            // number — tolerated). Session opening is what matters; never throw.
-            val chunkSize = try { SysExProtocol.parseFileInitResponse(resp.body) } catch (_: Exception) { 512 }
-            deviceChunkSize = chunkSize
-            fileSessionInitialized = true
-            Log.d("EP133MIDI", "FILE_INIT: session initialized, chunkSize=$chunkSize (approx)")
-            true
-        } else {
-            Log.e("EP133MIDI", "FILE_INIT: timed out — proceeding anyway (hardware may not require it)")
-            // Best-effort: if the device didn't respond, mark as initialized so we don't loop.
-            fileSessionInitialized = true
-            false
-        }
-    }
-
-    // ── Project slot enumeration (Phase 4 Wave 2, PROJ-01) ──
+    // ── Project slot enumeration ──
 
     /** A single EP-133 project slot (one of /projects/P00 .. /projects/P08). */
     data class ProjectSlot(
@@ -818,394 +439,72 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
     )
 
     /**
-     * Pure decode of a FILE_LIST response body into directory entries. Delegates to the
-     * SysExProtocol parser so the byte layout lives in one place and stays unit-testable.
+     * Pure decode of a FILE_LIST response body into directory entries. Thin delegation to
+     * [FileTransferClient.parseFileListEntries].
      */
     fun parseFileListEntries(body: ByteArray): List<SysExProtocol.FileEntry> =
-        SysExProtocol.parseFileListEntries(body)
+        ftc.parseFileListEntries(body)
 
     /**
-     * Issue a node-ID FILE_LIST and return the assembled (unpacked) entry body. Guards
-     * against overlapping listings with [statsQueryInFlight] (shared pending fields).
-     *
-     * HARDWARE-VERIFY (Open Q1): the device may instead accept a path-string FILE_LIST
-     * (Phase 2's /sounds path). To switch, replace [SysExProtocol.buildFileListByNodeFrame]
-     * with [SysExProtocol.buildFileListFrame] and pass the path — a one-line change.
+     * Resolve a path like "/projects" to a numeric node ID. Thin delegation to
+     * [FileTransferClient.resolveNodeId] — kept `open` so test subclasses can override it on the
+     * root (production code always calls through this public method).
      */
-    private suspend fun listNodeBody(nodeId: Int, requestId: Int): ByteArray? {
-        val portId = _deviceState.value.outputPortId ?: return null
-        val frame = SysExProtocol.buildFileListByNodeFrame(currentDeviceId, nodeId, requestId = requestId)
-        val resp = awaitFileOp(requestId, FileOpKind.LIST, portId, frame, FILE_LIST_TIMEOUT_MS) ?: return null
-        // Body = [page u16 BE][entries...]; skip the 2-byte page word to return raw entry data.
-        return if (resp.body.size > 2) resp.body.copyOfRange(2, resp.body.size) else ByteArray(0)
-    }
+    open suspend fun resolveNodeId(path: String): Int? = ftc.resolveNodeId(path)
 
     /**
-     * Resolve a path like "/projects" to a numeric node ID by walking segments from root
-     * (nodeId 0), matching each child name in turn (per RESEARCH "Node-ID resolution").
-     *
-     * Returns null if any segment is not found or the device does not respond.
-     *
-     * HARDWARE-VERIFY (Open Q1): confirm /projects lists by nodeId (this walk) vs the
-     * Phase 2 path string. The path-string fallback is a one-line switch in [listNodeBody].
+     * Enumerate the 9 EP-133 project slots. Thin delegation to
+     * [FileTransferClient.listProjects].
      */
-    open suspend fun resolveNodeId(path: String): Int? {
-        return fileOpMutex.withLock {
-            // Task 3: ensure FILE_INIT handshake before any node resolution (NoLock — we hold mutex).
-            ensureFileSessionInitNoLock()
-            resolveNodeIdInternal(path)
-        }
-    }
-
-    /**
-     * Enumerate the 9 EP-133 project slots (PROJ-01).
-     *
-     * Resolves /projects → nodeId, reads its metadata "active" pointer, FILE_LISTs that node,
-     * and maps each child entry to a [ProjectSlot] (marking the active slot). Returns an empty
-     * list if no device is connected or the device does not respond.
-     */
-    open suspend fun listProjects(): List<ProjectSlot> {
-        if (_deviceState.value.outputPortId == null) return emptyList()
-        return fileOpMutex.withLock {
-            // Ensure file session then resolve — both NoLock because we hold fileOpMutex.
-            ensureFileSessionInitNoLock()
-            val projectsNode = resolveNodeIdInternal("/projects") ?: return@withLock emptyList()
-
-            // Active-slot pointer from /projects directory metadata, via the reqId-routed
-            // nodeId-form GET (the same round-trip getActiveGroupIndex rides).
-            val activeNode = getMetadataJson(projectsNode).optInt("active", -1).takeIf { it > 0 }
-
-            val body = listNodeBody(projectsNode, requestId = nextFileReqId()) ?: return@withLock emptyList()
-
-            SysExProtocol.parseFileListEntries(body).map { entry ->
-                ProjectSlot(
-                    nodeId = entry.nodeId,
-                    name = entry.name,
-                    sizeBytes = entry.sizeBytes,
-                    isActive = activeNode != null && entry.nodeId == activeNode,
-                )
-            }
-        }
-    }
+    open suspend fun listProjects(): List<ProjectSlot> = ftc.listProjects()
 
     /**
      * Enumerate the EP-133 /sounds directory — every sample file as a [SysExProtocol.FileEntry]
-     * (nodeId + name + size). Used by [BackupManager]. Empty list if offline or unanswered.
+     * (nodeId + name + size). Thin delegation to [FileTransferClient.listSoundEntries].
      */
-    open suspend fun listSoundEntries(): List<SysExProtocol.FileEntry> {
-        if (_deviceState.value.outputPortId == null) return emptyList()
-        return fileOpMutex.withLock {
-            ensureFileSessionInitNoLock()
-            val soundsNode = resolveNodeIdInternal("/sounds") ?: return@withLock emptyList()
-            val body = listNodeBody(soundsNode, requestId = nextFileReqId()) ?: return@withLock emptyList()
-            SysExProtocol.parseFileListEntries(body).filter { it.name.isNotBlank() }
-        }
-    }
+    open suspend fun listSoundEntries(): List<SysExProtocol.FileEntry> = ftc.listSoundEntries()
 
     /**
-     * Download a file node's full contents via the multi-chunk GET ([getProjectArchive]). Returns
-     * null on timeout / device error instead of throwing, so a backup can skip one bad file and
-     * keep going.
+     * Download a file node's full contents via the multi-chunk GET. Thin delegation to
+     * [FileTransferClient.getFileBytes].
      */
-    open suspend fun getFileBytes(nodeId: Int): ByteArray? = try {
-        getProjectArchive(nodeId)
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        Log.w("EP133APP", "getFileBytes($nodeId) failed", e)
-        null
-    }
+    open suspend fun getFileBytes(nodeId: Int): ByteArray? = ftc.getFileBytes(nodeId)
 
-    // queryProjectsActiveNodeNoLock removed: it used the legacy path-string METADATA frame and
-    // a pendingMetadataDeferred that nothing completed after the reqId-first dispatcher refactor
-    // (backlog 999.4) — every listProjects() stalled its full 5 s timeout and the active pointer
-    // was always null. Caught by SimulatedDeviceTest against the wire-level device simulator.
-
-    // ── Active-group sync: nodeId-form metadata round-trips (Step 1) ─────────────
-    //
-    // These implement the reference tool's group-select mechanism:
-    //   getActiveGroupIndex: /projects→active→projName→/projects/<p>/groups→active→getNode→name
-    //   setActiveGroup:      resolve group nodeId, SET groups-dir {active:<nodeId>}
-    //
-    // Both functions are serialised via fileOpMutex so they cannot interleave with
-    // putSampleFile or the active-group poll.  All internal helpers (resolveNodeIdInternal,
-    // getMetadataJson, getNodeInfo, setMetadata) are called without acquiring the mutex again.
-    // The metadata GET/SET also use their own metadataJsonInFlight / metadataSetInFlight flags.
+    // NOTE: don't resolve the active project via a legacy path-string METADATA frame — that form
+    // has no reqId to correlate against the reqId-first dispatcher, so its waiter never completes,
+    // every listProjects() stalls its full 5 s timeout, and the active pointer reads null. Active
+    // resolution goes through the nodeId-form path in PadAssignmentService instead.
 
     /**
-     * Fetch metadata for [nodeId] using the nodeId-form GET (METADATA_GET = 2).
+     * Fetch metadata for [nodeId] using the nodeId-form GET (METADATA_GET = 2). Thin delegation
+     * to [FileTransferClient.getMetadataJson].
      *
-     * Pages are accumulated until [SysExProtocol.isMetadataTerminator] fires, then
-     * the accumulated JSON string is parsed into a [JSONObject].
-     *
-     * MUST be called from within a [fileOpMutex] locked context.
-     *
-     * **Defensive (HW-VERIFY-3):** if JSON parsing fails (device returned greet-style
-     * `key:value` text instead), falls back to [SysExProtocol.parseGreetResponse] and
-     * wraps the result in a JSONObject. This handles Phase-4 metadata (greet-format) when
-     * reached via the nodeId path until hardware confirms the response format.
-     *
-     * @return Parsed [JSONObject] (may be empty on timeout or parse failure).
+     * MUST be called from within a FTC [FileTransferClient.withFileOpLock] context.
      */
-    suspend fun getMetadataJson(nodeId: Int): JSONObject {
-        val portId = _deviceState.value.outputPortId ?: return JSONObject()
-        val reqId = nextFileReqId()
-        val frame = SysExProtocol.buildMetadataGetFrame(currentDeviceId, nodeId, page = 0, requestId = reqId)
-        Log.d("EP133APP", "MIDI META: outbound METADATA GET nodeId=$nodeId reqId=$reqId")
-        val resp = awaitFileOp(reqId, FileOpKind.METADATA_GET, portId, frame, METADATA_TIMEOUT_MS)
-            ?: return JSONObject()
-        // Hardware-verified (2026-06-24): the body is a 2-byte page prefix + {"active":3000} +
-        // trailing NUL. Active-group metadata fits one page; extract the outermost { ... } span
-        // and parse. (Multi-page metadata is not used by any caller.)
-        val accumulated = String(resp.body, Charsets.US_ASCII)
-        val jsonSpan = run {
-            val s = accumulated.indexOf('{')
-            val e = accumulated.lastIndexOf('}')
-            if (s >= 0 && e > s) accumulated.substring(s, e + 1) else accumulated
-        }
-        Log.d("EP133APP", "MIDI META: METADATA GET jsonSpan='$jsonSpan' for nodeId=$nodeId")
-        return try {
-            JSONObject(jsonSpan)
-        } catch (_: Exception) {
-            Log.d("EP133APP", "MIDI META: JSON parse failed, trying greet fallback for nodeId=$nodeId")
-            val greetMap = SysExProtocol.parseGreetResponse(accumulated.toByteArray(Charsets.US_ASCII))
-            JSONObject().apply { greetMap.forEach { (k, v) -> put(k, v) } }
-        }
-    }
+    suspend fun getMetadataJson(nodeId: Int): JSONObject = ftc.getMetadataJson(nodeId)
 
     /**
-     * Write [json] as the metadata for [nodeId] via a single METADATA SET frame (METADATA_SET = 1).
-     * Correlates the ack by reqId via [fileWaiters].
+     * Write [json] as the metadata for [nodeId] via a single METADATA SET frame. Thin delegation
+     * to [FileTransferClient.setMetadata].
      *
      * @return true if the device responded (any ack), false on timeout.
      */
-    suspend fun setMetadata(nodeId: Int, json: String): Boolean {
-        val portId = _deviceState.value.outputPortId ?: return false
-        val reqId = nextFileReqId()
-        val frame = SysExProtocol.buildMetadataSetFrame(currentDeviceId, nodeId, json, requestId = reqId)
-        Log.d("EP133APP", "MIDI META: outbound METADATA SET nodeId=$nodeId json=$json reqId=$reqId")
-        return awaitFileOp(reqId, FileOpKind.METADATA_SET, portId, frame, METADATA_TIMEOUT_MS) != null
-    }
+    suspend fun setMetadata(nodeId: Int, json: String): Boolean = ftc.setMetadata(nodeId, json)
 
-    /**
-     * Shared spine for single-response file ops: register a [FileWaiter.OneShot] under [reqId],
-     * send [frame], and await the response the device echoes back under that reqId (routed via
-     * [fileWaiters]) up to [timeoutMs]. Always deregisters in finally. Returns null on timeout;
-     * rethrows CancellationException. The caller parses [FileResponse.body] for its own op.
-     *
-     * Routes by reqId, so it is immune to the interleaving/duplicate-response race that the old
-     * mutable-flag model hit (backlog 999.4). Does NOT acquire [fileOpMutex] — callers that need
-     * device-access serialization hold it already.
-     */
-    private suspend fun awaitFileOp(
-        reqId: Int,
-        kind: FileOpKind,
-        portId: String,
-        frame: ByteArray,
-        timeoutMs: Long,
-    ): FileResponse? {
-        val waiter = FileWaiter.OneShot(reqId, kind)
-        fileWaiters.register(waiter)
-        return try {
-            midiManager.sendMidi(portId, frame)
-            withTimeoutOrNull(timeoutMs) { waiter.deferred.await() }
-        } catch (e: CancellationException) {
-            throw e
-        } finally {
-            fileWaiters.remove(reqId)
-        }
-    }
+    /** Thin delegation to [FileTransferClient.getNodeInfo]. */
+    suspend fun getNodeInfo(nodeId: Int): SysExProtocol.NodeInfo? = ftc.getNodeInfo(nodeId)
 
-    suspend fun getNodeInfo(nodeId: Int): SysExProtocol.NodeInfo? {
-        val portId = _deviceState.value.outputPortId ?: return null
-        val reqId = nextFileReqId()
-        val frame = SysExProtocol.buildFileInfoFrame(currentDeviceId, nodeId, requestId = reqId)
-        Log.d("EP133APP", "MIDI META: outbound FILE_INFO nodeId=$nodeId reqId=$reqId")
-        val resp = awaitFileOp(reqId, FileOpKind.INFO, portId, frame, METADATA_TIMEOUT_MS) ?: return null
-        return try {
-            SysExProtocol.parseFileInfo(resp.body)
-        } catch (e: Exception) {
-            Log.e("EP133APP", "MIDI META: FILE_INFO parse failed for nodeId=$nodeId", e)
-            null
-        }
-    }
+    // ── Pad-assignment layer (thin delegations to PadAssignmentService) ───────────
+    // getActiveGroupIndex/setActiveGroup/assignSampleToPad/clearPad/clearProject/
+    // readGroupPadState (and their NoLock helpers) live in `pas`, layered on FTC.
 
-    /**
-     * Read the device's current active group and return its index (0=A, 1=B, 2=C, 3=D).
-     *
-     * Fast path (after first call): the heavy directory-walk is cached so subsequent poll ticks
-     * issue only two METADATA GET round-trips (projects-node → active-project, groups-node →
-     * active-group). The one-time resolution of each cache entry is logged verbosely.
-     *
-     * Guard: if a poll is already in flight ([activeGroupPollInFlight]), the new call returns
-     * null immediately rather than queuing behind the mutex. This prevents 1.5 s poll ticks from
-     * accumulating into a backlog when the device is slow.
-     *
-     * Cache invalidation: both caches are cleared on device greet (new connection).
-     *
-     * Full walk:
-     *   1. METADATA GET on projectsNode → "active" = activeProjNodeId  (fast, cached node)
-     *   2. If groupsNodeCache[activeProjNodeId] miss: resolveNodeIdInternal to find groups dir;
-     *      log all children to confirm structure (HW-VERIFY-2).
-     *   3. METADATA GET on groupsNode → "active" = activeGroupNodeId  (fast, cached node)
-     *   4. If groupNodeNameCache[groupsNode] miss: list groupsNode children; log name→nodeId
-     *      map (HW-VERIFY-2); cache it.
-     *   5. Look up activeGroupNodeId in name map; find PadChannel index by name.
-     *
-     * @return Group index 0–3, or null if the device is disconnected / no active project.
-     */
-    open suspend fun getActiveGroupIndex(): Int? {
-        Log.d("EP133APP", "MIDI META: getActiveGroupIndex() called, outputPort=${_deviceState.value.outputPortId}")
-        if (_deviceState.value.outputPortId == null) return null
-        // Poll guard: return immediately if a poll is already running. This prevents a
-        // 1.5 s tick from stacking up behind the mutex while a previous tick's FILE_LIST
-        // is still in flight — the root cause of the poll-backlog timeout loop.
-        if (!activeGroupPollInFlight.compareAndSet(false, true)) {
-            Log.d("EP133APP", "MIDI META: getActiveGroupIndex — poll already in flight, skipping")
-            return null
-        }
-        return try {
-            fileOpMutex.withLock {
-                ensureFileSessionInitNoLock()
-                try {
-                    getActiveGroupIndexNoLock()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e("EP133APP", "MIDI META: getActiveGroupIndex failed", e)
-                    null
-                }
-            }
-        } finally {
-            activeGroupPollInFlight.set(false)
-        }
-    }
+    /** Thin delegation to [PadAssignmentService.getActiveGroupIndex]. */
+    open suspend fun getActiveGroupIndex(): Int? = pas.getActiveGroupIndex()
 
-    /**
-     * NoLock body for [getActiveGroupIndex].
-     * MUST only be called from within a [fileOpMutex] locked context.
-     */
-    private suspend fun getActiveGroupIndexNoLock(): Int? {
-        // Step 1: resolve the /projects node once (cached implicitly by resolveNodeIdInternal
-        // finding it by name from root). We need the node ID so we can METADATA GET it.
-        // Use the fast METADATA GET path — no directory list needed here.
-        val projectsNode = resolveNodeIdInternal("/projects") ?: return null
+    /** Thin delegation to [PadAssignmentService.setActiveGroup]. */
+    open suspend fun setActiveGroup(index: Int): Boolean = pas.setActiveGroup(index)
 
-        // Step 2: METADATA GET on projects node → get active-project nodeId (fast, 1 round-trip).
-        val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
-            .takeIf { it >= 0 } ?: return null
-        Log.d("EP133APP", "MIDI META: active project nodeId=$activeProjNodeId")
-
-        // Step 3: resolve groups dir — cache hit avoids directory walk after first call.
-        val groupsNode = groupsNodeCache.getOrPut(activeProjNodeId) {
-            // One-time: need the project name to build the path, so do FILE_INFO on activeProjNodeId.
-            val projName = getNodeInfo(activeProjNodeId)?.name ?: run {
-                Log.w("EP133APP", "MIDI META: could not get project name for nodeId=$activeProjNodeId")
-                return null
-            }
-            Log.d("EP133APP", "MIDI META: active project name='$projName' (one-time resolution)")
-            val gn = resolveNodeIdInternal("/projects/$projName/groups") ?: run {
-                Log.w("EP133APP", "MIDI META: /projects/$projName/groups not found — device may use different structure")
-                return null
-            }
-            Log.d("EP133APP", "MIDI META: resolved groups dir nodeId=$gn for project='$projName' (cached)")
-            gn
-        }
-
-        // Step 4: METADATA GET on groups dir → get active-group nodeId (fast, 1 round-trip).
-        val activeGroupNodeId = getMetadataJson(groupsNode).optInt("active", -1)
-            .takeIf { it >= 0 } ?: return null
-        Log.d("EP133APP", "MIDI META: active group nodeId=$activeGroupNodeId")
-
-        // Step 5: resolve group name — cache hit avoids directory walk after first call.
-        val nameMap = groupNodeNameCache.getOrPut(groupsNode) {
-            // One-time: list groups dir children to build nodeId→name map.
-            val body = listNodeBody(groupsNode, requestId = nextFileReqId()) ?: run {
-                Log.w("EP133APP", "MIDI META: could not list groups dir nodeId=$groupsNode")
-                return null
-            }
-            val entries = SysExProtocol.parseFileListEntries(body)
-            // Log the actual structure — HW-VERIFY-2 confirms group names.
-            Log.d("EP133APP", "MIDI META: groups dir children (one-time resolution): ${entries.map { "${it.nodeId}='${it.name}'" }}")
-            if (entries.isEmpty()) {
-                Log.w("EP133APP", "MIDI META: groups dir nodeId=$groupsNode has no children — device structure unexpected")
-                return null
-            }
-            entries.associate { it.nodeId to it.name }
-        }
-
-        val groupName = nameMap[activeGroupNodeId] ?: run {
-            Log.w("EP133APP", "MIDI META: active group nodeId=$activeGroupNodeId not in groups dir map=$nameMap")
-            return null
-        }
-        Log.d("EP133APP", "MIDI META: active group name='$groupName' nodeId=$activeGroupNodeId")
-        val idx = PadChannel.entries.indexOfFirst { it.name == groupName }
-        return idx.takeIf { it >= 0 }
-    }
-
-    /**
-     * Set the device's active group to [index] (0=A, 1=B, 2=C, 3=D).
-     *
-     * Resolves: /projects → active-project name → /projects/<name>/groups/<letter> (target nodeId)
-     * → /projects/<name>/groups (groups-dir nodeId) → SET groups-dir `{active:<targetNodeId>}`.
-     *
-     * @return true if the SET ack was received, false on error or timeout.
-     */
-    open suspend fun setActiveGroup(index: Int): Boolean {
-        val channel = PadChannel.entries.getOrNull(index) ?: return false
-        if (_deviceState.value.outputPortId == null) return false
-        return fileOpMutex.withLock {
-            try {
-                val projectsNode = resolveNodeIdInternal("/projects") ?: return@withLock false
-                val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
-                    .takeIf { it >= 0 } ?: return@withLock false
-                val projName = getNodeInfo(activeProjNodeId)?.name ?: return@withLock false
-                val groupNode = resolveNodeIdInternal("/projects/$projName/groups/${channel.name}") ?: return@withLock false
-                val groupsNode = resolveNodeIdInternal("/projects/$projName/groups") ?: return@withLock false
-                setMetadata(groupsNode, """{"active":$groupNode}""")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e("EP133APP", "MIDI META: setActiveGroup($index) failed", e)
-                false
-            }
-        }
-    }
-
-    // ── Pad-assignment (hardware-verified 2026-06-29) ─────────────────────────────
-    //
-    // Each pad in the active project is a FILE node at:
-    //   active-project → groups/<letter> → "<gridIndex+1 zero-padded>"
-    // A pad's metadata JSON IS its sound binding: writing the verified JSON below
-    // with sym=<sampleNodeId> makes the device play that sample when the pad is hit.
-
-    /**
-     * Bind a sample to a pad on the active project via a single METADATA SET.
-     *
-     * Pad node resolution (hardware-verified 2026-06-29):
-     *   /projects → active-project node → FILE_INFO → project name →
-     *   /projects/<name>/groups/<group.name> → list children → pick entry
-     *   named "%02d".format(gridIndex + 1)
-     *
-     * Writes the hardware-verified pad metadata JSON (any field deviation may cause
-     * the device to silently ignore the assignment):
-     * ```
-     * {"sym":<sampleNodeId>,"sample.start":<start>,"sample.end":<end>,
-     *  "sound.playmode":"<playmode>","sound.amplitude":100,"sound.pan":0,
-     *  "sound.pitch":0.00,"envelope.attack":0,"envelope.release":255,
-     *  "sound.mutegroup":false,"time.mode":"off","midi.channel":0}
-     * ```
-     *
-     * @param group         Target pad group (A/B/C/D).
-     * @param gridIndex     Display-order pad index within the group (0..11, top-left to bottom-right,
-     *                      matching [EP133Pads.GRID_ORDER]).
-     * @param sampleNodeId  Device-assigned node ID of the uploaded sample (from [putSampleFile]).
-     * @param sampleStart   Start frame (0-based, inclusive).  Use 0 to start from the beginning.
-     * @param sampleEnd     End frame (exclusive).  Use total frame count to play the full sample.
-     * @param playmode      EP-133 playmode string (default "oneshot").
-     * @return              true if the device acknowledged the METADATA SET; false on error or
-     *                      if the pad node cannot be resolved (logged with details).
-     */
+    /** Thin delegation to [PadAssignmentService.assignSampleToPad]. */
     open suspend fun assignSampleToPad(
         group: PadChannel,
         gridIndex: Int,
@@ -1214,214 +513,26 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
         sampleEnd: Int,
         playmode: String = "oneshot",
         muteGroup: Boolean = false,
-    ): Boolean {
-        if (_deviceState.value.outputPortId == null) return false
-        return fileOpMutex.withLock {
-            ensureFileSessionInitNoLock()
-            try {
-                val padNodeId = resolvePadNodeIdNoLock(group, gridIndex) ?: return@withLock false
+    ): Boolean = pas.assignSampleToPad(group, gridIndex, sampleNodeId, sampleStart, sampleEnd, playmode, muteGroup)
 
-                // Build and write the hardware-verified pad metadata JSON.
-                val json = buildPadAssignmentJson(sampleNodeId, sampleStart, sampleEnd, playmode, muteGroup)
-                Log.d("EP133APP", "assignSampleToPad: group=${group.name} gridIndex=$gridIndex padNode=$padNodeId json=$json")
-                setMetadata(padNodeId, json)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e("EP133APP", "assignSampleToPad(${group.name}[$gridIndex]) failed", e)
-                false
-            }
-        }
-    }
+    /** Thin delegation to [PadAssignmentService.clearPad]. */
+    open suspend fun clearPad(group: PadChannel, gridIndex: Int): Boolean = pas.clearPad(group, gridIndex)
+
+    /** Thin delegation to [PadAssignmentService.clearProject]. */
+    open suspend fun clearProject(projectName: String): Int = pas.clearProject(projectName)
+
+    /** Thin delegation to [PadAssignmentService.readGroupPadState]. */
+    open suspend fun readGroupPadState(group: PadChannel): Map<Int, String> = pas.readGroupPadState(group)
 
     /**
-     * Build the hardware-verified pad assignment metadata JSON.
-     *
-     * Shape verified on real device (2026-06-29): device accepted and played the sample
-     * after receiving a METADATA SET with exactly these keys and types.
-     *
-     * @param sampleNodeId  Device-assigned node ID from [putSampleFile] (the `sym` field).
-     * @param sampleStart   Start frame (0 = beginning of sample).
-     * @param sampleEnd     End frame (total frame count = full sample).
-     * @param playmode      EP-133 playmode string (e.g. "oneshot", "loop").
+     * Resolve the /sounds directory node ID. Thin delegation to
+     * [FileTransferClient.resolveSoundsNodeId] — retained on the root (protected open) for
+     * source-compatibility with any external subclass, but note that [putSampleFile] calls FTC's
+     * own internal `resolveSoundsNodeId`, not this root method: a subclass overriding THIS method
+     * no longer affects `putSampleFile`'s behavior — override FTC's `resolveSoundsNodeId` instead
+     * (test doubles construct/subclass [FileTransferClient] directly).
      */
-    internal fun buildPadAssignmentJson(
-        sampleNodeId: Int,
-        sampleStart: Int,
-        sampleEnd: Int,
-        playmode: String,
-        muteGroup: Boolean = false,
-    ): String = """{"sym":$sampleNodeId,"sample.start":$sampleStart,"sample.end":$sampleEnd,"sound.playmode":"$playmode","sound.amplitude":100,"sound.pan":0,"sound.pitch":0.00,"envelope.attack":0,"envelope.release":255,"sound.mutegroup":$muteGroup,"time.mode":"off","midi.channel":0}"""
-
-    /**
-     * Metadata for an empty (unbound) pad — the device's own representation. Hardware-verified:
-     * an empty pad's FILE_METADATA GET returns exactly `{"sym":0}` (see pad dumps), so SET-ting
-     * it back unbinds the pad.
-     */
-    private val padEmptyJson = """{"sym":0}"""
-
-    /**
-     * Resolve a pad node id at `/projects/<active>/groups/<X>/<NN>` inside a [fileOpMutex]-locked
-     * context. Shared by [assignSampleToPad] and [clearPad].
-     */
-    private suspend fun resolvePadNodeIdNoLock(group: PadChannel, gridIndex: Int): Int? {
-        val projectsNode = resolveNodeIdInternal("/projects") ?: run {
-            Log.w("EP133APP", "resolvePadNode: cannot resolve /projects"); return null
-        }
-        val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1).takeIf { it >= 0 } ?: run {
-            Log.w("EP133APP", "resolvePadNode: no active project in /projects metadata"); return null
-        }
-        val projName = getNodeInfo(activeProjNodeId)?.name ?: run {
-            Log.w("EP133APP", "resolvePadNode: cannot get project name for nodeId=$activeProjNodeId"); return null
-        }
-        val groupDirPath = "/projects/$projName/groups/${group.name}"
-        val groupDirNode = resolveNodeIdInternal(groupDirPath) ?: run {
-            Log.w("EP133APP", "resolvePadNode: cannot resolve $groupDirPath"); return null
-        }
-        val body = listNodeBody(groupDirNode, requestId = nextFileReqId()) ?: run {
-            Log.w("EP133APP", "resolvePadNode: FILE_LIST for $groupDirPath returned null"); return null
-        }
-        // Pad node name = "%02d".format(gridIndex + 1) per hardware-verified naming.
-        val padName = "%02d".format(gridIndex + 1)
-        return SysExProtocol.parseFileListEntries(body).firstOrNull { it.name == padName }?.nodeId ?: run {
-            Log.w("EP133APP", "resolvePadNode: pad '$padName' not found in $groupDirPath"); return null
-        }
-    }
-
-    /**
-     * Unbind a pad on the device: write the empty-pad metadata (`{"sym":0}`) to the pad node so it
-     * plays nothing. Returns false if there's no output port or the pad can't be resolved.
-     */
-    open suspend fun clearPad(group: PadChannel, gridIndex: Int): Boolean {
-        if (_deviceState.value.outputPortId == null) return false
-        return fileOpMutex.withLock {
-            ensureFileSessionInitNoLock()
-            try {
-                val padNodeId = resolvePadNodeIdNoLock(group, gridIndex) ?: return@withLock false
-                Log.d("EP133APP", "clearPad: group=${group.name} gridIndex=$gridIndex padNode=$padNodeId")
-                setMetadata(padNodeId, padEmptyJson)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e("EP133APP", "clearPad(${group.name}[$gridIndex]) failed", e)
-                false
-            }
-        }
-    }
-
-    /**
-     * Clear a project slot: reset every pad in all four groups to empty (`{"sym":0}`). The slot
-     * itself always survives — project directories carry no DELETE capability (flags `0x0e`), so
-     * "clearing" means emptying its pads, not removing the numbered slot.
-     *
-     * @return the number of pads emptied, or -1 on failure / no output port.
-     */
-    open suspend fun clearProject(projectName: String): Int {
-        if (_deviceState.value.outputPortId == null) return -1
-        return fileOpMutex.withLock {
-            ensureFileSessionInitNoLock()
-            try {
-                var cleared = 0
-                for (group in PadChannel.entries) {
-                    val groupDir = resolveNodeIdInternal("/projects/$projectName/groups/${group.name}")
-                        ?: continue
-                    val body = listNodeBody(groupDir, requestId = nextFileReqId()) ?: continue
-                    val padNodes = SysExProtocol.parseFileListEntries(body)
-                        .filter { it.name.length == 2 && it.name.all(Char::isDigit) }  // pad dirs 01..12
-                        .map { it.nodeId }
-                    for (padNode in padNodes) {
-                        if (setMetadata(padNode, padEmptyJson)) cleared++
-                    }
-                }
-                Log.d("EP133APP", "clearProject($projectName): emptied $cleared pads")
-                cleared
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e("EP133APP", "clearProject($projectName) failed", e)
-                -1
-            }
-        }
-    }
-
-    /**
-     * Read which sample is bound to each pad of [group] in the active project.
-     *
-     * Returns gridIndex (0-based, 0..11) → sample display name for every OCCUPIED pad — a pad whose
-     * metadata `sym` is non-zero (an empty pad is `{"sym":0}`). Empty pads are omitted. Names have
-     * their extension stripped; if the sample node can't be named, falls back to `"sample"`.
-     *
-     * This lets the Kit Builder canvas mirror what's actually on the device instead of showing a
-     * blank staging grid. Resolves the group dir + pad list once, then a METADATA GET per pad (plus
-     * a FILE_INFO per occupied pad to name it). Returns an empty map when offline or on error.
-     */
-    open suspend fun readGroupPadState(group: PadChannel): Map<Int, String> {
-        if (_deviceState.value.outputPortId == null) return emptyMap()
-        return fileOpMutex.withLock {
-            ensureFileSessionInitNoLock()
-            try {
-                val projectsNode = resolveNodeIdInternal("/projects") ?: return@withLock emptyMap()
-                val activeProjNodeId = getMetadataJson(projectsNode).optInt("active", -1)
-                    .takeIf { it >= 0 } ?: return@withLock emptyMap()
-                val projName = getNodeInfo(activeProjNodeId)?.name ?: return@withLock emptyMap()
-                val groupDir = resolveNodeIdInternal("/projects/$projName/groups/${group.name}")
-                    ?: return@withLock emptyMap()
-                val body = listNodeBody(groupDir, requestId = nextFileReqId()) ?: return@withLock emptyMap()
-                val padEntries = SysExProtocol.parseFileListEntries(body)
-                    .filter { it.name.length == 2 && it.name.all(Char::isDigit) }  // pad dirs 01..12
-                val result = LinkedHashMap<Int, String>()
-                for (entry in padEntries) {
-                    val gridIndex = (entry.name.toIntOrNull() ?: continue) - 1
-                    if (gridIndex !in 0 until 12) continue
-                    val sym = getMetadataJson(entry.nodeId).optInt("sym", 0)
-                    if (sym == 0) continue
-                    val name = getNodeInfo(sym)?.name?.substringBeforeLast('.') ?: "sample"
-                    result[gridIndex] = name
-                }
-                Log.d("EP133APP", "readGroupPadState(${group.name}): ${result.size} occupied pads")
-                result
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e("EP133APP", "readGroupPadState(${group.name}) failed", e)
-                emptyMap()
-            }
-        }
-    }
-
-    /**
-     * Resolve the /sounds directory node ID inside a [fileOpMutex] locked context.
-     *
-     * Exists as a protected open method so test subclasses can stub the resolution without
-     * overriding the entire locking machinery in [putSampleFile].  Production path delegates
-     * to [resolveNodeIdInternal] (NoLock).
-     *
-     * MUST only be called from within a [fileOpMutex] locked context.
-     */
-    protected open suspend fun resolveSoundsNodeId(): Int? = resolveNodeIdInternal("/sounds")
-
-    /**
-     * NoLock core for [resolveNodeId].  Walks path segments from root (nodeId 0) using
-     * [listNodeBody] (also NoLock) without acquiring [fileOpMutex].
-     *
-     * MUST only be called from within a [fileOpMutex] locked context.
-     */
-    private suspend fun resolveNodeIdInternal(path: String): Int? {
-        val segments = path.trim('/').split('/').filter { it.isNotEmpty() }
-        var nodeId = 0   // root
-        for (segment in segments) {
-            val body = listNodeBody(nodeId, requestId = nextFileReqId())
-            if (body == null) {
-                Log.d("EP133APP", "MIDI META: resolveInternal('$path') seg='$segment' parent=$nodeId → listNodeBody NULL")
-                return null
-            }
-            val entries = SysExProtocol.parseFileListEntries(body)
-            Log.d("EP133APP", "MIDI META: resolveInternal('$path') seg='$segment' parent=$nodeId body=${body.size}B entries=${entries.map { it.name }}")
-            val child = entries.firstOrNull { it.name == segment } ?: return null
-            nodeId = child.nodeId
-        }
-        return nodeId
-    }
+    protected open suspend fun resolveSoundsNodeId(): Int? = ftc.resolveSoundsNodeId()
 
     fun setChannel(ch: Int) {
         _channel.value = ch.coerceIn(0, 15)
@@ -1429,13 +540,13 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
 
     // ── MIDI message senders ──
 
-    fun noteOn(note: Int, velocity: Int = 100, ch: Int = channel) {
+    fun noteOn(note: Int, velocity: Int = DEFAULT_VELOCITY, ch: Int = channel) {
         val portId = _deviceState.value.outputPortId ?: run {
             Log.w("EP133APP", "MIDI OUT: no output port! note=$note ch=$ch")
             return
         }
         Log.d("EP133APP", "MIDI OUT: noteOn note=$note vel=$velocity ch=$ch port=$portId")
-        val status = 0x90 or (ch and 0x0F)
+        val status = STATUS_NOTE_ON or (ch and 0x0F)
         midiManager.sendMidi(portId, byteArrayOf(
             status.toByte(),
             (note and 0x7F).toByte(),
@@ -1445,7 +556,7 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
 
     fun noteOff(note: Int, ch: Int = channel) {
         val portId = _deviceState.value.outputPortId ?: return
-        val status = 0x80 or (ch and 0x0F)
+        val status = STATUS_NOTE_OFF or (ch and 0x0F)
         midiManager.sendMidi(portId, byteArrayOf(
             status.toByte(),
             (note and 0x7F).toByte(),
@@ -1455,7 +566,7 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
 
     fun controlChange(control: Int, value: Int, ch: Int = channel) {
         val portId = _deviceState.value.outputPortId ?: return
-        val status = 0xB0 or (ch and 0x0F)
+        val status = STATUS_CONTROL_CHANGE or (ch and 0x0F)
         midiManager.sendMidi(portId, byteArrayOf(
             status.toByte(),
             (control and 0x7F).toByte(),
@@ -1465,7 +576,7 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
 
     fun programChange(program: Int, ch: Int = channel) {
         val portId = _deviceState.value.outputPortId ?: return
-        val status = 0xC0 or (ch and 0x0F)
+        val status = STATUS_PROGRAM_CHANGE or (ch and 0x0F)
         midiManager.sendMidi(portId, byteArrayOf(
             status.toByte(),
             (program and 0x7F).toByte(),
@@ -1473,7 +584,7 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
     }
 
     fun allNotesOff(ch: Int = channel) {
-        controlChange(123, 0, ch)
+        controlChange(CC_ALL_NOTES_OFF, 0, ch)
     }
 
     /**
@@ -1496,21 +607,21 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
     fun loadSoundToPad(soundNumber: Int, padNote: Int, padChannel: Int, ch: Int = channel) {
         val portId = _deviceState.value.outputPortId ?: return
         val index = (soundNumber - 1).coerceAtLeast(0)
-        val bankMsb = index / 128
-        val program = index % 128
+        val bankMsb = index / PROGRAMS_PER_BANK
+        val program = index % PROGRAMS_PER_BANK
         Log.d("EP133APP", "MIDI OUT: loadSound #$soundNumber → pad note=$padNote padCh=$padChannel bank=$bankMsb pc=$program ch=$ch")
 
-        val noteOnStatus = (0x90 or (padChannel and 0x0F)).toByte()
-        val noteOffStatus = (0x80 or (padChannel and 0x0F)).toByte()
-        val ccStatus = (0xB0 or (ch and 0x0F)).toByte()
-        val pcStatus = (0xC0 or (ch and 0x0F)).toByte()
+        val noteOnStatus = (STATUS_NOTE_ON or (padChannel and 0x0F)).toByte()
+        val noteOffStatus = (STATUS_NOTE_OFF or (padChannel and 0x0F)).toByte()
+        val ccStatus = (STATUS_CONTROL_CHANGE or (ch and 0x0F)).toByte()
+        val pcStatus = (STATUS_PROGRAM_CHANGE or (ch and 0x0F)).toByte()
         val padNoteByte = (padNote and 0x7F).toByte()
 
         midiManager.sendMidi(portId, byteArrayOf(
-            noteOnStatus, padNoteByte, 100.toByte(),
+            noteOnStatus, padNoteByte, DEFAULT_VELOCITY.toByte(),
             noteOffStatus, padNoteByte, 0,
-            ccStatus, 0, (bankMsb and 0x7F).toByte(),
-            ccStatus, 32, 0,
+            ccStatus, CC_BANK_SELECT_MSB.toByte(), (bankMsb and 0x7F).toByte(),
+            ccStatus, CC_BANK_SELECT_LSB.toByte(), 0,
             pcStatus, (program and 0x7F).toByte(),
         ))
     }
@@ -1529,23 +640,28 @@ open class MIDIRepository(private var midiManager: MIDIPort) {
     }
 
     companion object {
-        // Paged-transfer timeouts (threat T-04-04: bound a never-terminating stream).
-        private const val GET_INIT_TIMEOUT_MS = 5_000L
-        private const val GET_PAGE_TIMEOUT_MS = 5_000L
-        private const val PUT_ACK_TIMEOUT_MS = 15_000L
-        // Node-ID FILE_LIST + /projects metadata query bound (enumeration, Wave 2).
-        // Reverted from 10 s (the bump didn't help — root cause was reqId aliasing, not latency).
-        private const val FILE_LIST_TIMEOUT_MS = 5_000L
-        // Metadata GET/SET + FILE_INFO round-trip timeout (Step 1 — active-group sync).
-        private const val METADATA_TIMEOUT_MS = 5_000L
-        // FILE_INIT handshake (Task 3 — once per connection).
-        private const val FILE_INIT_TIMEOUT_MS    = 5_000L
+        // ── MIDI channel-voice message constants ──────────────────────────────────
+        // Status nibbles (OR'd with the 4-bit channel); CC numbers; and EP-133 sound-load values.
+        private const val STATUS_NOTE_ON = 0x90
+        private const val STATUS_NOTE_OFF = 0x80
+        private const val STATUS_CONTROL_CHANGE = 0xB0
+        private const val STATUS_PROGRAM_CHANGE = 0xC0
+        private const val CC_ALL_NOTES_OFF = 123
+        private const val CC_BANK_SELECT_MSB = 0
+        private const val CC_BANK_SELECT_LSB = 32
+        private const val PROGRAMS_PER_BANK = 128
+        private const val DEFAULT_VELOCITY = 100
+
+        // The file-op timeout constants live in FileTransferClient with the primitives that use
+        // them. The reqId-space constants below are kept here (not just on FTC) because tests
+        // reference them as `MIDIRepository.PUT_INIT_REQUEST_ID` / `FILE_REQ_ID_MIN` /
+        // `FILE_REQ_ID_MAX` — both classes' counters share the same numeric space by construction
+        // (FTC's private counter uses identical bounds).
+
         // putSampleFile uses a transfer-local counter starting here; each frame increments it.
         // This is the INIT reqId; DATA pages and terminator get 31, 32, ... (masked to 14-bit).
         // The global nextFileReqId() counter skips the range 30..99 so it never aliases these.
         internal const val PUT_INIT_REQUEST_ID    = 30
-        // Short timeout for the best-effort force-close terminator.
-        private const val FORCE_CLOSE_TIMEOUT_MS  = 2_000L
 
         // ── nextFileReqId() counter bounds ──────────────────────────────────────
         // 11-bit space: 1..2046. 0 and 2047 (0x7FF) skipped (reserved/invalid).

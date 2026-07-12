@@ -32,7 +32,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,6 +56,7 @@ import com.ep133.sampletool.ui.theme.Ep133GroupChip
 import com.ep133.sampletool.ui.theme.Ep133Pad
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.Mono
 import com.ep133.sampletool.ui.theme.PadState
 import androidx.compose.material3.Text as M3Text
 
@@ -77,7 +77,7 @@ class PadsViewModel(private val midi: MIDIRepository) : ViewModel() {
             midi.incomingMidi.collect { event ->
                 when {
                     event.status == 0x90 && event.velocity > 0 -> {
-                        val resolved = EP133Pads.resolveIncoming(event.note, event.channel) ?: return@collect
+                        val resolved = EP133Pads.resolveIncoming(event.note) ?: return@collect
                         val (group, index) = resolved
 
                         if (group != _selectedChannel.value) {
@@ -149,6 +149,30 @@ fun computeInScaleSet(scale: Scale, rootNoteName: String): Set<Int> {
     val rootIndex = com.ep133.sampletool.domain.model.EP133Scales.ROOT_NOTES.indexOf(rootNoteName)
     if (rootIndex < 0) return emptySet()
     return scale.intervals.map { (rootIndex + it) % 12 }.toSet()
+}
+
+/** Convert a normalized touch pressure (0..1) to a MIDI velocity (1..127, never 0). */
+internal fun pressureToVelocity(pressure: Float): Int =
+    (pressure.coerceIn(0f, 1f) * 127).toInt().coerceAtLeast(1)
+
+/**
+ * Map an (x, y) touch inside a [columns]×[rowCount] pad grid measured at [gridWidthPx]×[gridHeightPx]
+ * to a flat pad index, or null if the grid isn't measured yet or the cell is past [padCount].
+ */
+internal fun coordToPadIndex(
+    x: Float,
+    y: Float,
+    gridWidthPx: Float,
+    gridHeightPx: Float,
+    columns: Int,
+    rowCount: Int,
+    padCount: Int,
+): Int? {
+    if (gridWidthPx <= 0f || gridHeightPx <= 0f) return null
+    val col = (x / (gridWidthPx / columns)).toInt().coerceIn(0, columns - 1)
+    val row = (y / (gridHeightPx / rowCount)).toInt().coerceIn(0, rowCount - 1)
+    val idx = row * columns + col
+    return idx.takeIf { it < padCount }
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -228,29 +252,22 @@ fun PadsScreen(viewModel: PadsViewModel) {
                     gridHeightPx = size.height.toFloat()
                 }
                 .pointerInteropFilter { event ->
-                    fun coordToIndex(x: Float, y: Float): Int? {
-                        if (gridWidthPx <= 0f || gridHeightPx <= 0f) return null
-                        val col = (x / (gridWidthPx / columns)).toInt().coerceIn(0, columns - 1)
-                        val row = (y / (gridHeightPx / rowCount)).toInt().coerceIn(0, rowCount - 1)
-                        val idx = row * columns + col
-                        return idx.takeIf { it < pads.size }
-                    }
+                    fun coordToIndex(x: Float, y: Float): Int? =
+                        coordToPadIndex(x, y, gridWidthPx, gridHeightPx, columns, rowCount, pads.size)
                     when (event.actionMasked) {
                         MotionEvent.ACTION_DOWN -> {
                             val idx = coordToIndex(event.x, event.y)
                                 ?: return@pointerInteropFilter false
-                            val vel = (event.pressure.coerceIn(0f, 1f) * 127).toInt().coerceAtLeast(1)
                             pointerToPad[event.getPointerId(0)] = idx
-                            viewModel.padDown(idx, vel)
+                            viewModel.padDown(idx, pressureToVelocity(event.pressure))
                             true
                         }
                         MotionEvent.ACTION_POINTER_DOWN -> {
                             val ptrIdx = event.actionIndex
                             val idx = coordToIndex(event.getX(ptrIdx), event.getY(ptrIdx))
                                 ?: return@pointerInteropFilter false
-                            val vel = (event.getPressure(ptrIdx).coerceIn(0f, 1f) * 127).toInt().coerceAtLeast(1)
                             pointerToPad[event.getPointerId(ptrIdx)] = idx
-                            viewModel.padDown(idx, vel)
+                            viewModel.padDown(idx, pressureToVelocity(event.getPressure(ptrIdx)))
                             true
                         }
                         MotionEvent.ACTION_POINTER_UP -> {
@@ -335,7 +352,7 @@ private fun LegendItem(dotColor: Color, label: String) {
         M3Text(
             label,
             color = t.text3,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = Mono,
             fontSize = 9.sp,
             letterSpacing = 0.6.sp,
         )

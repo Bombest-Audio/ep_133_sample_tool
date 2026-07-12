@@ -34,6 +34,8 @@ data class EP133Tokens(
     val live: Color,
     val liveInk: Color,
     val onAccent: Color,
+    // Status
+    val error: Color,      // destructive / failure state (reject, upload error)
     // Misc
     val dot: Color,        // PCB/graph-paper background dot
     // Rubber pads
@@ -84,6 +86,7 @@ private val Ep133Light = EP133Tokens(
     live = Color(0xFF00A69C),
     liveInk = Color(0xFF00837B),
     onAccent = Color.White,
+    error = Color(0xFFD0021B),
     dot = Color(0x1A191A1B),
     padFace = Color(0xFF222323),
     padEdge = Color(0xFF0E0F0F),
@@ -108,6 +111,7 @@ private val Ep133Dark = EP133Tokens(
     live = Color(0xFF00A69C),
     liveInk = Color(0xFF00837B),
     onAccent = Color(0xFF161617),
+    error = Color(0xFFD0021B),
     dot = Color(0x14E2E3E4),
     padFace = Color(0xFF1A1B1B),
     padEdge = Color(0xFF050606),

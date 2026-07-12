@@ -23,12 +23,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -41,7 +38,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,6 +45,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ep133.sampletool.domain.PadUploadResult
+import com.ep133.sampletool.domain.PadUploadService
+import com.ep133.sampletool.domain.SliceUpload
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.model.PadChannel
@@ -57,7 +56,9 @@ import com.ep133.sampletool.domain.pack.KitSample
 import com.ep133.sampletool.domain.pack.SamplePackLoader
 import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.kit.GroupSession
+import com.ep133.sampletool.ui.theme.Ep133ConfirmDialog
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.Mono
 import com.ep133.sampletool.ui.theme.PadEmptyInk
 import com.ep133.sampletool.ui.theme.PadFilledInk
 import com.ep133.sampletool.ui.theme.PanelRadius
@@ -171,6 +172,7 @@ class KitBuilderViewModel(
     var onRequestPackPick: (() -> Unit)? = null
 
     private val deviceMutex = Mutex()
+    private val uploads = PadUploadService(midi, deviceMutex)
     private var player: MediaPlayer? = null
 
     private fun updateGroup(g: PadChannel, block: (KbGroupState) -> KbGroupState) {
@@ -350,21 +352,18 @@ class KitBuilderViewModel(
                     val converted = withContext(Dispatchers.IO) { manager.convert(context, sample.uri) }
                     val frames = converted.pcm.size / 2 / converted.channels
                     val safeName = (manager.sanitizeName(sample.name + ".wav") ?: "sample.wav")
-                    val nodeId = deviceMutex.withLock {
-                        midi.putSampleFile(safeName, converted.pcm, converted.channels, converted.sampleRate)
-                    }
-                    if (nodeId == null) {
-                        false
-                    } else {
-                        deviceMutex.withLock {
-                            midi.assignSampleToPad(group, padIdx, nodeId, 0, frames, muteGroup = chokeOn)
-                        }
+                    val upload = SliceUpload(safeName, converted.pcm, converted.channels, converted.sampleRate, frames)
+                    when (val r = uploads.uploadAndAssign(group, padIdx, upload, chokeOn)) {
+                        PadUploadResult.Done -> true
+                        is PadUploadResult.UploadFailed -> { reportLoadFailure(sample, r.error); false }
+                        is PadUploadResult.AssignFailed -> { reportLoadFailure(sample, r.error); false }
+                        // UploadRejected / AssignRejected: device said no without an error — no snackbar.
+                        else -> false
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.e(TAG, "KitBuilder: load failed for ${sample.name}", e)
-                    _snackbarMessage.value = "${sample.name}: ${e.message ?: "failed"}"
+                    reportLoadFailure(sample, e)
                     false
                 }
                 if (success) ok++ else failed++
@@ -383,6 +382,12 @@ class KitBuilderViewModel(
         }
     }
 
+    /** Log a per-sample load failure and surface it as a snackbar (device errors + convert errors). */
+    private fun reportLoadFailure(sample: KitSample, error: Throwable) {
+        Log.e(TAG, "KitBuilder: load failed for ${sample.name}", error)
+        _snackbarMessage.value = "${sample.name}: ${error.message ?: "failed"}"
+    }
+
     override fun onCleared() {
         stopAudition()
         super.onCleared()
@@ -391,8 +396,6 @@ class KitBuilderViewModel(
 
 // ── Screen ──────────────────────────────────────────────────────────────────────
 
-private val Mono = FontFamily.Monospace
-private val KbError = androidx.compose.ui.graphics.Color(0xFFD0021B)
 
 /**
  * Kit Builder (implements the "Kit Builder" design): pick a pack folder, browse categories,
@@ -421,39 +424,17 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
     if (confirmClear) {
         val padLabel = KB_PAD_LABELS[s.selectedPad]
         val padSampleName = s.assignments[s.selectedPad]?.name ?: s.devicePads[s.selectedPad]
-        AlertDialog(
-            onDismissRequest = { confirmClear = false },
+        Ep133ConfirmDialog(
+            title = "Clear pad $padLabel?",
+            message = if (padSampleName != null) {
+                "Removes \"$padSampleName\" from pad $padLabel of group ${s.group.name} on the EP-133."
+            } else {
+                "Unbinds whatever sample is on pad $padLabel of group ${s.group.name} on the EP-133."
+            },
+            confirmLabel = "Clear",
+            onConfirm = { viewModel.onClearPad(); confirmClear = false },
+            onDismiss = { confirmClear = false },
             modifier = Modifier.testTag(TestTags.KB_CLEAR_CONFIRM_DIALOG),
-            containerColor = t.panel,
-            titleContentColor = t.text,
-            textContentColor = t.text2,
-            shape = PanelRadius,
-            title = { Text("Clear pad $padLabel?", fontWeight = FontWeight.Bold) },
-            text = {
-                Text(
-                    if (padSampleName != null) {
-                        "Removes \"$padSampleName\" from pad $padLabel of group ${s.group.name} on the EP-133."
-                    } else {
-                        "Unbinds whatever sample is on pad $padLabel of group ${s.group.name} on the EP-133."
-                    },
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = { viewModel.onClearPad(); confirmClear = false },
-                    colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
-                ) {
-                    Text("Clear", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { confirmClear = false },
-                    colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
-                ) {
-                    Text("Cancel")
-                }
-            },
         )
     }
 
@@ -466,83 +447,22 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
 
             // ── Kit canvas ──
             item {
-              Column(
-                Modifier.fillMaxWidth().background(t.bg).padding(14.dp, 12.dp, 14.dp, 10.dp),
-                verticalArrangement = Arrangement.spacedBy(9.dp),
-            ) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("KIT CANVAS · TAP A PAD", fontFamily = Mono, fontSize = 9.sp,
-                            letterSpacing = 1.4.sp, color = t.text3)
-                        Text(s.pack?.name ?: "no pack loaded", fontFamily = Mono, fontSize = 9.sp,
-                            color = t.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    val clearing = s.clearingPad != null
-                    Box(
-                        Modifier.clip(PanelRadius).background(t.panel, PanelRadius)
-                            .border(1.dp, t.rule, PanelRadius)
-                            .clickable(enabled = !clearing) { confirmClear = true }
-                            .padding(horizontal = 8.dp, vertical = 5.dp)
-                            .testTag(TestTags.KB_CLEAR_PAD_BUTTON),
-                    ) {
-                        Text(
-                            if (clearing) "CLEARING…" else "⌫ CLEAR PAD ${KB_PAD_LABELS[s.selectedPad]}",
-                            fontFamily = Mono, fontSize = 9.sp, fontWeight = FontWeight.Bold,
-                            color = t.accentInk,
-                        )
-                    }
-                }
-
-                KB_PAD_LABELS.chunked(3).forEachIndexed { row, labels ->
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        labels.forEachIndexed { col, label ->
-                            val idx = row * 3 + col
-                            KbPadCell(
-                                label = label,
-                                sample = s.assignments[idx],
-                                deviceName = s.devicePads[idx],
-                                selected = idx == s.selectedPad,
-                                loadState = s.loadStates[idx],
-                                modifier = Modifier.weight(1f).testTag(TestTags.kbPadCell(idx)),
-                                onTap = { viewModel.onPadSelected(idx) },
-                            )
-                        }
-                    }
-                }
-              }
+                KbKitCanvas(
+                    state = s,
+                    onClearPad = { confirmClear = true },
+                    onPadSelected = viewModel::onPadSelected,
+                )
             }
 
             // ── Category tabs — sticky so the browser keeps context while the samples scroll ──
             val pack = s.pack
             if (pack != null) {
                 stickyHeader {
-                Row(
-                    Modifier.fillMaxWidth().background(t.panel)
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 14.dp, vertical = 9.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    pack.categories.forEach { cat ->
-                        val on = cat.id == s.category
-                        Row(
-                            Modifier.clip(PanelRadius)
-                                .background(if (on) t.accent else t.inset, PanelRadius)
-                                .border(1.dp, if (on) t.accent else t.rule, PanelRadius)
-                                .clickable { viewModel.onCategoryChange(cat.id) }
-                                .padding(horizontal = 10.dp, vertical = 7.dp)
-                                .testTag(TestTags.kbCategoryTab(cat.id)),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Text(cat.id, fontFamily = Mono, fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp,
-                                color = if (on) t.onAccent else t.text2)
-                            Text("${cat.samples.size}", fontFamily = Mono, fontSize = 8.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (on) t.onAccent.copy(alpha = 0.75f) else t.text3)
-                        }
-                    }
-                }
+                    KbCategoryTabs(
+                        pack = pack,
+                        selectedCategory = s.category,
+                        onCategoryChange = viewModel::onCategoryChange,
+                    )
                 }
 
                 // ── Sample list — flattened into the page-level LazyColumn ──
@@ -557,62 +477,21 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                         }
                     }
                     items(samples, key = { it.uri }) { sample ->
-                        val playing = s.auditioningUri == sample.uri
-                        val padLabel = uriToPad[sample.uri]
-                        Row(
-                            Modifier.fillMaxWidth()
-                                .background(if (playing) t.inset else t.panel)
-                                .clickable { viewModel.onAssign(sample) }
-                                .padding(horizontal = 14.dp, vertical = 8.dp)
-                                .testTag(TestTags.kbSampleRow(sample.name)),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(11.dp),
-                        ) {
-                            Box(
-                                Modifier.size(30.dp).clip(CircleShape)
-                                    .background(if (playing) t.live else t.inset)
-                                    .border(1.dp, if (playing) t.live else t.rule, CircleShape)
-                                    .clickable { viewModel.onAudition(sample, context) }
-                                    .testTag(TestTags.kbAuditionButton(sample.name)),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(if (playing) "■" else "▶", fontSize = 10.sp,
-                                    color = if (playing) t.onAccent else t.text2)
-                            }
-                            Column(Modifier.weight(1f)) {
-                                Text(sample.name, fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                                    color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(sample.meta, fontFamily = Mono, fontSize = 9.sp, color = t.text3)
-                            }
-                            if (padLabel != null) {
-                                Box(
-                                    Modifier.clip(PanelRadius).background(t.live, PanelRadius)
-                                        .padding(horizontal = 6.dp, vertical = 3.dp),
-                                ) {
-                                    Text("◉ $padLabel", fontFamily = Mono, fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold, color = t.onAccent)
-                                }
-                            }
-                        }
+                        KbSampleRow(
+                            sample = sample,
+                            playing = s.auditioningUri == sample.uri,
+                            padLabel = uriToPad[sample.uri],
+                            onAssign = { viewModel.onAssign(sample) },
+                            onAudition = { viewModel.onAudition(sample, context) },
+                        )
                     }
             } else {
                 // Empty state — no pack loaded yet.
                 item {
-                Column(
-                    Modifier.fillParentMaxHeight(0.5f).fillMaxWidth().background(t.panel).padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Text(
-                        if (s.packLoading) "reading pack…" else "pick a sample-pack folder to start",
-                        fontFamily = Mono, fontSize = 11.sp, color = t.text2, textAlign = TextAlign.Center,
+                    KbEmptyState(
+                        packLoading = s.packLoading,
+                        modifier = Modifier.fillParentMaxHeight(0.5f),
                     )
-                    Text(
-                        "a pack is a folder of category subfolders (KICKS, SNARES, HATS…)",
-                        fontFamily = Mono, fontSize = 9.sp, color = t.text3,
-                        textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp),
-                    )
-                }
                 }
             }
           }
@@ -620,69 +499,255 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
             // ── Footer — fill meter + pack switcher. GROUP + CHOKE live in the pinned header
             // shared with CHOP; the push action is the shared PUSH TO DEVICE button below. ──
             if (s.pack != null) {
-                Row(
-                    Modifier.fillMaxWidth().background(t.panel2).padding(14.dp, 10.dp, 14.dp, 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // Fill count + bars
-                    Column(
-                        Modifier.clip(PanelRadius).background(t.panel, PanelRadius)
-                            .border(1.dp, t.rule, PanelRadius).padding(10.dp, 6.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text(s.assignments.size.toString().padStart(2, '0'),
-                                fontFamily = Mono, fontSize = 22.sp, fontWeight = FontWeight.Bold,
-                                color = t.accent,
-                                modifier = Modifier.testTag(TestTags.KB_ASSIGNED_COUNT))
-                            Text("/12", fontFamily = Mono, fontSize = 11.sp, color = t.text3,
-                                modifier = Modifier.padding(start = 3.dp, bottom = 2.dp))
-                        }
-                        Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                            repeat(KB_PAD_COUNT) { i ->
-                                Box(Modifier.size(width = 5.dp, height = 4.dp)
-                                    .clip(RoundedCornerShape(1.dp))
-                                    .background(if (i < s.assignments.size) t.accent else t.rule))
-                            }
-                        }
-                    }
-                    Text(
-                        "STAGED FOR GROUP ${s.group.name}",
-                        fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.sp, color = t.text3,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        "PICK A DIFFERENT PACK",
-                        fontFamily = Mono, fontSize = 8.5.sp, letterSpacing = 1.sp, color = t.text2,
-                        modifier = Modifier
-                            .clickable { if (!s.loading) viewModel.triggerPackPick() }
-                            .padding(2.dp)
-                            .testTag(TestTags.KB_SWITCH_PACK_BUTTON),
-                    )
-                }
+                KbFooter(
+                    assignedCount = s.assignments.size,
+                    groupName = s.group.name,
+                    loading = s.loading,
+                    onSwitchPack = viewModel::triggerPackPick,
+                )
             }
         }
 
         // ── Load banner ──
-        val banner = s.loadedBanner
-        if (banner != null) {
-            Row(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(13.dp)
-                    .clip(PanelRadius)
-                    .background(if (banner.contains("FAILED")) KbError else t.accent, PanelRadius)
-                    .padding(12.dp)
-                    .testTag(TestTags.KB_LOAD_BANNER),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(banner, fontWeight = FontWeight.Bold, fontSize = 12.sp,
-                    color = t.onAccent, modifier = Modifier.weight(1f))
-                Text("OK", fontFamily = Mono, fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                    color = t.onAccent,
-                    modifier = Modifier.clickable { viewModel.dismissBanner() }.padding(6.dp))
-            }
+        s.loadedBanner?.let { banner ->
+            KbLoadBanner(
+                banner = banner,
+                onDismiss = viewModel::dismissBanner,
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
         }
 
         SnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter).padding(bottom = 70.dp))
+    }
+}
+
+// ── Kit canvas — pack title + clear-pad control + the 12-pad staging grid ─────
+@Composable
+private fun KbKitCanvas(
+    state: KitBuilderState,
+    onClearPad: () -> Unit,
+    onPadSelected: (Int) -> Unit,
+) {
+    val t = LocalEP133Tokens.current
+    Column(
+        Modifier.fillMaxWidth().background(t.bg).padding(14.dp, 12.dp, 14.dp, 10.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("KIT CANVAS · TAP A PAD", fontFamily = Mono, fontSize = 9.sp,
+                    letterSpacing = 1.4.sp, color = t.text3)
+                Text(state.pack?.name ?: "no pack loaded", fontFamily = Mono, fontSize = 9.sp,
+                    color = t.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            val clearing = state.clearingPad != null
+            Box(
+                Modifier.clip(PanelRadius).background(t.panel, PanelRadius)
+                    .border(1.dp, t.rule, PanelRadius)
+                    .clickable(enabled = !clearing) { onClearPad() }
+                    .padding(horizontal = 8.dp, vertical = 5.dp)
+                    .testTag(TestTags.KB_CLEAR_PAD_BUTTON),
+            ) {
+                Text(
+                    if (clearing) "CLEARING…" else "⌫ CLEAR PAD ${KB_PAD_LABELS[state.selectedPad]}",
+                    fontFamily = Mono, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                    color = t.accentInk,
+                )
+            }
+        }
+
+        KB_PAD_LABELS.chunked(3).forEachIndexed { row, labels ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                labels.forEachIndexed { col, label ->
+                    val idx = row * 3 + col
+                    KbPadCell(
+                        label = label,
+                        sample = state.assignments[idx],
+                        deviceName = state.devicePads[idx],
+                        selected = idx == state.selectedPad,
+                        loadState = state.loadStates[idx],
+                        modifier = Modifier.weight(1f).testTag(TestTags.kbPadCell(idx)),
+                        onTap = { onPadSelected(idx) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ── Category tabs — horizontally scrolling pack-category selector (sticky header) ─
+@Composable
+private fun KbCategoryTabs(
+    pack: KitPack,
+    selectedCategory: String?,
+    onCategoryChange: (String) -> Unit,
+) {
+    val t = LocalEP133Tokens.current
+    Row(
+        Modifier.fillMaxWidth().background(t.panel)
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 14.dp, vertical = 9.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        pack.categories.forEach { cat ->
+            val on = cat.id == selectedCategory
+            Row(
+                Modifier.clip(PanelRadius)
+                    .background(if (on) t.accent else t.inset, PanelRadius)
+                    .border(1.dp, if (on) t.accent else t.rule, PanelRadius)
+                    .clickable { onCategoryChange(cat.id) }
+                    .padding(horizontal = 10.dp, vertical = 7.dp)
+                    .testTag(TestTags.kbCategoryTab(cat.id)),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(cat.id, fontFamily = Mono, fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp,
+                    color = if (on) t.onAccent else t.text2)
+                Text("${cat.samples.size}", fontFamily = Mono, fontSize = 8.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (on) t.onAccent.copy(alpha = 0.75f) else t.text3)
+            }
+        }
+    }
+}
+
+// ── Sample row — audition toggle + name/meta + the pad chip if already staged ──
+@Composable
+private fun KbSampleRow(
+    sample: KitSample,
+    playing: Boolean,
+    padLabel: String?,
+    onAssign: () -> Unit,
+    onAudition: () -> Unit,
+) {
+    val t = LocalEP133Tokens.current
+    Row(
+        Modifier.fillMaxWidth()
+            .background(if (playing) t.inset else t.panel)
+            .clickable { onAssign() }
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .testTag(TestTags.kbSampleRow(sample.name)),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        Box(
+            Modifier.size(30.dp).clip(CircleShape)
+                .background(if (playing) t.live else t.inset)
+                .border(1.dp, if (playing) t.live else t.rule, CircleShape)
+                .clickable { onAudition() }
+                .testTag(TestTags.kbAuditionButton(sample.name)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(if (playing) "■" else "▶", fontSize = 10.sp,
+                color = if (playing) t.onAccent else t.text2)
+        }
+        Column(Modifier.weight(1f)) {
+            Text(sample.name, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(sample.meta, fontFamily = Mono, fontSize = 9.sp, color = t.text3)
+        }
+        if (padLabel != null) {
+            Box(
+                Modifier.clip(PanelRadius).background(t.live, PanelRadius)
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+            ) {
+                Text("◉ $padLabel", fontFamily = Mono, fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold, color = t.onAccent)
+            }
+        }
+    }
+}
+
+// ── Empty state — shown until a sample pack is picked ─────────────────────────
+@Composable
+private fun KbEmptyState(packLoading: Boolean, modifier: Modifier = Modifier) {
+    val t = LocalEP133Tokens.current
+    Column(
+        modifier.fillMaxWidth().background(t.panel).padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            if (packLoading) "reading pack…" else "pick a sample-pack folder to start",
+            fontFamily = Mono, fontSize = 11.sp, color = t.text2, textAlign = TextAlign.Center,
+        )
+        Text(
+            "a pack is a folder of category subfolders (KICKS, SNARES, HATS…)",
+            fontFamily = Mono, fontSize = 9.sp, color = t.text3,
+            textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp),
+        )
+    }
+}
+
+// ── Footer — assigned-count fill meter + "pick a different pack" ──────────────
+@Composable
+private fun KbFooter(
+    assignedCount: Int,
+    groupName: String,
+    loading: Boolean,
+    onSwitchPack: () -> Unit,
+) {
+    val t = LocalEP133Tokens.current
+    Row(
+        Modifier.fillMaxWidth().background(t.panel2).padding(14.dp, 10.dp, 14.dp, 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Fill count + bars
+        Column(
+            Modifier.clip(PanelRadius).background(t.panel, PanelRadius)
+                .border(1.dp, t.rule, PanelRadius).padding(10.dp, 6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(assignedCount.toString().padStart(2, '0'),
+                    fontFamily = Mono, fontSize = 22.sp, fontWeight = FontWeight.Bold,
+                    color = t.accent,
+                    modifier = Modifier.testTag(TestTags.KB_ASSIGNED_COUNT))
+                Text("/12", fontFamily = Mono, fontSize = 11.sp, color = t.text3,
+                    modifier = Modifier.padding(start = 3.dp, bottom = 2.dp))
+            }
+            Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                repeat(KB_PAD_COUNT) { i ->
+                    Box(Modifier.size(width = 5.dp, height = 4.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(if (i < assignedCount) t.accent else t.rule))
+                }
+            }
+        }
+        Text(
+            "STAGED FOR GROUP $groupName",
+            fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.sp, color = t.text3,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            "PICK A DIFFERENT PACK",
+            fontFamily = Mono, fontSize = 8.5.sp, letterSpacing = 1.sp, color = t.text2,
+            modifier = Modifier
+                .clickable { if (!loading) onSwitchPack() }
+                .padding(2.dp)
+                .testTag(TestTags.KB_SWITCH_PACK_BUTTON),
+        )
+    }
+}
+
+// ── Load banner — bottom overlay confirming a kit load / surfacing a failure ──
+@Composable
+private fun KbLoadBanner(banner: String, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+    val t = LocalEP133Tokens.current
+    Row(
+        modifier.fillMaxWidth().padding(13.dp)
+            .clip(PanelRadius)
+            .background(if (banner.contains("FAILED")) t.error else t.accent, PanelRadius)
+            .padding(12.dp)
+            .testTag(TestTags.KB_LOAD_BANNER),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(banner, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+            color = t.onAccent, modifier = Modifier.weight(1f))
+        Text("OK", fontFamily = Mono, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+            color = t.onAccent,
+            modifier = Modifier.clickable { onDismiss() }.padding(6.dp))
     }
 }
 
@@ -704,7 +769,7 @@ private fun KbPadCell(
     // pack sample about to be uploaded.
     val onDevice = !staged && deviceName != null
     val bg = when {
-        loadState == KbLoadState.Error -> KbError
+        loadState == KbLoadState.Error -> t.error
         staged -> t.accent
         else -> t.padFace
     }

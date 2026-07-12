@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -36,16 +37,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,17 +49,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ep133.sampletool.domain.PadUploadResult
+import com.ep133.sampletool.domain.PadUploadService
+import com.ep133.sampletool.domain.SliceUpload
 import com.ep133.sampletool.domain.audio.LoopSlicer
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderScreen
+import com.ep133.sampletool.ui.kitbuilder.KitBuilderState
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 import com.ep133.sampletool.ui.theme.Ep133GroupChokeBar
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.Mono
+import com.ep133.sampletool.ui.theme.dashedBorder
 import com.ep133.sampletool.ui.theme.PadEmptyInk
 import com.ep133.sampletool.ui.theme.PadFilledInk
 import com.ep133.sampletool.ui.theme.PanelRadius
@@ -241,6 +243,7 @@ class KitViewModel(
      * single-in-flight transfer guard inside [MIDIRepository].
      */
     val deviceMutex = Mutex()
+    private val uploads = PadUploadService(midi, deviceMutex)
 
     /**
      * SAF callback — set by MainActivity before setContent.
@@ -287,71 +290,38 @@ class KitViewModel(
         runChop(group, staged.uri, staged.name, context)
     }
 
-    /** Result of [uploadAndAssign] for one row. Cancellation is rethrown, never returned; failures
-     *  carry the [Throwable] so callers can format their own (differing) snackbar text exactly. */
-    private sealed interface UploadOutcome {
-        object Done : UploadOutcome
-        object UploadRejected : UploadOutcome
-        object AssignRejected : UploadOutcome
-        data class UploadFailed(val error: Throwable) : UploadOutcome
-        data class AssignFailed(val error: Throwable) : UploadOutcome
-    }
-
     /**
-     * The shared device leg of every kit/chop upload: put [pcm] as [name], then assign the returned
-     * node to [padIndex] of [group], driving row [i] to Done or Error. Serialized on [deviceMutex].
-     *
-     * This is the one copy of a sequence that was duplicated across [runChop], [onKitFilesPicked],
-     * [chopFromPcm] and [kitFromPcm]. It owns the item state transitions (which the tests assert);
-     * the caller owns control flow (loop vs per-file launch) and snackbar messaging (which differ per
-     * entry point), driving off the returned [UploadOutcome]. Rethrows CancellationException.
+     * The item-state wrapper around [PadUploadService.uploadAndAssign]: run the shared device leg,
+     * drive row [i] of [group] to Done or Error (the state transitions the tests assert), and return
+     * the [PadUploadResult] so the caller can do its own (differing) snackbar messaging. Rethrows
+     * CancellationException.
      */
     private suspend fun uploadAndAssign(
         group: PadChannel,
         i: Int,
         padIndex: Int,
-        name: String,
-        pcm: ByteArray,
-        channels: Int,
-        sampleRate: Int,
-        frames: Int,
+        upload: SliceUpload,
         chokeOn: Boolean,
         logLabel: String,
-    ): UploadOutcome {
-        val nodeId: Int? = try {
-            deviceMutex.withLock { midi.putSampleFile(name, pcm, channels, sampleRate) }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "KitViewModel $logLabel: putSampleFile failed for $name", e)
-            updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
-            return UploadOutcome.UploadFailed(e)
-        }
-
-        if (nodeId == null) {
-            updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
-            return UploadOutcome.UploadRejected
-        }
-
-        val ok = try {
-            deviceMutex.withLock {
-                midi.assignSampleToPad(group, padIndex, nodeId, 0, frames, muteGroup = chokeOn)
+    ): PadUploadResult {
+        val result = uploads.uploadAndAssign(group, padIndex, upload, chokeOn)
+        when (result) {
+            is PadUploadResult.UploadFailed -> {
+                Log.e(TAG, "KitViewModel $logLabel: putSampleFile failed for ${upload.name}", result.error)
+                updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = result.error.message ?: "Upload failed") }
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "KitViewModel $logLabel: assignSampleToPad $i failed", e)
-            updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
-            return UploadOutcome.AssignFailed(e)
+            PadUploadResult.UploadRejected ->
+                updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
+            is PadUploadResult.AssignFailed -> {
+                Log.e(TAG, "KitViewModel $logLabel: assignSampleToPad $i failed", result.error)
+                updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = result.error.message ?: "Assign failed") }
+            }
+            PadUploadResult.AssignRejected ->
+                updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+            PadUploadResult.Done ->
+                updateItem(group, i) { it.copy(state = KitItemState.Done) }
         }
-
-        return if (ok) {
-            updateItem(group, i) { it.copy(state = KitItemState.Done) }
-            UploadOutcome.Done
-        } else {
-            updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
-            UploadOutcome.AssignRejected
-        }
+        return result
     }
 
     /**
@@ -448,16 +418,16 @@ class KitViewModel(
 
                 when (val outcome = uploadAndAssign(
                     group, i, PAD_FILL_ORDER.getOrElse(i) { i },
-                    sliceName, slicePcm, chopChannels, converted.sampleRate, sliceFrames, chokeOn, "chop",
+                    SliceUpload(sliceName, slicePcm, chopChannels, converted.sampleRate, sliceFrames), chokeOn, "chop",
                 )) {
-                    is UploadOutcome.UploadFailed ->
+                    is PadUploadResult.UploadFailed ->
                         _snackbarMessage.value = "Slice ${i + 1} upload failed: ${outcome.error.message ?: outcome.error}"
-                    UploadOutcome.UploadRejected ->
+                    PadUploadResult.UploadRejected ->
                         _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
-                    is UploadOutcome.AssignFailed ->
+                    is PadUploadResult.AssignFailed ->
                         _snackbarMessage.value = "Slice ${i + 1} assign failed: ${outcome.error.message ?: outcome.error}"
-                    UploadOutcome.AssignRejected -> {}
-                    UploadOutcome.Done -> {}
+                    PadUploadResult.AssignRejected -> {}
+                    PadUploadResult.Done -> {}
                 }
             }
 
@@ -515,16 +485,16 @@ class KitViewModel(
                 // Upload + assign serialized via deviceMutex (see uploadAndAssign).
                 when (val outcome = uploadAndAssign(
                     group, i, PAD_FILL_ORDER.getOrElse(i) { i },
-                    safeName, converted.pcm, converted.channels, converted.sampleRate, frames, chokeOn, "kit",
+                    SliceUpload(safeName, converted.pcm, converted.channels, converted.sampleRate, frames), chokeOn, "kit",
                 )) {
-                    is UploadOutcome.UploadFailed ->
+                    is PadUploadResult.UploadFailed ->
                         _snackbarMessage.value = "Upload failed for $safeName: ${outcome.error.message ?: outcome.error}"
-                    UploadOutcome.UploadRejected ->
+                    PadUploadResult.UploadRejected ->
                         _snackbarMessage.value = "Upload rejected for $safeName — reconnect and retry"
-                    is UploadOutcome.AssignFailed ->
+                    is PadUploadResult.AssignFailed ->
                         _snackbarMessage.value = "Assign failed for $safeName: ${outcome.error.message ?: outcome.error}"
-                    UploadOutcome.AssignRejected -> {}
-                    UploadOutcome.Done -> {}
+                    PadUploadResult.AssignRejected -> {}
+                    PadUploadResult.Done -> {}
                 }
             }
         }
@@ -587,16 +557,16 @@ class KitViewModel(
 
                 when (val outcome = uploadAndAssign(
                     group, i, PAD_FILL_ORDER.getOrElse(i) { i },
-                    sliceName, slicePcm, channels, sampleRate, sliceFrames, chokeOn, "chopFromPcm",
+                    SliceUpload(sliceName, slicePcm, channels, sampleRate, sliceFrames), chokeOn, "chopFromPcm",
                 )) {
-                    is UploadOutcome.UploadFailed ->
+                    is PadUploadResult.UploadFailed ->
                         _snackbarMessage.value = "Slice ${i + 1} upload failed: ${outcome.error.message ?: outcome.error}"
-                    UploadOutcome.UploadRejected ->
+                    PadUploadResult.UploadRejected ->
                         _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
                     // chopFromPcm (test seam) emits no snackbar on the assign paths.
-                    is UploadOutcome.AssignFailed -> {}
-                    UploadOutcome.AssignRejected -> {}
-                    UploadOutcome.Done -> {}
+                    is PadUploadResult.AssignFailed -> {}
+                    PadUploadResult.AssignRejected -> {}
+                    PadUploadResult.Done -> {}
                 }
             }
         }
@@ -631,7 +601,7 @@ class KitViewModel(
                 // Test seam: no snackbars; uploadAndAssign drives the row's Working→Done/Error state.
                 uploadAndAssign(
                     group, i, PAD_FILL_ORDER.getOrElse(i) { i },
-                    safeName, pcm, channels, sampleRate, frames, chokeOn, "kitFromPcm",
+                    SliceUpload(safeName, pcm, channels, sampleRate, frames), chokeOn, "kitFromPcm",
                 )
             }
         }
@@ -663,7 +633,6 @@ class KitViewModel(
 // Screen composable
 // ─────────────────────────────────────────────────────────────────────────────
 
-private val Mono = FontFamily.Monospace
 
 /** One pad in the slice selector: its printed label and its 1-based fill-order rank. */
 private data class SlicePad(val label: String, val order: Int)
@@ -839,7 +808,6 @@ private fun KitItemState.toProgress(): PadProgressState = when (this) {
 
 // Progress-mode colors from the "Chop Progress" design (device-accurate, theme-independent).
 private val ProgTealCore = Color(0xFF141B1B)
-private val ProgError = Color(0xFFD0021B)
 private val ProgErrorInk = Color(0xFFFFE8E5)
 private val ProgInactiveInk = Color(0xFF4A4B4C)
 
@@ -861,7 +829,7 @@ private fun ChopProgress(items: List<KitResultItem>, modifier: Modifier = Modifi
     val statusColor: Color
     when {
         inFlight   -> { statusText = "UPLOADING · ${pad2(done + working)} / $total"; statusColor = t.live }
-        errors > 0 -> { statusText = "${pad2(errors)} FAILED · $done OK"; statusColor = ProgError }
+        errors > 0 -> { statusText = "${pad2(errors)} FAILED · $done OK"; statusColor = t.error }
         else       -> { statusText = "DONE · ${pad2(done)} / $total"; statusColor = t.accent }
     }
 
@@ -983,7 +951,7 @@ private fun SliceProgressPadCell(
         } else {
             val bg = when (state) {
                 PadProgressState.Done  -> t.accent
-                PadProgressState.Error -> ProgError
+                PadProgressState.Error -> t.error
                 else                   -> t.padFace   // inactive / queued
             }
             Box(
@@ -1055,20 +1023,6 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
         }
     }
 
-    val doneCount = items.count { it.isDone() }
-    val errorCount = items.count { it.isError() }
-    val headLabel = when {
-        items.isEmpty() -> "IDLE"
-        errorCount > 0 -> "$errorCount ERR · $doneCount OK"
-        doneCount == items.size -> "ALL DONE"
-        else -> "$doneCount / ${items.size} OK"
-    }
-    val headColor = when {
-        errorCount > 0 -> t.accent
-        items.isNotEmpty() && doneCount == items.size -> t.live
-        else -> t.text3
-    }
-
     Box(modifier = Modifier.fillMaxSize().background(t.bg)) {
         Column(modifier = Modifier.fillMaxSize()) {
           // Header + mode switch stay pinned above both modes.
@@ -1079,56 +1033,10 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
             verticalArrangement = Arrangement.spacedBy(11.dp),
           ) {
             // Section header + batch status (chop-only status).
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Ep133SectionLabel(
-                    if (mode == KitMode.CHOP) "Loop Chopper" else "Kit Builder",
-                    modifier = Modifier.weight(1f),
-                )
-                if (mode == KitMode.CHOP) {
-                    Text(
-                        text = headLabel,
-                        color = headColor,
-                        fontFamily = Mono,
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        letterSpacing = 0.6.sp,
-                    )
-                }
-            }
+            KitHeader(mode = mode, items = items)
 
             // Designation segmented control: CHOP | KIT — sets what the SELECTED group is.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                KitMode.entries.forEach { m ->
-                    val selected = mode == m
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(PanelRadius)
-                            .background(if (selected) t.accent else t.inset, PanelRadius)
-                            .border(1.dp, if (selected) t.accent else t.rule, PanelRadius)
-                            .clickable { viewModel.onModeChange(m) }
-                            .padding(vertical = 9.dp)
-                            .testTag(if (m == KitMode.CHOP) TestTags.KIT_MODE_CHOP else TestTags.KIT_MODE_KIT),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = if (m == KitMode.CHOP) "CHOP" else "KIT",
-                            color = if (selected) t.onAccent else t.text2,
-                            fontFamily = Mono,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                }
-            }
+            ModeSegmentedControl(mode = mode, onModeChange = viewModel::onModeChange)
 
             // Shared group + choke bar — ONE control backed by the shared GroupSession, so both
             // workflows always agree on the selected group and its choke. Each chip is tagged with
@@ -1151,119 +1059,32 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 11.dp),
             )
           } else {
-          // Scrollable chop content; the PICK button below stays pinned so it's always reachable.
-          Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp)
-                .verticalScroll(scrollState)
-                .padding(top = 11.dp),
-            verticalArrangement = Arrangement.spacedBy(11.dp),
-          ) {
-
-            // The pad grid is both the chop slice-count SELECTOR (idle) and the upload PROGRESS
-            // indicator (once a chop or kit build is running/done). One grid, two modes.
-            when {
-                items.isNotEmpty() -> {
-                    ChopProgress(items = items, modifier = Modifier.fillMaxWidth())
-                }
-                mode == KitMode.CHOP -> {
-                    SlicePadSelector(
-                        count = resolvedSliceCount,
-                        onCountChange = { viewModel.onSliceCountChange(it.toString()) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            }
-
-            // Drop / pick hint panel — tappable (it reads as a button), triggers the same pick.
-            // Capture the collected state into a local so the null-checks below smart-cast
-            // (a delegated `by collectAsState()` var can't, which is what forced the old `!!`).
-            val loop = stagedLoop
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(PanelRadius)
-                    .background(t.inset, PanelRadius)
-                    .dashedBorder(t.rule)
-                    .clickable { viewModel.triggerPick() }
-                    .padding(16.dp)
-                    .testTag(TestTags.KIT_PICK_PANEL),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text(
-                    text = when {
-                        mode == KitMode.CHOP && loop != null ->
-                            "READY · CHOP INTO $resolvedSliceCount SLICES → GROUP ${selectedGroup.name}"
-                        mode == KitMode.CHOP ->
-                            "PICK ONE LOOP · CHOP INTO $resolvedSliceCount SLICES → GROUP ${selectedGroup.name}"
-                        else ->
-                            "PICK UP TO $MAX_SLICES ONE-SHOTS → GROUP ${selectedGroup.name}"
-                    },
-                    color = t.text3,
-                    fontFamily = Mono,
-                    fontSize = 10.sp,
-                    letterSpacing = 0.4.sp,
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    text = when {
-                        mode == KitMode.CHOP && loop != null -> loop.name
-                        mode == KitMode.CHOP -> "pick loop to chop"
-                        else -> "pick one-shots to build kit"
-                    },
-                    color = t.text,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center,
-                )
-                if (mode == KitMode.CHOP && loop != null) {
-                    Text(
-                        text = "TAP TO PICK A DIFFERENT LOOP",
-                        color = t.text3, fontFamily = Mono, fontSize = 8.sp,
-                        letterSpacing = 1.sp, textAlign = TextAlign.Center,
-                    )
-                }
-            }
-
-          }
+            // Scrollable chop content; the PUSH button below stays pinned so it's always reachable.
+            ChopBody(
+                items = items,
+                mode = mode,
+                resolvedSliceCount = resolvedSliceCount,
+                stagedLoop = stagedLoop,
+                selectedGroupName = selectedGroup.name,
+                scrollState = scrollState,
+                onSliceCountChange = { viewModel.onSliceCountChange(it.toString()) },
+                onPick = viewModel::triggerPick,
+                modifier = Modifier.weight(1f),
+            )
           }
 
             // Shared PUSH TO DEVICE button — pinned below both workflows. In a CHOP group it picks
             // then chops the staged loop; in a KIT group it picks a pack then loads the staged kit.
-            val chopReady = stagedLoop != null
-            val pushLabel = if (mode == KitMode.CHOP) {
-                if (chopReady) "PUSH TO DEVICE · $resolvedSliceCount SLICES → ${selectedGroup.name}"
-                else "PICK LOOP"
-            } else {
-                when {
-                    builderState.packLoading -> "READING PACK…"
-                    builderState.pack == null -> "PICK PACK FOLDER"
-                    builderState.loading -> "PUSHING…"
-                    builderState.assignments.isEmpty() -> "ASSIGN PADS FIRST"
-                    else -> "PUSH TO DEVICE · ${builderState.assignments.size} PADS → ${selectedGroup.name}"
-                }
-            }
-            Ep133PrimaryButton(
-                label = pushLabel,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp)
-                    .padding(top = 11.dp, bottom = 14.dp)
-                    .testTag(TestTags.KIT_PUSH_BUTTON),
-                onClick = {
-                    if (mode == KitMode.CHOP) {
-                        if (chopReady) viewModel.chopStagedLoop(context) else viewModel.triggerPick()
-                    } else {
-                        when {
-                            builderState.packLoading || builderState.loading -> {}
-                            builderState.pack == null -> builderViewModel.triggerPackPick()
-                            builderState.assignments.isNotEmpty() -> builderViewModel.onLoadKit(context)
-                        }
-                    }
-                },
+            KitPushButton(
+                mode = mode,
+                chopReady = stagedLoop != null,
+                resolvedSliceCount = resolvedSliceCount,
+                selectedGroupName = selectedGroup.name,
+                builderState = builderState,
+                onChopPush = { viewModel.chopStagedLoop(context) },
+                onPickLoop = viewModel::triggerPick,
+                onPickPack = builderViewModel::triggerPackPick,
+                onLoadKit = { builderViewModel.onLoadKit(context) },
             )
         }
 
@@ -1276,17 +1097,194 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
     }
 }
 
-// ── Decoration modifier ───────────────────────────────────────────────────────
+// ── Header — section label + (chop-only) batch status summary ─────────────────
+@Composable
+private fun KitHeader(mode: KitMode, items: List<KitResultItem>) {
+    val t = LocalEP133Tokens.current
+    val doneCount = items.count { it.isDone() }
+    val errorCount = items.count { it.isError() }
+    val headLabel = when {
+        items.isEmpty() -> "IDLE"
+        errorCount > 0 -> "$errorCount ERR · $doneCount OK"
+        doneCount == items.size -> "ALL DONE"
+        else -> "$doneCount / ${items.size} OK"
+    }
+    val headColor = when {
+        errorCount > 0 -> t.accent
+        items.isNotEmpty() && doneCount == items.size -> t.live
+        else -> t.text3
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Ep133SectionLabel(
+            if (mode == KitMode.CHOP) "Loop Chopper" else "Kit Builder",
+            modifier = Modifier.weight(1f),
+        )
+        if (mode == KitMode.CHOP) {
+            Text(
+                text = headLabel, color = headColor, fontFamily = Mono,
+                fontSize = 9.5.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.6.sp,
+            )
+        }
+    }
+}
 
-private fun Modifier.dashedBorder(color: Color): Modifier = this.drawBehind {
-    val stroke = Stroke(
-        width = 1.dp.toPx(),
-        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()), 0f),
-    )
-    val radius = 3.dp.toPx()
-    drawRoundRect(
-        color = color,
-        cornerRadius = CornerRadius(radius, radius),
-        style = stroke,
+// ── CHOP | KIT segmented control — sets the selected group's designation ──────
+@Composable
+private fun ModeSegmentedControl(mode: KitMode, onModeChange: (KitMode) -> Unit) {
+    val t = LocalEP133Tokens.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        KitMode.entries.forEach { m ->
+            val selected = mode == m
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(PanelRadius)
+                    .background(if (selected) t.accent else t.inset, PanelRadius)
+                    .border(1.dp, if (selected) t.accent else t.rule, PanelRadius)
+                    .clickable { onModeChange(m) }
+                    .padding(vertical = 9.dp)
+                    .testTag(if (m == KitMode.CHOP) TestTags.KIT_MODE_CHOP else TestTags.KIT_MODE_KIT),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = if (m == KitMode.CHOP) "CHOP" else "KIT",
+                    color = if (selected) t.onAccent else t.text2,
+                    fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+    }
+}
+
+// ── Chop body — the scrollable slice grid (selector or progress) + pick panel ─
+@Composable
+private fun ChopBody(
+    items: List<KitResultItem>,
+    mode: KitMode,
+    resolvedSliceCount: Int,
+    stagedLoop: StagedLoop?,
+    selectedGroupName: String,
+    scrollState: ScrollState,
+    onSliceCountChange: (Int) -> Unit,
+    onPick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val t = LocalEP133Tokens.current
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp)
+            .verticalScroll(scrollState)
+            .padding(top = 11.dp),
+        verticalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        // The pad grid is both the chop slice-count SELECTOR (idle) and the upload PROGRESS
+        // indicator (once a chop or kit build is running/done). One grid, two modes.
+        when {
+            items.isNotEmpty() -> ChopProgress(items = items, modifier = Modifier.fillMaxWidth())
+            mode == KitMode.CHOP -> SlicePadSelector(
+                count = resolvedSliceCount,
+                onCountChange = { onSliceCountChange(it) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        // Drop / pick hint panel — tappable (it reads as a button), triggers the pick.
+        // Capture the staged loop into a local so the null-checks below smart-cast.
+        val loop = stagedLoop
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(PanelRadius)
+                .background(t.inset, PanelRadius)
+                .dashedBorder(t.rule)
+                .clickable { onPick() }
+                .padding(16.dp)
+                .testTag(TestTags.KIT_PICK_PANEL),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = when {
+                    mode == KitMode.CHOP && loop != null ->
+                        "READY · CHOP INTO $resolvedSliceCount SLICES → GROUP $selectedGroupName"
+                    mode == KitMode.CHOP ->
+                        "PICK ONE LOOP · CHOP INTO $resolvedSliceCount SLICES → GROUP $selectedGroupName"
+                    else ->
+                        "PICK UP TO $MAX_SLICES ONE-SHOTS → GROUP $selectedGroupName"
+                },
+                color = t.text3, fontFamily = Mono, fontSize = 10.sp,
+                letterSpacing = 0.4.sp, textAlign = TextAlign.Center,
+            )
+            Text(
+                text = when {
+                    mode == KitMode.CHOP && loop != null -> loop.name
+                    mode == KitMode.CHOP -> "pick loop to chop"
+                    else -> "pick one-shots to build kit"
+                },
+                color = t.text, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+            )
+            if (mode == KitMode.CHOP && loop != null) {
+                Text(
+                    text = "TAP TO PICK A DIFFERENT LOOP",
+                    color = t.text3, fontFamily = Mono, fontSize = 8.sp,
+                    letterSpacing = 1.sp, textAlign = TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+// ── Shared PUSH TO DEVICE button — label + dispatch differ per CHOP/KIT mode ──
+@Composable
+private fun KitPushButton(
+    mode: KitMode,
+    chopReady: Boolean,
+    resolvedSliceCount: Int,
+    selectedGroupName: String,
+    builderState: KitBuilderState,
+    onChopPush: () -> Unit,
+    onPickLoop: () -> Unit,
+    onPickPack: () -> Unit,
+    onLoadKit: () -> Unit,
+) {
+    val pushLabel = if (mode == KitMode.CHOP) {
+        if (chopReady) "PUSH TO DEVICE · $resolvedSliceCount SLICES → $selectedGroupName"
+        else "PICK LOOP"
+    } else {
+        when {
+            builderState.packLoading -> "READING PACK…"
+            builderState.pack == null -> "PICK PACK FOLDER"
+            builderState.loading -> "PUSHING…"
+            builderState.assignments.isEmpty() -> "ASSIGN PADS FIRST"
+            else -> "PUSH TO DEVICE · ${builderState.assignments.size} PADS → $selectedGroupName"
+        }
+    }
+    Ep133PrimaryButton(
+        label = pushLabel,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp)
+            .padding(top = 11.dp, bottom = 14.dp)
+            .testTag(TestTags.KIT_PUSH_BUTTON),
+        onClick = {
+            if (mode == KitMode.CHOP) {
+                if (chopReady) onChopPush() else onPickLoop()
+            } else {
+                when {
+                    builderState.packLoading || builderState.loading -> {}
+                    builderState.pack == null -> onPickPack()
+                    builderState.assignments.isNotEmpty() -> onLoadKit()
+                }
+            }
+        },
     )
 }
+

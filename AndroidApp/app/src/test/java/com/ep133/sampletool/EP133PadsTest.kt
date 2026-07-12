@@ -68,7 +68,7 @@ class EP133PadsTest {
 
     @Test
     fun resolveIncoming_37_ch0_returns_A_pad0() {
-        val result = EP133Pads.resolveIncoming(37, 0)
+        val result = EP133Pads.resolveIncoming(37)
         assertNotNull(result)
         val (group, idx) = result!!
         assertEquals(PadChannel.A, group)
@@ -80,7 +80,7 @@ class EP133PadsTest {
 
     @Test
     fun resolveIncoming_48_ch0_returns_B_dotPad() {
-        val result = EP133Pads.resolveIncoming(48, 0)
+        val result = EP133Pads.resolveIncoming(48)
         assertNotNull(result)
         val (group, idx) = result!!
         assertEquals(PadChannel.B, group)
@@ -91,7 +91,7 @@ class EP133PadsTest {
     @Test
     fun resolveIncoming_60_ch0_returns_C_dotPad() {
         // note 60 is now unambiguously C's base note (C.baseNote=60, offset=0 → ".")
-        val result = EP133Pads.resolveIncoming(60, 0)
+        val result = EP133Pads.resolveIncoming(60)
         assertNotNull(result)
         val (group, idx) = result!!
         assertEquals(PadChannel.C, group)
@@ -101,9 +101,9 @@ class EP133PadsTest {
 
     @Test
     fun resolveIncoming_out_of_range_returns_null() {
-        assertNull(EP133Pads.resolveIncoming(0, 0))
-        assertNull(EP133Pads.resolveIncoming(35, 0))
-        assertNull(EP133Pads.resolveIncoming(84, 0))
-        assertNull(EP133Pads.resolveIncoming(127, 0))
+        assertNull(EP133Pads.resolveIncoming(0))
+        assertNull(EP133Pads.resolveIncoming(35))
+        assertNull(EP133Pads.resolveIncoming(84))
+        assertNull(EP133Pads.resolveIncoming(127))
     }
 }

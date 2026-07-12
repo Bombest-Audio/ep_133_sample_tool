@@ -13,14 +13,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -39,7 +41,6 @@ import com.ep133.sampletool.ui.TestTags
 private val Radius = RoundedCornerShape(3.dp)
 
 /** Mono labels/codes (the design uses JetBrains Mono; Monospace is the safe on-device fallback). */
-private val Mono = FontFamily.Monospace
 
 // ── Section label — uppercase mono eyebrow over a block ───────────────────────
 @Composable
@@ -217,50 +218,6 @@ fun Ep133GroupChokeBar(
     }
 }
 
-// ── Chips — filter (base) and action (solid) + live badge ─────────────────────
-@Composable
-fun Ep133Chip(
-    label: String,
-    selected: Boolean = false,
-    modifier: Modifier = Modifier,
-    onClick: (() -> Unit)? = null,
-) {
-    val t = LocalEP133Tokens.current
-    Box(
-        modifier = modifier
-            .clip(Radius)
-            .background(if (selected) t.accent else Color.Transparent, Radius)
-            .border(1.dp, if (selected) t.accent else t.rule, Radius)
-            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
-            .padding(vertical = 6.dp, horizontal = 10.dp),
-    ) {
-        Text(
-            label.uppercase(),
-            color = if (selected) t.onAccent else t.text2,
-            fontFamily = Mono,
-            fontSize = 9.5.sp,
-            fontWeight = FontWeight.Medium,
-            letterSpacing = 0.6.sp,
-        )
-    }
-}
-
-@Composable
-fun Ep133LiveBadge(label: String = "LIVE", modifier: Modifier = Modifier) {
-    val t = LocalEP133Tokens.current
-    Row(
-        modifier = modifier
-            .clip(Radius)
-            .background(t.live.copy(alpha = 0.14f), Radius)
-            .padding(vertical = 5.dp, horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
-        Ep133StatusDot(t.live, size = 6)
-        Text(label.uppercase(), color = t.liveInk, fontFamily = Mono, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
-    }
-}
-
 // ── Buttons — primary (solid accent) / ghost (outline) ────────────────────────
 @Composable
 fun Ep133PrimaryButton(
@@ -331,84 +288,42 @@ fun Ep133StatReadout(label: String, value: String, modifier: Modifier = Modifier
     }
 }
 
-// ── App chrome — header + body + bottom tab nav ───────────────────────────────
-/** The six bottom-nav destinations, in order. */
-enum class Ep133Tab(val label: String) {
-    Pads("PADS"), Beats("BEATS"), Sounds("SOUNDS"), Chords("CHORDS"), Scale("SCALE"), Device("DEVICE")
-}
-
+// ── Confirm dialog — themed AlertDialog with an accent confirm + plain cancel ─
 /**
- * App shell: faceplate header (EP·133 badge + screen title + connection dot), the screen [content],
- * and the bottom tab nav. Mirrors the design's chrome. [title] is the current screen name.
+ * A faceplate-themed confirmation dialog: bold [title], body [message], an accent [confirmLabel]
+ * action, and a [dismissLabel] cancel. Used for destructive/irreversible actions (clear, restore).
  */
 @Composable
-fun Ep133Scaffold(
+fun Ep133ConfirmDialog(
     title: String,
-    connected: Boolean,
-    currentTab: Ep133Tab,
-    onTab: (Ep133Tab) -> Unit,
+    message: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
-    onToggleConnected: (() -> Unit)? = null,
-    content: @Composable () -> Unit,
+    dismissLabel: String = "Cancel",
 ) {
     val t = LocalEP133Tokens.current
-    Column(modifier.fillMaxSize().background(t.bg)) {
-        // header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(t.panel2)
-                .padding(horizontal = 15.dp, vertical = 13.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "EP·133",
-                modifier = Modifier.clip(Radius).background(t.accent, Radius).padding(horizontal = 7.dp, vertical = 4.dp),
-                color = t.onAccent, fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-            )
-            Text(
-                title.uppercase(),
-                modifier = Modifier.padding(start = 9.dp).weight(1f),
-                color = t.text2, fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.1.sp,
-            )
-            val dot = if (connected) t.live else t.text3
-            Row(
-                modifier = if (onToggleConnected != null) Modifier.clickable { onToggleConnected() } else Modifier,
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
-            ) {
-                Ep133StatusDot(dot, size = 8)
-                Text(
-                    if (connected) "CONNECTED" else "NO DEVICE",
-                    color = dot, fontFamily = Mono, fontSize = 10.sp, letterSpacing = 0.7.sp,
-                )
-            }
-        }
-        // body
-        Box(Modifier.weight(1f).fillMaxWidth()) { content() }
-        // bottom tab nav
-        Row(
-            modifier = Modifier.fillMaxWidth().background(t.panel2),
-        ) {
-            Ep133Tab.entries.forEach { tab ->
-                val active = tab == currentTab
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { onTab(tab) }
-                        .padding(vertical = 11.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        tab.label,
-                        color = if (active) t.accent else t.text3,
-                        fontFamily = Mono,
-                        fontSize = 9.5.sp,
-                        fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
-                        letterSpacing = 0.5.sp,
-                    )
-                }
-            }
-        }
-    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = modifier,
+        containerColor = t.panel,
+        titleContentColor = t.text,
+        textContentColor = t.text2,
+        shape = PanelRadius,
+        title = { Text(title, fontWeight = FontWeight.Bold) },
+        text = { Text(message) },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(contentColor = t.accent),
+            ) { Text(confirmLabel, fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
+            ) { Text(dismissLabel) }
+        },
+    )
 }
