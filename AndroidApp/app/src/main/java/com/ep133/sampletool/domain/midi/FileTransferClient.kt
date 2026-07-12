@@ -24,8 +24,8 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * The incoming-SysEx file-frame path (TE_SYSEX_FILE / cmd=5) is routed here via
  * [routeFileFrame] — the same seam test doubles subclass/inject into. Device-state frames
- * (GREET) stay classified in [MIDIRepository.dispatchSysEx]; on GREET the root calls
- * [onDeviceGreet] so FTC can reset its own per-connection state.
+ * (GREET) stay classified in [MIDIRepository.dispatchSysEx]; on the connect edge the root calls
+ * [onDeviceConnected] so FTC can reset its own per-connection state.
  *
  * Self-wires [port]'s `onMidiReceived` to its own byte-stream parser so FTC is independently
  * testable/usable against a raw [MIDIPort] (constructing FTC standalone, as the retargeted seam
@@ -128,23 +128,29 @@ open class FileTransferClient(
     suspend fun <T> withFileOpLock(block: suspend () -> T): T = fileOpMutex.withLock { block() }
 
     /**
-     * Reset per-connection session state on device greet (new connection). Called by
-     * [MIDIRepository]'s CMD_GREET branch — the root owns `currentDeviceId` adoption and
-     * calls this afterward so FTC's caches/session/in-flight waiters are cleared too.
+     * Reset per-connection session state on the device **connect edge** (issue #27). Called by
+     * [MIDIRepository] when the USB connection transitions disconnected→connected — the port
+     * lifecycle, not a greet frame, is the reconnection signal. (A greet *response* is now pure
+     * data: the device does not double-send on the wire — the historical "double-send" was an
+     * Android dual-receiver bug, since fixed — so a greet must never tear down a healthy session.)
+     *
+     * Residual assumption (hardware-gated): a genuine device reset that re-greets *without* a USB
+     * re-enumeration would not reach this edge. Confirm on hardware whether the EP-133 ever pushes
+     * an unsolicited greet with the USB link still up before dropping this branch's draft status.
      */
-    fun onDeviceGreet() {
+    fun onDeviceConnected() {
         fileSessionInitialized = false
         groupsNodeCache.clear()
         groupNodeNameCache.clear()
-        Log.d("EP133MIDI", "GREET: cleared structure caches (new connection)")
-        // A greet means a (re)connection — fail any file ops still awaiting on the
-        // registry so they don't hang to timeout against a device that just reset.
-        fileWaiters.failAll(IllegalStateException("device greet/reconnect"))
+        Log.d("EP133MIDI", "CONNECT: cleared structure caches (new connection)")
+        // A (re)connection — fail any file ops still awaiting on the registry so they don't hang
+        // to timeout against a device whose session is gone.
+        fileWaiters.failAll(IllegalStateException("device connect/reconnect"))
     }
 
     /**
      * Reset per-connection session state on a port swap (debug-only Simulated EP-133 toggle).
-     * Mirrors [onDeviceGreet] — the new port needs a fresh FILE_INIT handshake and stale
+     * Mirrors [onDeviceConnected] — the new port needs a fresh FILE_INIT handshake and stale
      * caches must not leak across ports.
      */
     fun onPortSwapped() {
@@ -549,7 +555,7 @@ open class FileTransferClient(
      * a FILE_INIT (subcommand 1) is sent. This is a one-shot-per-connection call;
      * subsequent calls return immediately if [fileSessionInitialized] is already set.
      *
-     * Resets on greet (new connection via [onDeviceGreet]).
+     * Resets on the connect edge (new connection via [onDeviceConnected]).
      *
      * This public entry-point acquires [fileOpMutex].  Code that already holds the mutex
      * (e.g. [putSampleFile]) must call [ensureFileSessionInitNoLock] directly to avoid a
