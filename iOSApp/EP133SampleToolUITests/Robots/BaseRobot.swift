@@ -76,14 +76,19 @@ class BaseRobot {
             "expected an element tagged '\(identifier)' to be displayed")
     }
 
-    /// Assert no element with [identifier] exists (the `assertDoesNotExist` analog). Waits briefly
-    /// for the negative so a slow render doesn't produce a false pass.
-    func assertTagAbsent(_ identifier: String) {
-        let el = element(identifier)
-        // If it doesn't exist now and doesn't appear within a short grace window, it's absent.
-        if el.exists {
-            XCTFail("expected no element tagged '\(identifier)', but one exists")
-        }
+    /// Grace window for negative assertions — long enough that a slow render can't sneak in after
+    /// the check, short enough that a passing `assertTagAbsent` doesn't stall the suite.
+    static let absenceGrace: TimeInterval = 1.5
+
+    /// Assert no element with [identifier] exists (the `assertDoesNotExist` analog). Waits a short
+    /// grace window for the negative so a slow render doesn't produce a false pass.
+    func assertTagAbsent(_ identifier: String, grace: TimeInterval = BaseRobot.absenceGrace) {
+        // waitForExistence returns true only if the element is present now or appears within the
+        // window; a negative assertion passes only when it never shows up. A bare `.exists` checks
+        // once and would false-pass on an element that renders a beat after the call.
+        XCTAssertFalse(
+            element(identifier).waitForExistence(timeout: grace),
+            "expected no element tagged '\(identifier)', but one exists")
     }
 
     /// Assert a static text showing [label] is present.
