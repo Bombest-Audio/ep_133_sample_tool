@@ -79,8 +79,11 @@ enum AudioDecoder {
         let channels = Int(file.processingFormat.channelCount)
         let frames = Int(file.length)
 
-        // Bounds check before allocation (DoS cap).
-        if frames * channels * 2 > maxPCMBytes {
+        // Bounds check before allocation (DoS cap). Compute the byte count overflow-safe so a
+        // malformed/huge file trips the cap instead of trapping on the multiply or on the later
+        // AVAudioFrameCount(frames) narrowing.
+        let (pcmByteCount, didOverflow) = frames.multipliedReportingOverflow(by: channels * 2)
+        if didOverflow || pcmByteCount > maxPCMBytes {
             throw AudioDecoderError.pcmCapExceeded(
                 "AudioDecoder: decoded PCM exceeds \(maxPCMBytes / (1024 * 1024)) MB cap — aborting"
             )

@@ -245,6 +245,11 @@ final class KitBuilderViewModel {
         if packRootScoped { packRootURL?.stopAccessingSecurityScopedResource() }
         packRootURL = rootURL
         packRootScoped = rootURL.startAccessingSecurityScopedResource()
+        if !packRootScoped {
+            // Provider-backed folders can refuse the scope; the loader will then read nothing and
+            // surface an empty pack. Log it so that outcome is diagnosable rather than silent.
+            EP133Log.warning(.app, "Could not hold security scope for pack folder \(rootURL.lastPathComponent); pack may read empty")
+        }
 
         globals.packLoading = true
         track { [weak self] in

@@ -172,7 +172,7 @@ struct EP133GroupChokeBar<Channel: Hashable>: View {
                         subLabel: tagFor?(ch) ?? nil,
                         onClick: { onGroupChange(ch) }
                     )
-                    .accessibilityIdentifier(testTagFor?(ch) ?? "")
+                    .accessibilityIdentifier(testTagFor?(ch) ?? "group_chip_\(label(ch))")
                 }
             }
             // Choke toggle — full-width row, tap anywhere to flip.

@@ -170,6 +170,9 @@ class ProjectsViewModel {
 
     /// Run the staged restore after the user confirms (gated by `RESTORE_ENABLED`).
     func confirmRestore(baseDirectory: URL = ProjectBackupManager.defaultBaseDirectory()) {
+        // Defense in depth: restore is a destructive device write, so enforce the feature gate
+        // here too, not just at the button. Keeps a stray call site or test from firing it.
+        guard RESTORE_ENABLED else { return }
         guard let file = pendingRestoreFile else { return }
         showRestoreConfirm = false
         pendingRestoreFile = nil
@@ -200,17 +203,26 @@ class ProjectsViewModel {
 
 /// Parse a device project-slot number (1..9) from its name. Device names are "01".."09", but
 /// mirrors `ProjectBackupManager`'s digit-anywhere match so "P03"-style names still resolve to 3.
+/// The result keys `ProjectNameStore` (defined over 1..9), so anything out of range is rejected
+/// rather than persisted under an invalid key.
 func projectSlotNumber(_ name: String) -> Int? {
-    guard let range = name.range(of: #"\d{1,2}"#, options: .regularExpression) else { return nil }
-    return Int(name[range])
+    guard let range = name.range(of: #"\d{1,2}"#, options: .regularExpression),
+          let n = Int(name[range]), (1...9).contains(n) else { return nil }
+    return n
 }
 
-/// Format a backup timestamp (epoch millis) for the library row.
-private func formatTimestamp(_ epochMillis: Int64) -> String {
+/// Shared formatter for backup-library rows. `DateFormatter` init is expensive, so build it once
+/// instead of per row on every scroll.
+private let backupTimestampFormatter: DateFormatter = {
     let fmt = DateFormatter()
     fmt.locale = Locale(identifier: "en_US_POSIX")
     fmt.dateFormat = "yyyy-MM-dd HH:mm"
-    return fmt.string(from: Date(timeIntervalSince1970: Double(epochMillis) / 1000))
+    return fmt
+}()
+
+/// Format a backup timestamp (epoch millis) for the library row.
+private func formatTimestamp(_ epochMillis: Int64) -> String {
+    backupTimestampFormatter.string(from: Date(timeIntervalSince1970: Double(epochMillis) / 1000))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -186,9 +186,10 @@ enum SysExProtocol {
         return output
     }
 
-    /// Reconstruct the 14-bit request id from a response frame — the inverse of the split
-    /// `buildFrame` writes: the high nibble rides in the low 4 bits of `flags` (byte 6), the low
-    /// 7 bits are byte 7. Naming the split keeps the encode and decode sides provably symmetric.
+    /// Reconstruct the 11-bit request id from a response frame — the inverse of the split
+    /// `buildFrame` writes: the 4 high bits ride in the low nibble of `flags` (byte 6), the low
+    /// 7 bits are byte 7 (4 + 7 = 11 bits, max 2047). Naming the split keeps the encode and decode
+    /// sides provably symmetric.
     static func decodeRequestId(flags: Int, low: Int) -> Int {
         ((flags & 0x0F) << 7) | (low & 0x7F)
     }

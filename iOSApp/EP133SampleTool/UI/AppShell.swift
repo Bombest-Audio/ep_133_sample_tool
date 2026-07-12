@@ -97,8 +97,9 @@ struct AppShell: View {
 }
 
 // ── Shared placeholder body for screens not yet ported ────────────────────────
-/// Theme-styled "coming soon" panel used by the placeholder screens (Pads, Samples, Projects,
-/// Kit Builder, Import) until each is ported from its Compose counterpart.
+/// Theme-styled "coming soon" panel for any section that isn't ported yet. Pads, Kit, Kit Builder,
+/// Projects, and Device now have real implementations; this is the fallback for the remaining
+/// unported sections only.
 struct EP133ComingSoonPanel: View {
     @Environment(\.ep133Tokens) private var t
     let section: String

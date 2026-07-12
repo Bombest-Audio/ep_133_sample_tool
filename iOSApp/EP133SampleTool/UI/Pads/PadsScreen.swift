@@ -382,7 +382,7 @@ private final class MultiTouchGridView: UIView {
 
     /// Android's `coordToIndex`: uniform division of the grid bounds into columns × rows.
     private func padIndex(at point: CGPoint) -> Int? {
-        guard bounds.width > 0, bounds.height > 0, rows > 0 else { return nil }
+        guard bounds.width > 0, bounds.height > 0, rows > 0, columns > 0 else { return nil }
         let col = min(max(Int(point.x / (bounds.width / CGFloat(columns))), 0), columns - 1)
         let row = min(max(Int(point.y / (bounds.height / CGFloat(rows))), 0), rows - 1)
         let index = row * columns + col

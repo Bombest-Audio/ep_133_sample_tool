@@ -37,16 +37,24 @@ final class MIDIManager: MIDIPort {
         // SysEx arrives exactly as sent (matching the Android MIDIManager). The UMP
         // event-list API wraps SysEx in SysEx7 packets with header nibbles, which the
         // old naive word-unpacking corrupted.
-        MIDIInputPortCreateWithBlock(
+        let inStatus = MIDIInputPortCreateWithBlock(
             midiClient,
             "EP133Input" as CFString,
             &inputPort
         ) { [weak self] packetList, srcConnRefCon in
             self?.handleMIDIInput(packetList: packetList, srcRefCon: srcConnRefCon)
         }
+        if inStatus != noErr {
+            EP133Log.error(.midi, "Failed to create MIDI input port: \(inStatus)")
+            return
+        }
 
         // Output port — sends MIDI to destinations
-        MIDIOutputPortCreate(midiClient, "EP133Output" as CFString, &outputPort)
+        let outStatus = MIDIOutputPortCreate(midiClient, "EP133Output" as CFString, &outputPort)
+        if outStatus != noErr {
+            EP133Log.error(.midi, "Failed to create MIDI output port: \(outStatus)")
+            return
+        }
 
         // Connect to all existing sources
         connectAllSources()
