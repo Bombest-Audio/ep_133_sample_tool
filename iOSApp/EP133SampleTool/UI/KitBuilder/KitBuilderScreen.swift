@@ -124,6 +124,10 @@ final class KitBuilderViewModel {
     @ObservationIgnored private var pendingTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var lastConnected: Bool
 
+    /// Token for our GroupSession selection observer, removed in `deinit` so the session's
+    /// observer map doesn't accumulate stale entries when this VM is recreated (issue #28).
+    @ObservationIgnored private var selectionToken: UUID?
+
     /// Flattened state for the UI: globals + the selected group's state + session group/choke.
     var state: KitBuilderState {
         let sel = session.selected
@@ -158,10 +162,18 @@ final class KitBuilderViewModel {
         // `session.selected.collect` first emission), then re-read on every later selection
         // change; the connection observer below handles plug/unplug edges.
         refreshDevicePads()
-        self.session.addSelectionObserver { [weak self] group in
+        selectionToken = self.session.addSelectionObserver { [weak self] group in
             self?.refreshDevicePads(group)
         }
         observeConnection()
+    }
+
+    deinit {
+        // deinit is nonisolated; hop to the main actor to drop our observer. Capture the
+        // session reference and token by value so nothing touches the deallocating `self`.
+        guard let token = selectionToken else { return }
+        let session = self.session
+        Task { @MainActor in session.removeSelectionObserver(token) }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -18,7 +18,15 @@ class PadsViewModel {
     @ObservationIgnored private let midi: MIDIRepository
 
     private(set) var selectedChannel: PadChannel = .A
+
+    /// Pads held down by a finger (padDown → padUp). Touch-held state only.
     private(set) var pressedIndices: Set<Int> = []
+
+    /// Pads briefly lit by an incoming MIDI note (a 120ms flash), kept separate from
+    /// `pressedIndices` so a flash timer can never clear a genuinely finger-held pad and a
+    /// real release can never cut a flash short (issue #28). A pad renders lit if it is in
+    /// either set — see `isPadLit`.
+    private(set) var flashIndices: Set<Int> = []
 
     // D-17: scale state delegated from MIDIRepository (single source of truth)
     var selectedScale: Scale? { midi.selectedScale }
@@ -26,6 +34,22 @@ class PadsViewModel {
 
     /// The incoming-MIDI listener (Kotlin `viewModelScope.launch { midi.incomingMidi.collect }`).
     @ObservationIgnored private var incomingMidiTask: Task<Void, Never>?
+
+    /// Per-index flash timers, tracked so a re-flash reschedules cleanly and teardown/group
+    /// changes can cancel them (the old code spawned untracked fire-and-forget tasks).
+    @ObservationIgnored private var flashTasks: [Int: Task<Void, Never>] = [:]
+
+    /// True if a pad should render pressed — held by a finger OR mid-flash.
+    func isPadLit(_ index: Int) -> Bool {
+        pressedIndices.contains(index) || flashIndices.contains(index)
+    }
+
+    /// Cancel and drop every in-flight flash timer and clear the flash set (group switch / teardown).
+    private func clearFlashes() {
+        for task in flashTasks.values { task.cancel() }
+        flashTasks.removeAll()
+        flashIndices.removeAll()
+    }
 
     init(_ midi: MIDIRepository) {
         self.midi = midi
@@ -50,12 +74,18 @@ class PadsViewModel {
         if group != selectedChannel {
             selectedChannel = group
             pressedIndices = []
+            clearFlashes()
         }
 
-        pressedIndices.insert(index)
-        Task { [weak self] in
+        // Flash the pad on the flash set (never the touch-held set). Reschedule a fresh timer if
+        // this index is already flashing so a rapid repeat can't be cut short by the prior timer.
+        flashTasks[index]?.cancel()
+        flashIndices.insert(index)
+        flashTasks[index] = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(120))
-            self?.pressedIndices.remove(index)
+            guard let self, !Task.isCancelled else { return }
+            self.flashIndices.remove(index)
+            self.flashTasks[index] = nil
         }
     }
 
@@ -64,6 +94,7 @@ class PadsViewModel {
         let changed = channel != selectedChannel
         selectedChannel = channel
         pressedIndices = []
+        clearFlashes()
         // Async: propagate to device via FILE_METADATA SET — only when the group
         // actually changed, so re-tapping the active chip doesn't spam redundant writes.
         guard changed, let index = PadChannel.allCases.firstIndex(of: channel) else { return }
@@ -87,6 +118,7 @@ class PadsViewModel {
             if deviceGroup != self.selectedChannel {
                 self.selectedChannel = deviceGroup
                 self.pressedIndices = []
+                self.clearFlashes()
             }
         }
     }
@@ -110,6 +142,7 @@ class PadsViewModel {
 
     deinit {
         incomingMidiTask?.cancel()
+        for task in flashTasks.values { task.cancel() }
     }
 }
 
@@ -226,7 +259,7 @@ private struct PadsScreenBody: View {
     }
 
     private func padCell(_ pad: Pad, index: Int, inScaleSet: Set<Int>) -> some View {
-        let isPressed = viewModel.pressedIndices.contains(index)
+        let isPressed = viewModel.isPadLit(index)
         let scaleLockActive = !inScaleSet.isEmpty
         let isInScale = inScaleSet.isEmpty || inScaleSet.contains(pad.note % 12)
         let state: PadState = if isPressed {

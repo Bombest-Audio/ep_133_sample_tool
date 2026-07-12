@@ -45,8 +45,9 @@ final class GroupSession {
 
     /// Selection observers — the Swift analog of Kotlin collectors on `session.selected`.
     /// Called synchronously after every `select` with the new group (KitBuilderViewModel
-    /// registers its device-pad re-read here).
-    @ObservationIgnored private var selectionObservers: [(PadChannel) -> Void] = []
+    /// registers its device-pad re-read here). Keyed by an opaque token so a caller can
+    /// deregister on teardown; without that, entries accumulated forever (issue #28).
+    @ObservationIgnored private var selectionObservers: [UUID: (PadChannel) -> Void] = [:]
 
     init(defaults: UserDefaults? = nil) {
         self.defaults = defaults
@@ -61,7 +62,7 @@ final class GroupSession {
 
     func select(_ group: PadChannel) {
         selected = group
-        for observer in selectionObservers { observer(group) }
+        for observer in selectionObservers.values { observer(group) }
     }
 
     func designate(_ group: PadChannel, _ mode: KitMode) {
@@ -78,9 +79,18 @@ final class GroupSession {
     func chokeFor(_ group: PadChannel) -> Bool { choke[group] ?? true }
 
     /// Register a callback for subsequent selection changes (fires on `select`, not with the
-    /// current value — callers read `selected` directly for the initial state).
-    func addSelectionObserver(_ observer: @escaping (PadChannel) -> Void) {
-        selectionObservers.append(observer)
+    /// current value — callers read `selected` directly for the initial state). Returns a token
+    /// to pass to [removeSelectionObserver] on teardown.
+    @discardableResult
+    func addSelectionObserver(_ observer: @escaping (PadChannel) -> Void) -> UUID {
+        let token = UUID()
+        selectionObservers[token] = observer
+        return token
+    }
+
+    /// Deregister a previously-added selection observer. No-op if the token is unknown.
+    func removeSelectionObserver(_ token: UUID) {
+        selectionObservers.removeValue(forKey: token)
     }
 
     private static func designationKey(_ g: PadChannel) -> String { "designation.\(g.rawValue)" }

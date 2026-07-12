@@ -103,4 +103,39 @@ final class PadsViewModelTests: XCTestCase {
         XCTAssertEqual(127, PadVelocity.fromNormalizedForce(1), "Full force maps to max velocity")
         XCTAssertEqual(127, PadVelocity.fromNormalizedForce(2), "Over-range clamps to 127")
     }
+
+    /// Regression for issue #28: an incoming-note flash must not clear a finger-held pad.
+    ///
+    /// Flash state and touch-held state used to share one `pressedIndices` set, so the flash's
+    /// 120ms timer would `remove` an index a finger was still holding. They are now separate sets;
+    /// a held pad stays lit after the flash timer fires. Drives the real incoming-MIDI path
+    /// (port.onMIDIReceived → parseMidiInput → incomingMidi → handleIncoming).
+    func test_incomingFlash_doesNotClearFingerHeldPad() async throws {
+        let port = FakeMIDIPortRecording()
+        let midi = RecordingMIDIRepository(port)
+        let vm = PadsViewModel(midi)
+
+        // Pad index 0 of the default group (A) is note 45 — the note an incoming event carries.
+        let heldIndex = 0
+        let note = EP133Pads.padsForChannel(.A)[heldIndex].note
+
+        // Arrange: a finger holds pad 0.
+        vm.padDown(heldIndex)
+        XCTAssertTrue(vm.isPadLit(heldIndex))
+
+        // Act: an incoming note for the same pad arrives (flashes it), then its 120ms timer fires.
+        port.onMIDIReceived?("in", [0x90, UInt8(note), 100])
+        try await Task.sleep(for: .milliseconds(30))   // let the stream deliver + handleIncoming run
+        XCTAssertTrue(vm.flashIndices.contains(heldIndex), "incoming note should flash the pad")
+        XCTAssertTrue(vm.pressedIndices.contains(heldIndex), "the finger-hold is untouched by the flash")
+
+        try await Task.sleep(for: .milliseconds(150))   // outlast the 120ms flash timer
+
+        // Assert: the flash cleared, but the held pad is still lit (the old bug cleared it here).
+        XCTAssertFalse(vm.flashIndices.contains(heldIndex), "flash should have expired")
+        XCTAssertTrue(vm.isPadLit(heldIndex), "a still-held pad must remain lit after the flash")
+
+        vm.padUp(heldIndex)
+        XCTAssertFalse(vm.isPadLit(heldIndex), "releasing the finger clears the pad")
+    }
 }
