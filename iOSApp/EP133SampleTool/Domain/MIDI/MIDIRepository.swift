@@ -199,8 +199,22 @@ class MIDIRepository {
     @ObservationIgnored var forceCloseTimeout: TimeInterval = 2.0
 
     /// putSampleFile / putProjectArchive transfer-local reqId counter starts here (INIT=30,
-    /// DATA pages 31, 32, … masked to 14-bit). nextFileReqId() skips 30..99 so it never aliases.
+    /// DATA pages 31, 32, …). Stepped with `nextTransferReqId` so it stays inside the 11-bit
+    /// wire field; nextFileReqId() skips 30..99 so the low end never aliases another op.
     static let PUT_INIT_REQUEST_ID = 30
+
+    /// Step a transfer-local reqId to the next value that fits the wire.
+    ///
+    /// `buildFrame` encodes only 11 bits of the reqId (flags nibble `>> 7` + 7-bit low byte),
+    /// so anything above 2046 wraps on the wire and the device's echoed ack decodes to a
+    /// different id than the waiter was registered under — the ack is dropped and the page
+    /// times out. A long upload (mono > ~9s, stereo > ~4.6s) reaches page 2048 and fails
+    /// mid-transfer. Wrapping back to FILE_REQ_ID_MIN keeps every page in range; reuse across
+    /// pages within one transfer is safe because a transfer awaits each page's ack before
+    /// sending the next, so only one waiter is ever live (fileOpMutex also serializes transfers).
+    static func nextTransferReqId(_ current: Int) -> Int {
+        current >= FILE_REQ_ID_MAX ? FILE_REQ_ID_MIN : current + 1
+    }
 
     // nextFileReqId() counter bounds — 11-bit space, 0/2047 reserved, 1 and 30..99 skipped.
     static let FILE_REQ_ID_MIN = 100
@@ -558,7 +572,7 @@ class MIDIRepository {
         }
         return try await fileOpMutex.withLock { () async throws -> Bool in
             var nextReqId = Self.PUT_INIT_REQUEST_ID
-            let initReqId = nextReqId; nextReqId = (nextReqId + 1) & 0x3FFF
+            let initReqId = nextReqId; nextReqId = Self.nextTransferReqId(nextReqId)
             let initFrame = SysExProtocol.buildFilePutInitFrame(
                 deviceId: currentDeviceId, nodeId: slotNodeId,
                 fileSize: tarBytes.count, requestId: initReqId)
@@ -572,7 +586,7 @@ class MIDIRepository {
             while offset < tarBytes.count {
                 let end = min(offset + SysExProtocol.MAX_PAGE_BYTES, tarBytes.count)
                 let chunk = Array(tarBytes[offset..<end])
-                let dataReqId = nextReqId; nextReqId = (nextReqId + 1) & 0x3FFF
+                let dataReqId = nextReqId; nextReqId = Self.nextTransferReqId(nextReqId)
                 let dataFrame = SysExProtocol.buildFilePutDataFrame(
                     deviceId: currentDeviceId, page: page, chunk: chunk, requestId: dataReqId)
                 if !putAckOk(try await awaitFileOp(
@@ -634,7 +648,7 @@ class MIDIRepository {
             var assignedNodeId: Int?
             do {
                 // INIT: announce parent dir, fileId=0 (new file), size, filename, metadata.
-                let initReqId = nextReqId; nextReqId = (nextReqId + 1) & 0x3FFF
+                let initReqId = nextReqId; nextReqId = Self.nextTransferReqId(nextReqId)
                 let initFrame = SysExProtocol.buildFileCreatePutInitFrame(
                     deviceId: currentDeviceId,
                     parentNodeId: parent,
@@ -666,7 +680,7 @@ class MIDIRepository {
                 while offset < pcmBytes.count {
                     let end = min(offset + rawChunkSize, pcmBytes.count)
                     let chunk = Array(pcmBytes[offset..<end])
-                    let dataReqId = nextReqId; nextReqId = (nextReqId + 1) & 0x3FFF
+                    let dataReqId = nextReqId; nextReqId = Self.nextTransferReqId(nextReqId)
                     let dataFrame = SysExProtocol.buildFilePutDataFrame(
                         deviceId: currentDeviceId, page: page, chunk: chunk, requestId: dataReqId)
                     let dataResp = try await awaitFileOp(
@@ -674,7 +688,7 @@ class MIDIRepository {
                         frame: dataFrame, timeout: putAckTimeout)
                     if !putAckOk(dataResp) {
                         let devMsg = deviceErrorText(dataResp)
-                        let closeReqId = nextReqId; nextReqId = (nextReqId + 1) & 0x3FFF
+                        let closeReqId = nextReqId; nextReqId = Self.nextTransferReqId(nextReqId)
                         await forceCloseTransfer(portId: portId, terminatorPage: page + 1, reqId: closeReqId)
                         if let devMsg {
                             throw MIDIRepositoryError.deviceRejected(devMsg)
@@ -686,7 +700,7 @@ class MIDIRepository {
                 }
 
                 // Zero-length DATA terminator (required by the reference tool). Await its ack.
-                let termReqId = nextReqId; nextReqId = (nextReqId + 1) & 0x3FFF
+                let termReqId = nextReqId; nextReqId = Self.nextTransferReqId(nextReqId)
                 let terminatorFrame = SysExProtocol.buildFilePutDataFrame(
                     deviceId: currentDeviceId, page: page, chunk: [], requestId: termReqId)
                 if putAckOk(try await awaitFileOp(
