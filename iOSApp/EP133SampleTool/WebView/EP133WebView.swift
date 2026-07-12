@@ -13,9 +13,10 @@ struct EP133WebView: UIViewRepresentable {
 
         // --- Configuration ---
         let config = WKWebViewConfiguration()
-        let prefs = WKWebpagePreferences()
-        prefs.allowsContentAccessFromFileURLs = true
-        config.defaultWebpagePreferences = prefs
+        // The compiled web app fetches sibling files from file:// URLs; WebKit
+        // blocks cross-file access by default and has no public switch for it,
+        // so set the legacy preference by key (the Capacitor/Cordova approach).
+        config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
 
         // --- Polyfill injection ---
         let userContentController = WKUserContentController()
@@ -82,7 +83,7 @@ struct EP133WebView: UIViewRepresentable {
             forResource: "MIDIBridgePolyfill",
             withExtension: "js"
         ) else {
-            print("[EP133] Warning: MIDIBridgePolyfill.js not found in bundle")
+            EP133Log.warning(.midi, "MIDIBridgePolyfill.js not found in bundle")
             return nil
         }
         return try? String(contentsOf: url, encoding: .utf8)
