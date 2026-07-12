@@ -138,11 +138,16 @@ class DeviceViewModel {
     /// Query firmware / storage / sample count. Called when the Device screen opens connected.
     func loadStats() {
         if statsLoading { return }
+        // Flip the guard synchronously, before the Task starts. Setting it inside the Task
+        // body made the guard a no-op: two calls in the same runloop tick (e.g. onAppear +
+        // the connected-edge onChange both firing when a device connects while the Device tab
+        // is visible) would both pass the check and spawn concurrent queryDeviceStats() calls,
+        // orphaning the first loadStatsTask handle.
+        statsLoading = true
         loadStatsTask = Task { [weak self] in
             guard let self else { return }
-            statsLoading = true
+            defer { statsLoading = false }
             _ = try? await midi.queryDeviceStats()
-            statsLoading = false
             if deviceState.firmwareVersion != nil {
                 await checkFirmwareUpdate()
             }
