@@ -115,9 +115,6 @@ class DeviceViewModel(
 
     val deviceState: StateFlow<DeviceState> = midi.deviceState
 
-    // D-16: channel shared from MIDIRepository
-    val channelFlow: StateFlow<Int> = midi.channelFlow
-
     private val _selectedChannel = MutableStateFlow(PadChannel.A)
     val selectedChannel: StateFlow<PadChannel> = _selectedChannel.asStateFlow()
 
@@ -443,7 +440,7 @@ fun DeviceScreen(
             ) {
                 ConnectionCard(deviceState)
                 StorageBar(deviceState, loading = statsLoading)
-                StatsGrid(deviceState, selectedChannel)
+                StatsGrid(deviceState)
                 FirmwareUpdateBanner(
                     state = firmwareUpdate,
                     onOpenUpdater = { viewModel.openFirmwareUpdater() },
@@ -587,6 +584,8 @@ private fun ConnectionCard(state: DeviceState) {
             Spacer(Modifier.height(13.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 MonoFact("FW", state.firmwareVersion ?: "—", valueColor = t.live)
+                // Constant: EP-133 transmits on MIDI channel 1 for all pad groups
+                // (hardware-confirmed). Groups A–D are separated by note range, not channel.
                 MonoFact("CH", "01", valueColor = Color.White)
             }
         }
@@ -667,7 +666,7 @@ private fun StorageBar(state: DeviceState, loading: Boolean) {
 
 // ── Stats grid — samples / storage / firmware as mono readouts + MIDI CH ──
 @Composable
-private fun StatsGrid(state: DeviceState, channel: PadChannel) {
+private fun StatsGrid(state: DeviceState) {
     val samplesValue = state.sampleCount?.toString() ?: "—"
     val storageValue = if (state.storageUsedBytes != null && state.storageTotalBytes != null) {
         val usedMb = state.storageUsedBytes / BYTES_PER_MB
@@ -692,6 +691,8 @@ private fun StatsGrid(state: DeviceState, channel: PadChannel) {
             horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             Ep133StatReadout("FIRMWARE", firmwareValue, modifier = Modifier.weight(1f))
+            // Constant: EP-133 transmits on MIDI channel 1 for all pad groups
+            // (hardware-confirmed). Groups A–D are separated by note range, not channel.
             Ep133StatReadout("MIDI CH", "01", modifier = Modifier.weight(1f))
         }
     }
