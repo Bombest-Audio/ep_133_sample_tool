@@ -1,0 +1,128 @@
+package com.ep133.sampletool.robots
+
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isPopup
+import androidx.compose.ui.test.junit4.ComposeContentTestRule
+import androidx.compose.ui.test.performClick
+import com.ep133.sampletool.ui.TestTags
+
+/** Robot for the Device screen: connection states, stats, firmware banner, scale mode, backup. */
+class DeviceRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
+
+    // ── Connection / permission states ──
+
+    fun assertOfflineState() = apply {
+        text("no device").assertIsDisplayed()
+    }
+
+    fun assertPermissionAction(label: String) = apply {
+        // Ghost buttons render their label uppercased — match case-insensitively.
+        tag(TestTags.DEVICE_PERMISSION_ACTION).assertIsDisplayed()
+        rule.onNode(hasText(label, ignoreCase = true)).assertIsDisplayed()
+    }
+
+    fun clickPermissionAction() = apply {
+        tag(TestTags.DEVICE_PERMISSION_ACTION).performClick()
+    }
+
+    // ── Connected stats ──
+
+    fun assertStatsVisible() = apply {
+        tag(TestTags.DEVICE_STATS_GRID).assertIsDisplayed()
+    }
+
+    fun assertStatValue(value: String) = apply {
+        text(value).assertIsDisplayed()
+    }
+
+    /** Assert a readout value inside the stats grid (disambiguates from the connection card). */
+    fun assertStatInGrid(value: String) = apply {
+        rule.onNode(
+            hasText(value) and hasAnyAncestor(hasTestTag(TestTags.DEVICE_STATS_GRID)),
+            useUnmergedTree = true,
+        ).assertIsDisplayed()
+    }
+
+    // ── Firmware banner ──
+
+    fun assertFirmwareBanner(latest: String) = apply {
+        waitForTag(TestTags.DEVICE_FIRMWARE_BANNER)
+        tag(TestTags.DEVICE_FIRMWARE_BANNER).assertIsDisplayed()
+        text("Firmware $latest available").assertIsDisplayed()
+    }
+
+    fun assertNoFirmwareBanner() = apply {
+        tag(TestTags.DEVICE_FIRMWARE_BANNER).assertDoesNotExist()
+    }
+
+    fun clickOpenUpdater() = apply {
+        text("Open updater").performClick()
+    }
+
+    // ── Scale mode ──
+
+    fun selectScale(name: String) = apply {
+        tag(TestTags.DEVICE_SCALE_DROPDOWN).performClick()
+        rule.onNode(hasText(name) and hasAnyAncestor(isPopup())).performClick()
+    }
+
+    fun selectRootNote(note: String) = apply {
+        tag(TestTags.DEVICE_ROOT_DROPDOWN).performClick()
+        rule.onNode(hasText(note) and hasAnyAncestor(isPopup())).performClick()
+    }
+
+    // ── Channel chips ──
+
+    fun selectChannel(group: String) = apply {
+        text(group).performClick()
+    }
+
+    // ── Backup / restore ──
+
+    fun clickBackup() = apply {
+        text("BACKUP").performClick() // Ep133PrimaryButton renders labels uppercase
+    }
+
+    fun clickRestore() = apply {
+        text("RESTORE").performClick() // Ep133GhostButton renders labels uppercase
+    }
+
+    fun assertRestoreConfirmVisible() = apply {
+        tag(TestTags.DEVICE_RESTORE_CONFIRM_DIALOG).assertIsDisplayed()
+    }
+
+    fun cancelRestoreConfirm() = apply {
+        text("Cancel").performClick()
+    }
+
+    fun assertNoRestoreConfirm() = apply {
+        tag(TestTags.DEVICE_RESTORE_CONFIRM_DIALOG).assertDoesNotExist()
+    }
+
+    // ── Simulated EP-133 toggle (debug builds only) ──
+
+    fun assertSimToggleDisplayed() = apply {
+        tag(TestTags.DEVICE_SIM_TOGGLE).assertIsDisplayed()
+    }
+
+    fun assertSimToggleAbsent() = apply {
+        tag(TestTags.DEVICE_SIM_TOGGLE).assertDoesNotExist()
+    }
+
+    fun flipSimToggle() = apply {
+        tag(TestTags.DEVICE_SIM_TOGGLE).performClick()
+    }
+
+    fun assertSimToggleOn() = apply {
+        tag(TestTags.DEVICE_SIM_TOGGLE).assertIsOn()
+    }
+
+    fun assertSimToggleOff() = apply {
+        tag(TestTags.DEVICE_SIM_TOGGLE).assertIsOff()
+    }
+}

@@ -33,6 +33,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ButtonDefaults
@@ -48,6 +50,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -67,6 +70,7 @@ import com.ep133.sampletool.domain.model.EP133Scales
 import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.domain.model.PermissionState
 import com.ep133.sampletool.domain.model.Scale
+import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.theme.Ep133GhostButton
 import com.ep133.sampletool.ui.theme.Ep133GroupChip
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
@@ -74,6 +78,7 @@ import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.Ep133StatReadout
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -154,6 +159,14 @@ class DeviceViewModel(
 
     // Firmware updater callback — set by MainActivity (mirrors SAF pattern); Wave 3 wires the Custom Tab
     var onOpenFirmwareUpdater: (() -> Unit)? = null
+
+    // Simulated EP-133 toggle — set by MainActivity ONLY when SimulatedPortProvider.available
+    // (debug builds). Null in release, which hides the toggle UI entirely.
+    var onSimToggle: ((Boolean) -> Unit)? = null
+    val simToggleAvailable: Boolean get() = onSimToggle != null
+
+    private val _simModeActive = MutableStateFlow(false)
+    val simModeActive: StateFlow<Boolean> = _simModeActive.asStateFlow()
 
     fun triggerBackup() {
         if (_isBackupInProgress.value || _isRestoreInProgress.value) return
@@ -278,6 +291,22 @@ class DeviceViewModel(
         onOpenFirmwareUpdater?.invoke()
     }
 
+    /**
+     * Flip between the real USB port and the simulated EP-133 (debug builds only).
+     *
+     * loadStats() is called explicitly rather than relying on the connected LaunchedEffect:
+     * swapPort resets and re-sets deviceState synchronously, so StateFlow conflation can
+     * swallow the false→true edge. loadStats/queryDeviceStats early-return safely when
+     * disconnected, so the disable path is harmless.
+     */
+    fun setSimulatedMode(enabled: Boolean) {
+        val toggle = onSimToggle ?: return
+        if (enabled == _simModeActive.value) return
+        toggle(enabled)
+        _simModeActive.value = enabled
+        loadStats()
+    }
+
     /** Query firmware / storage / sample count. Called when the Device screen opens connected. */
     fun loadStats() {
         if (_statsLoading.value) return
@@ -332,8 +361,6 @@ class DeviceViewModel(
     }
 }
 
-/** Hard ~2–3dp faceplate corner (mirrors the design's `border-radius:2px/3px`). */
-private val PanelRadius = RoundedCornerShape(3.dp)
 private val Mono = FontFamily.Monospace
 
 @Composable
@@ -353,6 +380,7 @@ fun DeviceScreen(
     val showRestoreConfirm by viewModel.showRestoreConfirm.collectAsState()
     val statsLoading by viewModel.statsLoading.collectAsState()
     val firmwareUpdate by viewModel.firmwareUpdate.collectAsState()
+    val simModeActive by viewModel.simModeActive.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
     // Query firmware / storage / samples whenever we're connected and the screen is shown.
@@ -380,18 +408,31 @@ fun DeviceScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(t.bg)) {
         if (!deviceState.connected) {
-            // Clean offline state — fills the body, plug-in guidance keyed off permission.
-            DeviceOfflineState(
-                permissionState = deviceState.permissionState,
-                onGrantPermission = { viewModel.refreshDevices() },
-                onOpenSettings = {
-                    val intent = Intent(
-                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        Uri.fromParts("package", context.packageName, null),
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Clean offline state — fills the body, plug-in guidance keyed off permission.
+                Box(modifier = Modifier.weight(1f)) {
+                    DeviceOfflineState(
+                        permissionState = deviceState.permissionState,
+                        onGrantPermission = { viewModel.refreshDevices() },
+                        onOpenSettings = {
+                            val intent = Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.fromParts("package", context.packageName, null),
+                            )
+                            context.startActivity(intent)
+                        },
                     )
-                    context.startActivity(intent)
-                },
-            )
+                }
+                // Critical path: with no hardware the screen is offline, and the sim toggle
+                // must be reachable here or the feature is unusable.
+                if (viewModel.simToggleAvailable) {
+                    SimulatorModeSection(
+                        active = simModeActive,
+                        onToggle = { viewModel.setSimulatedMode(it) },
+                        modifier = Modifier.padding(horizontal = 14.dp).padding(bottom = 14.dp),
+                    )
+                }
+            }
         } else {
             Column(
                 modifier = Modifier
@@ -425,6 +466,14 @@ fun DeviceScreen(
                     onBackup = { viewModel.triggerBackup() },
                     onRestore = { viewModel.triggerRestore() },
                 )
+                // Rendered while connected too, so the user can flip back to real USB
+                // while the simulator is the active port.
+                if (viewModel.simToggleAvailable) {
+                    SimulatorModeSection(
+                        active = simModeActive,
+                        onToggle = { viewModel.setSimulatedMode(it) },
+                    )
+                }
             }
         }
 
@@ -446,6 +495,7 @@ private fun FirmwareUpdateBanner(
         is FirmwareUpdateState.UpdateAvailable -> {
             Row(
                 modifier = Modifier
+                    .testTag(TestTags.DEVICE_FIRMWARE_BANNER)
                     .fillMaxWidth()
                     .clip(PanelRadius)
                     .background(t.accent.copy(alpha = 0.12f), PanelRadius)
@@ -624,7 +674,10 @@ private fun StatsGrid(state: DeviceState, channel: PadChannel) {
     } else "—"
     val firmwareValue = state.firmwareVersion ?: "—"
 
-    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+    Column(
+        modifier = Modifier.testTag(TestTags.DEVICE_STATS_GRID),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -693,7 +746,7 @@ private fun ScaleModeSelector(
                             ?.let(onScaleSelect)
                     }
                 },
-                modifier = Modifier.weight(2f),
+                modifier = Modifier.weight(2f).testTag(TestTags.DEVICE_SCALE_DROPDOWN),
             )
 
             ScaleDropdown(
@@ -701,7 +754,7 @@ private fun ScaleModeSelector(
                 selectedText = selectedRoot,
                 options = EP133Scales.ROOT_NOTES,
                 onSelect = onRootSelect,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).testTag(TestTags.DEVICE_ROOT_DROPDOWN),
             )
         }
     }
@@ -833,6 +886,43 @@ private fun BackupRestoreSection(
     }
 }
 
+// ── Simulated EP-133 toggle (debug builds only — rendered behind simToggleAvailable) ──
+@Composable
+private fun SimulatorModeSection(
+    active: Boolean,
+    onToggle: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val t = LocalEP133Tokens.current
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(PanelRadius)
+            .background(t.panel2, PanelRadius)
+            .border(1.dp, t.rule, PanelRadius)
+            .padding(horizontal = 13.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            text = "SIMULATED EP-133",
+            color = t.text2,
+            fontFamily = Mono,
+            fontSize = 9.5.sp,
+            letterSpacing = 0.6.sp,
+        )
+        Switch(
+            checked = active,
+            onCheckedChange = onToggle,
+            modifier = Modifier.testTag(TestTags.DEVICE_SIM_TOGGLE),
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = t.accent,
+                checkedThumbColor = Color.White,
+            ),
+        )
+    }
+}
+
 // ── Clean "NO DEVICE" offline state (design lines 304–313), keyed off permission ──
 @Composable
 private fun DeviceOfflineState(
@@ -891,7 +981,11 @@ private fun DeviceOfflineState(
                     letterSpacing = 0.3.sp,
                 )
                 Spacer(Modifier.height(16.dp))
-                Ep133GhostButton(label = "Open Settings", onClick = onOpenSettings)
+                Ep133GhostButton(
+                    label = "Open Settings",
+                    modifier = Modifier.testTag(TestTags.DEVICE_PERMISSION_ACTION),
+                    onClick = onOpenSettings,
+                )
             }
             else -> {
                 // UNKNOWN or GRANTED — device present but not yet enumerated
@@ -915,7 +1009,11 @@ private fun DeviceOfflineState(
                     )
                 }
                 Spacer(Modifier.height(14.dp))
-                Ep133GhostButton(label = "Grant Permission", onClick = onGrantPermission)
+                Ep133GhostButton(
+                    label = "Grant Permission",
+                    modifier = Modifier.testTag(TestTags.DEVICE_PERMISSION_ACTION),
+                    onClick = onGrantPermission,
+                )
             }
         }
     }
@@ -930,6 +1028,7 @@ private fun RestoreConfirmDialog(
     val t = LocalEP133Tokens.current
     AlertDialog(
         onDismissRequest = onDismiss,
+        modifier = Modifier.testTag(TestTags.DEVICE_RESTORE_CONFIRM_DIALOG),
         containerColor = t.panel,
         titleContentColor = t.text,
         textContentColor = t.text2,

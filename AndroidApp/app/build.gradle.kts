@@ -101,6 +101,19 @@ android {
             // tests that call through real MIDIRepository paths that contain Log.d/Log.w.
             isReturnDefaultValues = true
         }
+
+        managedDevices {
+            devices {
+                // Headless emulator for UI tests: `./gradlew :app:pixel2Api33DebugAndroidTest`.
+                // aosp-atd is the test-optimized image (no launcher/animations, faster boot);
+                // ATD tops out below API 34, hence 33. First run downloads the system image.
+                create<com.android.build.api.dsl.ManagedVirtualDevice>("pixel2Api33") {
+                    device = "Pixel 2"
+                    apiLevel = 33
+                    systemImageSource = "aosp-atd"
+                }
+            }
+        }
     }
 }
 
@@ -147,7 +160,11 @@ dependencies {
     // Instrumented / E2E tests
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+    // 3.5.1 predated the fix (espresso 3.6.1+) that replaced reflective
+    // InputManager.getInstance() with Context.getSystemService(InputManager.class),
+    // required for input event injection to work on Android 15+ (was throwing
+    // NoSuchMethodException on physical devices running API 35+).
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 

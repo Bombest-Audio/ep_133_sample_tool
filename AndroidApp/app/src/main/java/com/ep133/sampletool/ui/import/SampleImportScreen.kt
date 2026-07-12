@@ -33,6 +33,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -44,9 +45,11 @@ import androidx.lifecycle.viewModelScope
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.midi.SampleImportProgress
+import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -250,8 +253,6 @@ class SampleImportViewModel(
 // Screen composable
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Hard 2–3dp corner used across the faceplate UI (mirrors the design's `border-radius:2px`). */
-private val PanelRadius = RoundedCornerShape(3.dp)
 private val Mono = FontFamily.Monospace
 
 /** Number of page cells in the per-file SysEx progress strip (mirrors the design's 12-cell grid). */
@@ -373,6 +374,7 @@ fun SampleImportScreen(viewModel: SampleImportViewModel) {
             Ep133PrimaryButton(
                 label = if (stagedSamples.isEmpty()) "PICK FILES" else "PICK MORE FILES",
                 modifier = Modifier
+                    .testTag(TestTags.IMPORT_PICK_BUTTON)
                     .fillMaxWidth()
                     .padding(bottom = 14.dp),
                 onClick = { viewModel.triggerPick() },
@@ -433,6 +435,7 @@ private fun StagedSampleRow(sample: StagedSample) {
 
     Column(
         modifier = Modifier
+            .testTag(TestTags.importRow(sample.name))
             .fillMaxWidth()
             .clip(PanelRadius)
             .background(t.panel, PanelRadius)

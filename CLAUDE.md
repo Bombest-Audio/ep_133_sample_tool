@@ -21,8 +21,39 @@ cd AndroidApp
 ./gradlew assembleDebug                  # Debug APK → app/build/outputs/apk/debug/
 ./gradlew :app:testDebugUnitTest         # All unit tests
 ./gradlew :app:testDebugUnitTest --tests "com.ep133.sampletool.ChordsViewModelTest"  # Single test class
+./gradlew :app:connectedDebugAndroidTest # Compose UI tests (device/emulator attached)
+./gradlew :app:pixel2Api33DebugAndroidTest  # UI tests, headless Gradle Managed Device
 ```
 The Gradle build auto-copies `data/` and `shared/MIDIBridgePolyfill.js` into assets via `preBuild` tasks.
+
+#### Android UI tests (androidTest)
+- **Robot pattern, AAA.** Tests never touch `onNodeWith*` directly — they go through the
+  method-chaining robots in `androidTest/.../robots/` (`AppRobot`, `PadsRobot`, `DeviceRobot`,
+  `ProjectsRobot`, `ImportRobot`), with `// Arrange` / `// Act` / `// Assert` sections.
+- **Selectors** come from `ui/TestTags.kt` (`{screen}_{element}` snake_case; helpers for
+  indexed items). User-visible labels stay text assertions; note `Ep133PrimaryButton`/
+  `Ep133GhostButton` render labels UPPERCASE. Pad visual states are asserted via
+  `stateDescription` (`pressed` / `in_scale` / `idle`).
+- **Fakes, no mocks:** `TestMIDIRepository` (inert, seeds base `_deviceState` — do not
+  override `deviceState`), `ScriptedMIDIRepository` (canned slots/uploads, records MIDI
+  frames), `FakeFirmwareCatalog`, and the `launchEP133App` harness (mirrors MainActivity
+  wiring; SAF/updater callbacks recorded).
+- **Device simulator (`support/sim/EP133DeviceSimulator`):** a wire-level MIDIPort fake
+  speaking the full SysEx protocol from `docs/ep133-sysex-protocol.md` (greet, FILE_INIT,
+  node-ID LIST/INFO/GET/PUT with paged acks, METADATA, the unterminated-PUT wedge).
+  `MIDIRepository(EP133DeviceSimulator())` + `launchEP133App` runs the REAL protocol
+  stack end-to-end with no hardware (see `SimulatedDeviceTest`); fault injection via
+  `failPutDataAtPage` / `wedge` / `silent`. Prefer `ScriptedMIDIRepository` for cheap UI
+  branch pinning, the simulator for protocol-touching E2E flows.
+- **Scope:** UI tests cover rendering/interaction/navigation/state branches; ViewModel and
+  protocol logic belongs in `src/test` (do not duplicate).
+- **Pre-push gate:** run `scripts/install-hooks.sh` once; the hook runs unit tests +
+  androidTest compile always, and the UI suite when a device is attached (or `EP133_GMD=1`).
+  `scripts/run-ui-tests.sh` picks connected-vs-managed-device automatically.
+- **Regression tooling:** `scripts/ui-test-coverage.sh [--strict]` reports coverage gaps
+  (screens without tests, unused TestTags, changed-without-test drift);
+  `scripts/generate-ui-tests.sh` drafts robot-based tests for gaps via `claude -p` into
+  `androidTest/.../generated/` for human review.
 
 ### iOS (requires Xcode 15+, iOS 16+ deployment target)
 ```bash

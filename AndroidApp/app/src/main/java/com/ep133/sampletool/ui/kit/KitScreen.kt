@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -56,12 +57,16 @@ import com.ep133.sampletool.domain.audio.LoopSlicer
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.model.PadChannel
+import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderScreen
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 import com.ep133.sampletool.ui.theme.Ep133GroupChokeBar
 import com.ep133.sampletool.ui.theme.Ep133PrimaryButton
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.LocalEP133Tokens
+import com.ep133.sampletool.ui.theme.PadEmptyInk
+import com.ep133.sampletool.ui.theme.PadFilledInk
+import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -220,6 +225,13 @@ class KitViewModel(
     val items: StateFlow<List<KitResultItem>> = derived { it.items }
     val stagedLoop: StateFlow<StagedLoop?> = derived { it.stagedLoop }
 
+    /**
+     * Canonical resolved slice count for the selected group. The selector grid AND the labels
+     * collect this one flow, so the highlighted pad count can never disagree with what the device
+     * actually slices (they previously resolved the raw text independently, with different fallbacks).
+     */
+    val resolvedSliceCount: StateFlow<Int> = derived { resolveSliceCount(it) }
+
     // Transient toast — global (not per-group).
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
@@ -273,6 +285,73 @@ class KitViewModel(
         val group = session.selected.value
         val staged = groupOf(group).stagedLoop ?: return
         runChop(group, staged.uri, staged.name, context)
+    }
+
+    /** Result of [uploadAndAssign] for one row. Cancellation is rethrown, never returned; failures
+     *  carry the [Throwable] so callers can format their own (differing) snackbar text exactly. */
+    private sealed interface UploadOutcome {
+        object Done : UploadOutcome
+        object UploadRejected : UploadOutcome
+        object AssignRejected : UploadOutcome
+        data class UploadFailed(val error: Throwable) : UploadOutcome
+        data class AssignFailed(val error: Throwable) : UploadOutcome
+    }
+
+    /**
+     * The shared device leg of every kit/chop upload: put [pcm] as [name], then assign the returned
+     * node to [padIndex] of [group], driving row [i] to Done or Error. Serialized on [deviceMutex].
+     *
+     * This is the one copy of a sequence that was duplicated across [runChop], [onKitFilesPicked],
+     * [chopFromPcm] and [kitFromPcm]. It owns the item state transitions (which the tests assert);
+     * the caller owns control flow (loop vs per-file launch) and snackbar messaging (which differ per
+     * entry point), driving off the returned [UploadOutcome]. Rethrows CancellationException.
+     */
+    private suspend fun uploadAndAssign(
+        group: PadChannel,
+        i: Int,
+        padIndex: Int,
+        name: String,
+        pcm: ByteArray,
+        channels: Int,
+        sampleRate: Int,
+        frames: Int,
+        chokeOn: Boolean,
+        logLabel: String,
+    ): UploadOutcome {
+        val nodeId: Int? = try {
+            deviceMutex.withLock { midi.putSampleFile(name, pcm, channels, sampleRate) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "KitViewModel $logLabel: putSampleFile failed for $name", e)
+            updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
+            return UploadOutcome.UploadFailed(e)
+        }
+
+        if (nodeId == null) {
+            updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
+            return UploadOutcome.UploadRejected
+        }
+
+        val ok = try {
+            deviceMutex.withLock {
+                midi.assignSampleToPad(group, padIndex, nodeId, 0, frames, muteGroup = chokeOn)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "KitViewModel $logLabel: assignSampleToPad $i failed", e)
+            updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
+            return UploadOutcome.AssignFailed(e)
+        }
+
+        return if (ok) {
+            updateItem(group, i) { it.copy(state = KitItemState.Done) }
+            UploadOutcome.Done
+        } else {
+            updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+            UploadOutcome.AssignRejected
+        }
     }
 
     /**
@@ -360,49 +439,25 @@ class KitViewModel(
                 return@launch
             }
 
-            // Per-slice upload + assign — same path as kit mode.
+            // Per-slice upload + assign — same device path as kit mode (see uploadAndAssign).
             for (i in slices.indices) {
                 val slicePcm = slices[i]
                 val sliceFrames = slicePcm.size / bytesPerFrame
                 val sliceName = "${safeName.substringBeforeLast('.')}_${i + 1}.wav"
                 updateItem(group, i) { it.copy(state = KitItemState.Working) }
 
-                val sliceNodeId: Int? = try {
-                    deviceMutex.withLock {
-                        midi.putSampleFile(sliceName, slicePcm, chopChannels, converted.sampleRate)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel chop: putSampleFile failed for slice $i ($sliceName)", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
-                    _snackbarMessage.value = "Slice ${i + 1} upload failed: ${e.message ?: e}"
-                    continue
-                }
-
-                if (sliceNodeId == null) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
-                    _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
-                    continue
-                }
-
-                val ok = try {
-                    deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames, muteGroup = chokeOn)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel chop: assignSampleToPad slice $i failed", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
-                    _snackbarMessage.value = "Slice ${i + 1} assign failed: ${e.message ?: e}"
-                    continue
-                }
-
-                if (ok) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Done) }
-                } else {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+                when (val outcome = uploadAndAssign(
+                    group, i, PAD_FILL_ORDER.getOrElse(i) { i },
+                    sliceName, slicePcm, chopChannels, converted.sampleRate, sliceFrames, chokeOn, "chop",
+                )) {
+                    is UploadOutcome.UploadFailed ->
+                        _snackbarMessage.value = "Slice ${i + 1} upload failed: ${outcome.error.message ?: outcome.error}"
+                    UploadOutcome.UploadRejected ->
+                        _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
+                    is UploadOutcome.AssignFailed ->
+                        _snackbarMessage.value = "Slice ${i + 1} assign failed: ${outcome.error.message ?: outcome.error}"
+                    UploadOutcome.AssignRejected -> {}
+                    UploadOutcome.Done -> {}
                 }
             }
 
@@ -457,43 +512,19 @@ class KitViewModel(
                 }
                 val frames = converted.pcm.size / 2 / converted.channels
 
-                // Upload + assign serialized via deviceMutex.
-                val sampleNodeId: Int? = try {
-                    deviceMutex.withLock {
-                        midi.putSampleFile(safeName, converted.pcm, converted.channels, converted.sampleRate)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel kit: putSampleFile failed for $safeName", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
-                    _snackbarMessage.value = "Upload failed for $safeName: ${e.message ?: e}"
-                    return@launch
-                }
-
-                if (sampleNodeId == null) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
-                    _snackbarMessage.value = "Upload rejected for $safeName — reconnect and retry"
-                    return@launch
-                }
-
-                val ok = try {
-                    deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames, muteGroup = chokeOn)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel kit: assignSampleToPad $i failed", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
-                    _snackbarMessage.value = "Assign failed for $safeName: ${e.message ?: e}"
-                    return@launch
-                }
-
-                if (ok) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Done) }
-                } else {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+                // Upload + assign serialized via deviceMutex (see uploadAndAssign).
+                when (val outcome = uploadAndAssign(
+                    group, i, PAD_FILL_ORDER.getOrElse(i) { i },
+                    safeName, converted.pcm, converted.channels, converted.sampleRate, frames, chokeOn, "kit",
+                )) {
+                    is UploadOutcome.UploadFailed ->
+                        _snackbarMessage.value = "Upload failed for $safeName: ${outcome.error.message ?: outcome.error}"
+                    UploadOutcome.UploadRejected ->
+                        _snackbarMessage.value = "Upload rejected for $safeName — reconnect and retry"
+                    is UploadOutcome.AssignFailed ->
+                        _snackbarMessage.value = "Assign failed for $safeName: ${outcome.error.message ?: outcome.error}"
+                    UploadOutcome.AssignRejected -> {}
+                    UploadOutcome.Done -> {}
                 }
             }
         }
@@ -554,40 +585,18 @@ class KitViewModel(
                 val sliceName = "${safeName.substringBeforeLast('.')}_${i + 1}.wav"
                 updateItem(group, i) { it.copy(state = KitItemState.Working) }
 
-                val sliceNodeId: Int? = try {
-                    deviceMutex.withLock {
-                        midi.putSampleFile(sliceName, slicePcm, channels, sampleRate)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel chopFromPcm: putSampleFile failed for slice $i ($sliceName)", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
-                    _snackbarMessage.value = "Slice ${i + 1} upload failed: ${e.message ?: e}"
-                    continue
-                }
-
-                if (sliceNodeId == null) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
-                    _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
-                    continue
-                }
-
-                val ok = try {
-                    deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sliceNodeId, 0, sliceFrames, muteGroup = chokeOn)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel chopFromPcm: assignSampleToPad slice $i failed", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
-                    continue
-                }
-                if (ok) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Done) }
-                } else {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
+                when (val outcome = uploadAndAssign(
+                    group, i, PAD_FILL_ORDER.getOrElse(i) { i },
+                    sliceName, slicePcm, channels, sampleRate, sliceFrames, chokeOn, "chopFromPcm",
+                )) {
+                    is UploadOutcome.UploadFailed ->
+                        _snackbarMessage.value = "Slice ${i + 1} upload failed: ${outcome.error.message ?: outcome.error}"
+                    UploadOutcome.UploadRejected ->
+                        _snackbarMessage.value = "Slice ${i + 1} upload rejected — reconnect and retry"
+                    // chopFromPcm (test seam) emits no snackbar on the assign paths.
+                    is UploadOutcome.AssignFailed -> {}
+                    UploadOutcome.AssignRejected -> {}
+                    UploadOutcome.Done -> {}
                 }
             }
         }
@@ -619,50 +628,23 @@ class KitViewModel(
                 }
                 updateItem(group, i) { it.copy(state = KitItemState.Working) }
 
-                val sampleNodeId: Int? = try {
-                    deviceMutex.withLock {
-                        midi.putSampleFile(safeName, pcm, channels, sampleRate)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel kitFromPcm: putSampleFile failed for $safeName", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Upload failed") }
-                    return@launch
-                }
-
-                if (sampleNodeId == null) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Upload rejected by device") }
-                    return@launch
-                }
-
-                val ok = try {
-                    deviceMutex.withLock {
-                        midi.assignSampleToPad(group, PAD_FILL_ORDER.getOrElse(i) { i }, sampleNodeId, 0, frames, muteGroup = chokeOn)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "KitViewModel kitFromPcm: assignSampleToPad $i failed", e)
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = e.message ?: "Assign failed") }
-                    return@launch
-                }
-
-                if (ok) {
-                    updateItem(group, i) { it.copy(state = KitItemState.Done) }
-                } else {
-                    updateItem(group, i) { it.copy(state = KitItemState.Error, errorMessage = "Assign rejected by device") }
-                }
+                // Test seam: no snackbars; uploadAndAssign drives the row's Working→Done/Error state.
+                uploadAndAssign(
+                    group, i, PAD_FILL_ORDER.getOrElse(i) { i },
+                    safeName, pcm, channels, sampleRate, frames, chokeOn, "kitFromPcm",
+                )
             }
         }
     }
 
-    /** Slice count for [group], clamped to [1, MAX_SLICES]. MAX_SLICES on parse failure. */
-    private fun resolvedSliceCountFor(group: PadChannel): Int =
-        groupOf(group).sliceCountText.toIntOrNull()?.coerceIn(1, MAX_SLICES) ?: MAX_SLICES
+    /** The one slice-count formula: parse [GroupState.sliceCountText], clamp to [1, MAX_SLICES],
+     *  MAX_SLICES on parse failure. Both [resolvedSliceCountFor] and the [resolvedSliceCount] flow
+     *  route through this so they can't drift apart. */
+    private fun resolveSliceCount(state: GroupState): Int =
+        state.sliceCountText.toIntOrNull()?.coerceIn(1, MAX_SLICES) ?: MAX_SLICES
 
-    /** Slice count for the currently-selected group (used by the UI labels). */
-    fun resolvedSliceCount(): Int = resolvedSliceCountFor(session.selected.value)
+    /** Slice count for [group]. */
+    private fun resolvedSliceCountFor(group: PadChannel): Int = resolveSliceCount(groupOf(group))
 
     /** Replace [group]'s progress items. */
     private fun setItems(group: PadChannel, items: List<KitResultItem>) =
@@ -681,7 +663,6 @@ class KitViewModel(
 // Screen composable
 // ─────────────────────────────────────────────────────────────────────────────
 
-private val PanelRadius = RoundedCornerShape(3.dp)
 private val Mono = FontFamily.Monospace
 
 /** One pad in the slice selector: its printed label and its 1-based fill-order rank. */
@@ -699,11 +680,6 @@ private val SLICE_PAD_GRID = listOf(
     SlicePad("1", 4),  SlicePad("2", 5),  SlicePad("3", 6),
     SlicePad(".", 1),  SlicePad("0", 2),  SlicePad("ENT", 3),
 )
-
-// Ink on a filled (accent) pad — a warm near-black for contrast, regardless of app theme.
-private val PadFilledInk = Color(0xFF1A1206)
-// Label on an empty (dark) pad — a fixed light, since the pad face is always dark like the device.
-private val PadEmptyInk = Color(0xFFE2E3E4)
 
 /**
  * Visual slice-count selector (implements the "Slice Pad Selector" design). A big count readout
@@ -736,6 +712,7 @@ private fun SlicePadSelector(
                 count.toString().padStart(2, '0'),
                 fontFamily = Mono, fontSize = 54.sp, fontWeight = FontWeight.Bold,
                 letterSpacing = (-1).sp, color = t.accent,
+                modifier = Modifier.testTag(TestTags.KIT_SLICE_COUNT_READOUT),
             )
             Text(
                 "SLICES", fontFamily = Mono, fontSize = 11.sp, letterSpacing = 1.6.sp,
@@ -746,8 +723,16 @@ private fun SlicePadSelector(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            SliceStepperButton("−", enabled = count > 1) { onCountChange((count - 1).coerceAtLeast(1)) }
-            SliceStepperButton("+", enabled = count < MAX_SLICES) { onCountChange((count + 1).coerceAtMost(MAX_SLICES)) }
+            SliceStepperButton(
+                "−",
+                enabled = count > 1,
+                modifier = Modifier.testTag(TestTags.KIT_SLICE_COUNT_DEC),
+            ) { onCountChange((count - 1).coerceAtLeast(1)) }
+            SliceStepperButton(
+                "+",
+                enabled = count < MAX_SLICES,
+                modifier = Modifier.testTag(TestTags.KIT_SLICE_COUNT_INC),
+            ) { onCountChange((count + 1).coerceAtMost(MAX_SLICES)) }
             Text(
                 "TAP A PAD OR USE ±\nRANGE 1–$MAX_SLICES",
                 fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.sp, color = t.text3,
@@ -772,7 +757,7 @@ private fun SlicePadSelector(
                         SlicePadCell(
                             pad = pad,
                             count = count,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).testTag(TestTags.kitSlicePad(pad.order)),
                             onTap = { onCountChange(pad.order) },
                         )
                     }
@@ -821,11 +806,11 @@ private fun SlicePadCell(pad: SlicePad, count: Int, modifier: Modifier = Modifie
 }
 
 @Composable
-private fun SliceStepperButton(label: String, enabled: Boolean, onClick: () -> Unit) {
+private fun SliceStepperButton(label: String, enabled: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val t = LocalEP133Tokens.current
     val shape = RoundedCornerShape(8.dp)
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(width = 46.dp, height = 42.dp)
             .clip(shape)
             .background(t.padFace, shape)
@@ -881,15 +866,24 @@ private fun ChopProgress(items: List<KitResultItem>, modifier: Modifier = Modifi
     }
 
     // One infinite transition drives both the live-pad sweep and the status-dot blink.
-    val anim = rememberInfiniteTransition(label = "cp")
-    val sweepAngle by anim.animateFloat(
-        initialValue = 0f, targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing)), label = "sweep",
-    )
-    val dotAlpha by anim.animateFloat(
-        initialValue = 1f, targetValue = 0.35f,
-        animationSpec = infiniteRepeatable(tween(1000), repeatMode = RepeatMode.Reverse), label = "dot",
-    )
+    // Compose it ONLY while a batch is in flight — an unconditional infinite transition
+    // keeps the frame clock ticking (and recomposing this grid) forever after the run ends.
+    val sweepAngle: Float
+    val dotAlpha: Float
+    if (inFlight) {
+        val anim = rememberInfiniteTransition(label = "cp")
+        sweepAngle = anim.animateFloat(
+            initialValue = 0f, targetValue = 360f,
+            animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing)), label = "sweep",
+        ).value
+        dotAlpha = anim.animateFloat(
+            initialValue = 1f, targetValue = 0.35f,
+            animationSpec = infiniteRepeatable(tween(1000), repeatMode = RepeatMode.Reverse), label = "dot",
+        ).value
+    } else {
+        sweepAngle = 0f
+        dotAlpha = 1f
+    }
 
     Column(
         modifier = modifier
@@ -906,7 +900,8 @@ private fun ChopProgress(items: List<KitResultItem>, modifier: Modifier = Modifi
                 .clip(RoundedCornerShape(5.dp))
                 .background(t.inset, RoundedCornerShape(5.dp))
                 .border(1.dp, t.ruleSoft, RoundedCornerShape(5.dp))
-                .padding(horizontal = 11.dp, vertical = 9.dp),
+                .padding(horizontal = 11.dp, vertical = 9.dp)
+                .testTag(TestTags.KIT_PROGRESS_STATUS),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -943,7 +938,7 @@ private fun ChopProgress(items: List<KitResultItem>, modifier: Modifier = Modifi
                             else items[pad.order - 1].state.toProgress()
                         SliceProgressPadCell(
                             pad = pad, state = state, sweepAngle = sweepAngle,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).testTag(TestTags.kitProgressPad(pad.order)),
                         )
                     }
                 }
@@ -1042,7 +1037,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
     val t = LocalEP133Tokens.current
     val mode by viewModel.mode.collectAsState()
     val selectedGroup by viewModel.selectedGroup.collectAsState()
-    val sliceCountText by viewModel.sliceCountText.collectAsState()
+    val resolvedSliceCount by viewModel.resolvedSliceCount.collectAsState()
     val items by viewModel.items.collectAsState()
     val stagedLoop by viewModel.stagedLoop.collectAsState()
     val chokeGroup by viewModel.chokeGroup.collectAsState()
@@ -1120,7 +1115,8 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                             .background(if (selected) t.accent else t.inset, PanelRadius)
                             .border(1.dp, if (selected) t.accent else t.rule, PanelRadius)
                             .clickable { viewModel.onModeChange(m) }
-                            .padding(vertical = 9.dp),
+                            .padding(vertical = 9.dp)
+                            .testTag(if (m == KitMode.CHOP) TestTags.KIT_MODE_CHOP else TestTags.KIT_MODE_KIT),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
@@ -1143,6 +1139,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 chokeOn = chokeGroup,
                 onChokeChange = { viewModel.onChokeGroupChange(it) },
                 tagFor = { g -> designations[g]?.name },
+                testTagFor = { g -> TestTags.groupChip(g.name) },
             )
           }
 
@@ -1172,9 +1169,8 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                     ChopProgress(items = items, modifier = Modifier.fillMaxWidth())
                 }
                 mode == KitMode.CHOP -> {
-                    val count = sliceCountText.toIntOrNull()?.coerceIn(1, MAX_SLICES) ?: DEFAULT_SLICE_COUNT
                     SlicePadSelector(
-                        count = count,
+                        count = resolvedSliceCount,
                         onCountChange = { viewModel.onSliceCountChange(it.toString()) },
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -1182,6 +1178,9 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
             }
 
             // Drop / pick hint panel — tappable (it reads as a button), triggers the same pick.
+            // Capture the collected state into a local so the null-checks below smart-cast
+            // (a delegated `by collectAsState()` var can't, which is what forced the old `!!`).
+            val loop = stagedLoop
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1189,16 +1188,17 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                     .background(t.inset, PanelRadius)
                     .dashedBorder(t.rule)
                     .clickable { viewModel.triggerPick() }
-                    .padding(16.dp),
+                    .padding(16.dp)
+                    .testTag(TestTags.KIT_PICK_PANEL),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Text(
                     text = when {
-                        mode == KitMode.CHOP && stagedLoop != null ->
-                            "READY · CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → GROUP ${selectedGroup.name}"
+                        mode == KitMode.CHOP && loop != null ->
+                            "READY · CHOP INTO $resolvedSliceCount SLICES → GROUP ${selectedGroup.name}"
                         mode == KitMode.CHOP ->
-                            "PICK ONE LOOP · CHOP INTO ${viewModel.resolvedSliceCount()} SLICES → GROUP ${selectedGroup.name}"
+                            "PICK ONE LOOP · CHOP INTO $resolvedSliceCount SLICES → GROUP ${selectedGroup.name}"
                         else ->
                             "PICK UP TO $MAX_SLICES ONE-SHOTS → GROUP ${selectedGroup.name}"
                     },
@@ -1210,7 +1210,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 )
                 Text(
                     text = when {
-                        mode == KitMode.CHOP && stagedLoop != null -> stagedLoop!!.name
+                        mode == KitMode.CHOP && loop != null -> loop.name
                         mode == KitMode.CHOP -> "pick loop to chop"
                         else -> "pick one-shots to build kit"
                     },
@@ -1219,7 +1219,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
                 )
-                if (mode == KitMode.CHOP && stagedLoop != null) {
+                if (mode == KitMode.CHOP && loop != null) {
                     Text(
                         text = "TAP TO PICK A DIFFERENT LOOP",
                         color = t.text3, fontFamily = Mono, fontSize = 8.sp,
@@ -1235,7 +1235,7 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
             // then chops the staged loop; in a KIT group it picks a pack then loads the staged kit.
             val chopReady = stagedLoop != null
             val pushLabel = if (mode == KitMode.CHOP) {
-                if (chopReady) "PUSH TO DEVICE · ${viewModel.resolvedSliceCount()} SLICES → ${selectedGroup.name}"
+                if (chopReady) "PUSH TO DEVICE · $resolvedSliceCount SLICES → ${selectedGroup.name}"
                 else "PICK LOOP"
             } else {
                 when {
@@ -1251,7 +1251,8 @@ fun KitScreen(viewModel: KitViewModel, builderViewModel: KitBuilderViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp)
-                    .padding(top = 11.dp, bottom = 14.dp),
+                    .padding(top = 11.dp, bottom = 14.dp)
+                    .testTag(TestTags.KIT_PUSH_BUTTON),
                 onClick = {
                     if (mode == KitMode.CHOP) {
                         if (chopReady) viewModel.chopStagedLoop(context) else viewModel.triggerPick()

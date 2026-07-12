@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * - [queryDeviceStats] for firmware version, storage, and sample count (D-12)
  * - [selectedScale] and [selectedRootNote] as shared state flows (D-17)
  */
-open class MIDIRepository(private val midiManager: MIDIPort) {
+open class MIDIRepository(private var midiManager: MIDIPort) {
 
     /**
      * Serialises all device file operations so that only one file op can hold the shared mutable
@@ -141,12 +141,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     fun setScale(scale: Scale?) { _selectedScale.value = scale }
     fun setRootNote(note: String) { _selectedRootNote.value = note }
 
-    // ── SysEx accumulation buffer (D-09, D-10) ──
-    private val sysExBuffer = java.io.ByteArrayOutputStream(512)
-    private var inSysEx = false
-
-    // ── Channel message partial-byte buffer ──
-    private val channelBuffer = java.io.ByteArrayOutputStream(3)
+    // Frames raw incoming USB-MIDI bytes into complete SysEx / channel messages. Routing stays here:
+    // SysEx → dispatchSysEx (protected/open so tests can inject frames), channel notes → _incomingMidi.
+    private val streamParser = MidiByteStreamParser(
+        onSysEx = { dispatchSysEx(it) },
+        onChannelMessage = { _incomingMidi.tryEmit(it) },
+    )
 
     // ── SysEx response deferreds (D-12) ──
     // reqId→waiter correlation registry (backlog 999.4). Migrated file ops register a waiter
@@ -156,7 +156,6 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private val fileWaiters = FileWaiterRegistry()
 
     private var pendingGreetDeferred: CompletableDeferred<Map<String, String>>? = null
-    private var pendingMetadataDeferred: CompletableDeferred<Map<String, String>>? = null
     private var pendingFileListCountDeferred: CompletableDeferred<Int>? = null
     private var fileListEntryCount: Int = 0
     private var currentDeviceId: Int = 0
@@ -203,17 +202,23 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
     private val repositoryJob = SupervisorJob()
     private val repositoryScope = CoroutineScope(Dispatchers.Default + repositoryJob)
 
+    // @Volatile for cross-thread visibility, matching the other in-flight guards (statsQueryInFlight,
+    // activeGroupPollInFlight). Not a full lock — it only debounces re-entrant refreshDeviceState calls.
+    @Volatile
     private var isRefreshing = false
 
     init {
         midiManager.onDevicesChanged = { updateDeviceStateOnly() }
-        midiManager.onMidiReceived = { _, data -> parseMidiInput(data) }
+        midiManager.onMidiReceived = { _, data -> streamParser.parse(data) }
     }
 
-    /** Updates state and re-establishes listeners on new devices. */
-    private fun updateDeviceStateOnly() {
+    /**
+     * Recompute [_deviceState] from the current USB device list. Returns the enumerated devices so a
+     * caller that also needs to (re)establish listeners can reuse the same list. The single copy of
+     * the snapshot logic shared by [updateDeviceStateOnly] and [refreshDeviceState].
+     */
+    private fun applyDeviceSnapshot(): MIDIPort.Devices {
         val devices = midiManager.getUSBDevices()
-        val wasConnected = _deviceState.value.connected
         val connected = devices.inputs.isNotEmpty() || devices.outputs.isNotEmpty()
         val outputPort = devices.outputs.firstOrNull()
         val permState = (midiManager as? MIDIManager)?.currentPermissionState
@@ -226,87 +231,25 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             outputPorts = devices.outputs.map { MidiPort(it.id, it.name) },
             permissionState = permState,
         )
+        return devices
+    }
+
+    /** Updates state and re-establishes listeners on new devices. */
+    private fun updateDeviceStateOnly() {
+        val wasConnected = _deviceState.value.connected
+        val devices = applyDeviceSnapshot()
+        val connected = _deviceState.value.connected
         // Close stale listeners and re-establish on current ports
         midiManager.closeAllListeners()
         for (input in devices.inputs) {
             midiManager.startListening(input.id)
         }
         // Pre-warm send port so sequencer noteOn is immediate
-        outputPort?.id?.let { midiManager.prewarmSendPort(it) }
+        devices.outputs.firstOrNull()?.id?.let { midiManager.prewarmSendPort(it) }
 
         // Auto-trigger stats query on device connect (D-13)
         if (connected && !wasConnected) {
             repositoryScope.launch { queryDeviceStats() }
-        }
-    }
-
-    /**
-     * Byte-by-byte MIDI input processor with SysEx accumulation.
-     *
-     * - 0xF0 starts SysEx accumulation
-     * - 0xF7 ends SysEx and dispatches complete message
-     * - All other bytes during SysEx accumulation are buffered
-     * - Non-SysEx bytes are passed to the channel message parser
-     */
-    private fun parseMidiInput(data: ByteArray) {
-        for (b in data) {
-            val byte = b.toInt() and 0xFF
-            when {
-                byte == 0xF0 -> {
-                    sysExBuffer.reset()
-                    sysExBuffer.write(b.toInt())
-                    inSysEx = true
-                }
-                inSysEx && byte == 0xF7 -> {
-                    sysExBuffer.write(b.toInt())
-                    inSysEx = false
-                    val complete = sysExBuffer.toByteArray()
-                    sysExBuffer.reset()
-                    dispatchSysEx(complete)
-                }
-                inSysEx -> sysExBuffer.write(b.toInt())
-                else -> parseChannelMessageByte(b)
-            }
-        }
-    }
-
-    /**
-     * Accumulate channel message bytes (status + data bytes) and dispatch complete messages.
-     *
-     * Status bytes (high bit set) reset the buffer. Channel messages are typically 2-3 bytes.
-     */
-    private fun parseChannelMessageByte(b: Byte) {
-        val byte = b.toInt() and 0xFF
-        if (byte and 0x80 != 0) {
-            // New status byte — flush pending partial message and start fresh
-            channelBuffer.reset()
-            channelBuffer.write(b.toInt())
-        } else {
-            channelBuffer.write(b.toInt())
-        }
-
-        val bytes = channelBuffer.toByteArray()
-        if (bytes.isEmpty()) return
-        val status = bytes[0].toInt() and 0xFF
-        val type = status and 0xF0
-
-        // Dispatch complete 3-byte messages (Note On/Off, CC, Pitch Bend)
-        // Dispatch complete 2-byte messages (PC, Channel Pressure)
-        val expectedLen = when (type) {
-            0x80, 0x90, 0xA0, 0xB0, 0xE0 -> 3
-            0xC0, 0xD0 -> 2
-            else -> return
-        }
-
-        if (bytes.size >= expectedLen) {
-            val ch = status and 0x0F
-            val note = bytes.getOrNull(1)?.toInt()?.and(0x7F) ?: 0
-            val velocity = bytes.getOrNull(2)?.toInt()?.and(0x7F) ?: 0
-            Log.d("EP133APP", "MIDI IN: type=0x${type.toString(16)} ch=$ch note=$note vel=$velocity")
-            if (type == 0x90 || type == 0x80 || type == 0xC0) {
-                _incomingMidi.tryEmit(MidiEvent(type, note, velocity, ch))
-            }
-            channelBuffer.reset()
         }
     }
 
@@ -396,19 +339,37 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         } finally {
             isRefreshing = false
         }
-        val devices = midiManager.getUSBDevices()
-        val connected = devices.inputs.isNotEmpty() || devices.outputs.isNotEmpty()
-        val outputPort = devices.outputs.firstOrNull()
-        val permState = (midiManager as? MIDIManager)?.currentPermissionState
-            ?: PermissionState.UNKNOWN
-        _deviceState.value = _deviceState.value.copy(
-            connected = connected,
-            deviceName = outputPort?.name ?: "",
-            outputPortId = outputPort?.id,
-            inputPorts = devices.inputs.map { MidiPort(it.id, it.name) },
-            outputPorts = devices.outputs.map { MidiPort(it.id, it.name) },
-            permissionState = permState,
+        applyDeviceSnapshot()
+    }
+
+    /**
+     * Swap the underlying MIDI port at runtime (debug-only Simulated EP-133 toggle seam).
+     *
+     * Detaches the old port's callbacks, resets per-connection session state so the new
+     * port gets a fresh handshake, rewires callbacks, and re-enumerates the new port.
+     * Does NOT close either port — the caller (MainActivity) owns port lifecycles, so
+     * the real MIDIManager survives a round trip to the simulator and back.
+     */
+    fun swapPort(newPort: MIDIPort) {
+        Log.i(
+            "EP133APP",
+            "swapPort: ${midiManager.javaClass.simpleName} -> ${newPort.javaClass.simpleName}",
         )
+        // Detach the old port so stale callbacks can't mutate state after the swap.
+        midiManager.onMidiReceived = null
+        midiManager.onDevicesChanged = null
+        midiManager.closeAllListeners()
+        midiManager = newPort
+        // Reset per-connection session state: the new port needs a fresh FILE_INIT
+        // handshake, and stale firmware/stats/port ids must not leak across ports.
+        fileSessionInitialized = false
+        groupsNodeCache.clear()
+        groupNodeNameCache.clear()
+        _deviceState.value = DeviceState()
+        // Rewire exactly as the init block does, then enumerate the new port.
+        newPort.onDevicesChanged = { updateDeviceStateOnly() }
+        newPort.onMidiReceived = { _, data -> streamParser.parse(data) }
+        refreshDeviceState()
     }
 
     /**
@@ -419,7 +380,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *
      * Returns true if GREET succeeded; false on timeout or no output port.
      */
-    suspend fun queryDeviceStats(): Boolean {
+    open suspend fun queryDeviceStats(): Boolean {
         val portId = _deviceState.value.outputPortId ?: return false
         // Guard against overlapping queries (e.g. rapid disconnect/reconnect). Two concurrent
         // runs would race on the shared pending-deferred fields and could call complete() twice
@@ -763,8 +724,12 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             val frame = SysExProtocol.buildFilePutDataFrame(currentDeviceId, terminatorPage, ByteArray(0), requestId = reqId)
             Log.w("EP133MIDI", "MIDI META: force-closing incomplete transfer page=$terminatorPage reqId=$reqId")
             awaitFileOp(reqId, FileOpKind.PUT_DATA, portId, frame, FORCE_CLOSE_TIMEOUT_MS)
+        } catch (_: CancellationException) {
+            // Intentionally NOT rethrown (the one place in this file that doesn't): this is best-effort
+            // cleanup that itself runs during cancellation, so a fresh CancellationException from the
+            // suspending awaitFileOp is expected here and must not abort the cleanup.
         } catch (_: Exception) {
-            // Best-effort — ignore all errors.
+            // Best-effort — ignore all other errors.
         }
     }
 
@@ -906,8 +871,9 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
             ensureFileSessionInitNoLock()
             val projectsNode = resolveNodeIdInternal("/projects") ?: return@withLock emptyList()
 
-            // Active-slot pointer from /projects directory metadata (NoLock).
-            val activeNode = queryProjectsActiveNodeNoLock()
+            // Active-slot pointer from /projects directory metadata, via the reqId-routed
+            // nodeId-form GET (the same round-trip getActiveGroupIndex rides).
+            val activeNode = getMetadataJson(projectsNode).optInt("active", -1).takeIf { it > 0 }
 
             val body = listNodeBody(projectsNode, requestId = nextFileReqId()) ?: return@withLock emptyList()
 
@@ -950,26 +916,10 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
         null
     }
 
-    /**
-     * Read the /projects directory metadata "active" pointer (the currently-loaded slot).
-     *
-     * NoLock: must only be called from within a [fileOpMutex] locked context.
-     */
-    private suspend fun queryProjectsActiveNodeNoLock(): Int? {
-        val portId = _deviceState.value.outputPortId ?: return null
-        return try {
-            val deferred = CompletableDeferred<Map<String, String>>()
-            pendingMetadataDeferred = deferred
-            val frame = SysExProtocol.buildFileMetadataFrame(currentDeviceId, "/projects", requestId = nextFileReqId())
-            midiManager.sendMidi(portId, frame)
-            val meta = withTimeoutOrNull(FILE_LIST_TIMEOUT_MS) { deferred.await() }
-            meta?.get("active")?.toIntOrNull()
-        } catch (e: CancellationException) {
-            throw e
-        } finally {
-            pendingMetadataDeferred = null
-        }
-    }
+    // queryProjectsActiveNodeNoLock removed: it used the legacy path-string METADATA frame and
+    // a pendingMetadataDeferred that nothing completed after the reqId-first dispatcher refactor
+    // (backlog 999.4) — every listProjects() stalled its full 5 s timeout and the active pointer
+    // was always null. Caught by SimulatedDeviceTest against the wire-level device simulator.
 
     // ── Active-group sync: nodeId-form metadata round-trips (Step 1) ─────────────
     //
@@ -1104,7 +1054,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *
      * @return Group index 0–3, or null if the device is disconnected / no active project.
      */
-    suspend fun getActiveGroupIndex(): Int? {
+    open suspend fun getActiveGroupIndex(): Int? {
         Log.d("EP133APP", "MIDI META: getActiveGroupIndex() called, outputPort=${_deviceState.value.outputPortId}")
         if (_deviceState.value.outputPortId == null) return null
         // Poll guard: return immediately if a poll is already running. This prevents a
@@ -1201,7 +1151,7 @@ open class MIDIRepository(private val midiManager: MIDIPort) {
      *
      * @return true if the SET ack was received, false on error or timeout.
      */
-    suspend fun setActiveGroup(index: Int): Boolean {
+    open suspend fun setActiveGroup(index: Int): Boolean {
         val channel = PadChannel.entries.getOrNull(index) ?: return false
         if (_deviceState.value.outputPortId == null) return false
         return fileOpMutex.withLock {
