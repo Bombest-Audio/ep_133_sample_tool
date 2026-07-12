@@ -1,14 +1,17 @@
 # EP-133 Sample Tool — iOS
 
-Native Swift/SwiftUI app for managing the Teenage Engineering EP-133 K.O. II from iPhone/iPad. Connects via USB (Lightning-to-USB or USB-C).
+Native Swift/SwiftUI app for managing the Teenage Engineering EP-133 K.O. II from iPhone/iPad over USB-C. Feature parity with the Android app: native Pads, Samples (chop + kit builder), Projects, and Device screens on top of the same reverse-engineered SysEx protocol, with the compiled web tool available as a sheet for backup/restore/format.
 
 ## Requirements
 
 | Tool | Version |
 |------|---------|
-| Xcode | 15+ |
-| iOS Deployment Target | 16+ |
+| Xcode | 16+ |
+| iOS Deployment Target | 17+ |
+| Device | USB-C iPhone (15+) or USB-C iPad |
 | Apple Developer Account | Required for device builds (free tier works) |
+
+The iOS 17 floor is deliberate: the app targets USB-C devices only (every USB-C iPhone ships with iOS 17), and the codebase uses the Observation framework throughout.
 
 ## Build & Run
 
@@ -19,47 +22,62 @@ Native Swift/SwiftUI app for managing the Teenage Engineering EP-133 K.O. II fro
 
 No external package managers (CocoaPods, SPM, Carthage). Uses system frameworks only.
 
+## Tests
+
+```bash
+# Unit tests (~280, mirrors the Android unit suite)
+xcodebuild -project EP133SampleTool.xcodeproj -scheme EP133SampleTool \
+  -destination 'platform=iOS Simulator,name=iPhone 17' \
+  test -only-testing:EP133SampleToolTests
+
+# UI tests (robot pattern, mirrors the Android instrumented suite)
+xcodebuild -project EP133SampleTool.xcodeproj -scheme EP133SampleTool \
+  -destination 'platform=iOS Simulator,name=iPhone 17' \
+  test -only-testing:EP133SampleToolUITests
+```
+
+CI runs both plus an unsigned Release build: `.github/workflows/build-ios.yml`.
+
 ## Connecting to EP-133
 
-1. Connect EP-133 to your iPhone/iPad:
-   - **Lightning**: Lightning-to-USB Camera Adapter + USB-A cable
-   - **USB-C**: USB-C to USB-A adapter or direct USB-C cable
-2. Launch the app — CoreMIDI will detect the device automatically
-3. The web app UI loads and MIDI is available immediately
+1. Connect the EP-133 to your iPhone/iPad with a USB-C cable
+2. Launch the app — CoreMIDI detects the device automatically
+3. No hardware handy? Debug builds have a **SIMULATED EP-133** toggle on the Device screen that swaps in a wire-level protocol simulator
 
 ## Architecture
 
-The iOS app embeds the web app (`data/`) in a full-screen `WKWebView`:
+One shared domain core drives native SwiftUI screens; the legacy web tool rides along for backup/restore/format:
 
 ```
-EP133SampleToolApp
-  └── ContentView
-        └── EP133WebView (WKWebView)
-              ├── Loads data/index.html from app bundle
-              ├── Injects MIDIBridgePolyfill.js as WKUserScript
-              └── JS ↔ Swift bridge
-                    ├── JS → Swift: WKScriptMessageHandler (getMidiDevices, sendMidi)
-                    └── Swift → JS: evaluateJavaScript (onMidiReceived, onDevicesChanged)
+EP133SampleToolApp                  # creates MIDIManager → MIDIRepository once, injects via environment
+  └── AppShell                      # PADS / SAMPLES / PROJ / DEVICE tabs (screens stay mounted)
+        ├── PadsScreen              # multi-touch 4×3 grid, groups A–D, scale lock
+        ├── KitScreen               # chop flow + kit flow (+ KitBuilderScreen: pack browsing, auditions)
+        ├── ProjectsScreen          # slot browser, app-side names, backup library, share
+        └── DeviceScreen            # stats, firmware banner, sim toggle, web-tool sheet (EP133WebView)
 ```
 
-### Key Files
+### Key directories
 
 ```
 iOSApp/EP133SampleTool/
-├── App/
-│   ├── EP133SampleToolApp.swift   # App entry point
-│   └── ContentView.swift          # Root SwiftUI view
-├── WebView/
-│   └── EP133WebView.swift         # WKWebView setup, polyfill injection, asset loading
-├── MIDI/
-│   ├── MIDIBridge.swift           # WKScriptMessageHandler — getMidiDevices, sendMidi
-│   └── MIDIManager.swift          # CoreMIDI USB device discovery, send/receive
-└── Resources/
-    └── Info.plist                 # App configuration
+├── App/                    # entry point, environment wiring
+├── UI/                     # AppShell, screens (ViewModels co-located), Theme/ (TE design system), TestTags
+├── Domain/
+│   ├── MIDI/               # SysExProtocol, MIDIRepository, FileWaiterRegistry, backup + import managers
+│   ├── Audio/              # AudioDecoder, Resampler, WavEncoder, LoopSlicer
+│   ├── Model/              # EP133 pads/scales/factory sounds
+│   ├── Pack/               # sample-pack loader
+│   ├── Project/            # app-side project names
+│   └── Firmware/           # version parsing, TE release catalog
+├── MIDI/                   # CoreMIDI MIDIManager, MIDIPort seam, EP133DeviceSimulator (DEBUG only)
+└── WebView/                # WKWebView host for the compiled web tool + MIDI polyfill bridge
 ```
+
+Every domain type carries a doc comment naming its Kotlin counterpart in `AndroidApp/` — the two apps are ports of the same hardware-verified protocol implementation. Protocol reference: [`docs/ep133-sysex-protocol.md`](../docs/ep133-sysex-protocol.md).
 
 ## Notes
 
-- The web app bundle (`data/`) is included as a folder reference in the Xcode project
-- The MIDI polyfill is loaded from `shared/MIDIBridgePolyfill.js` (copied into the bundle)
-- All JS evaluation is dispatched to the main thread via `DispatchQueue.main.async`
+- The web app bundle (`data/`) is included as a folder reference; the MIDI polyfill comes from `shared/MIDIBridgePolyfill.js`
+- MIDI input uses the legacy CoreMIDI packet API on purpose — raw MIDI 1.0 bytes, no UMP SysEx7 re-framing
+- Release builds contain zero simulator code (`#if DEBUG` gate, verified against the binary's symbol table)

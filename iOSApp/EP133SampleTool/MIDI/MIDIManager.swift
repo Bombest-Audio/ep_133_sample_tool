@@ -28,25 +28,48 @@ final class MIDIManager: MIDIPort {
         }
 
         guard status == noErr else {
-            print("[EP133] Failed to create MIDI client: \(status)")
+            EP133Log.error(.midi, "Failed to create MIDI client: \(status)")
             return
         }
 
-        // Input port — receives MIDI from all connected sources
-        MIDIInputPortCreateWithProtocol(
+        // Input port — receives MIDI from all connected sources.
+        // Legacy MIDIPacketList API on purpose: packets carry raw MIDI 1.0 bytes, so
+        // SysEx arrives exactly as sent (matching the Android MIDIManager). The UMP
+        // event-list API wraps SysEx in SysEx7 packets with header nibbles, which the
+        // old naive word-unpacking corrupted.
+        let inStatus = MIDIInputPortCreateWithBlock(
             midiClient,
             "EP133Input" as CFString,
-            ._1_0,
             &inputPort
-        ) { [weak self] eventList, srcConnRefCon in
-            self?.handleMIDIInput(eventList: eventList, srcRefCon: srcConnRefCon)
+        ) { [weak self] packetList, srcConnRefCon in
+            self?.handleMIDIInput(packetList: packetList, srcRefCon: srcConnRefCon)
+        }
+        if inStatus != noErr {
+            EP133Log.error(.midi, "Failed to create MIDI input port: \(inStatus)")
+            return
         }
 
         // Output port — sends MIDI to destinations
-        MIDIOutputPortCreate(midiClient, "EP133Output" as CFString, &outputPort)
+        let outStatus = MIDIOutputPortCreate(midiClient, "EP133Output" as CFString, &outputPort)
+        if outStatus != noErr {
+            EP133Log.error(.midi, "Failed to create MIDI output port: \(outStatus)")
+            return
+        }
 
         // Connect to all existing sources
         connectAllSources()
+    }
+
+    // MARK: - Teardown
+
+    func close() {
+        for source in connectedSources {
+            MIDIPortDisconnectSource(inputPort, source)
+        }
+        connectedSources.removeAll()
+        if inputPort != 0 { MIDIPortDispose(inputPort); inputPort = 0 }
+        if outputPort != 0 { MIDIPortDispose(outputPort); outputPort = 0 }
+        if midiClient != 0 { MIDIClientDispose(midiClient); midiClient = 0 }
     }
 
     // MARK: - Device Enumeration
@@ -100,34 +123,21 @@ final class MIDIManager: MIDIPort {
         }
 
         guard destination != 0 else {
-            print("[EP133] MIDI destination not found: \(portId)")
+            EP133Log.warning(.midi, "MIDI destination not found: \(portId)")
             return
         }
 
-        // Build and send the MIDI event list
-        data.withUnsafeBufferPointer { buffer in
-            guard let baseAddress = buffer.baseAddress else { return }
-
-            let wordCount = (data.count + 3) / 4  // UInt32 words needed
-            var eventList = MIDIEventList()
-            var packet = MIDIEventListInit(&eventList, ._1_0)
-
-            // Convert bytes to UInt32 words (MIDI 1.0 UMP format)
-            // For sysex and multi-byte messages, we send raw bytes
-            if data.count > 3 || (data.first ?? 0) == 0xF0 {
-                // Sysex or large message — use MIDISend with packet list
-                sendRawBytes(to: destination, data: data)
-                return
-            }
-
-            // Regular short MIDI message — pack into a single UInt32
-            var word: UInt32 = 0
-            for (idx, byte) in data.enumerated() where idx < 4 {
-                word |= UInt32(byte) << (8 * (3 - idx))
-            }
-            packet = MIDIEventListAdd(&eventList, 1024, packet, 0, 1, &word)
-            MIDISendEventList(outputPort, destination, &eventList)
-        }
+        // Send every message as raw MIDI 1.0 bytes over the legacy MIDIPacketList API.
+        // The device speaks raw MIDI 1.0, and the input path uses the same legacy API on
+        // purpose (see setup()). The UMP MIDIEventList encoder is deliberately not used:
+        // packing a short message into a single UInt32 by left-aligning the bytes omits the
+        // message-type nibble the UMP _1_0 protocol requires in the top 4 bits, so the status
+        // byte lands in the MT slot and the word is an invalid/undefined UMP message. That
+        // silently broke every note, CC, Program Change, and system-real-time transport byte
+        // (0xF8/0xFA/0xFC) on real hardware. sendRawBytes carries sysex and short messages
+        // identically, with no encoding to get wrong.
+        guard !data.isEmpty else { return }
+        sendRawBytes(to: destination, data: data)
     }
 
     /// Sends raw bytes (including sysex) using the legacy MIDIPacketList API
@@ -154,44 +164,28 @@ final class MIDIManager: MIDIPort {
     // MARK: - MIDI Input Handling
 
     private func handleMIDIInput(
-        eventList: UnsafePointer<MIDIEventList>,
+        packetList: UnsafePointer<MIDIPacketList>,
         srcRefCon: UnsafeMutableRawPointer?
     ) {
-        let list = eventList.pointee
-        var packet = list.packet
+        let portId = srcRefCon.map { String(Int(bitPattern: $0)) } ?? "unknown"
 
-        for _ in 0..<list.numPackets {
-            let wordCount = Int(packet.wordCount)
-            guard wordCount > 0 else { continue }
+        // unsafeSequence() yields pointers into the original list — copying a
+        // MIDIPacket struct and calling MIDIPacketNext on the copy's address reads
+        // past the copy's 256-byte data tuple for any list with numPackets > 1 or
+        // packets longer than 256 bytes.
+        for packetPtr in packetList.unsafeSequence() {
+            let length = Int(packetPtr.pointee.length)
+            guard length > 0 else { continue }
 
-            // Extract bytes from UInt32 words
-            var bytes: [UInt8] = []
-            withUnsafePointer(to: &packet.words) { wordsPtr in
-                let wordBuffer = UnsafeBufferPointer(
-                    start: UnsafeRawPointer(wordsPtr)
-                        .assumingMemoryBound(to: UInt32.self),
-                    count: wordCount
-                )
-                for word in wordBuffer {
-                    bytes.append(UInt8((word >> 24) & 0xFF))
-                    bytes.append(UInt8((word >> 16) & 0xFF))
-                    bytes.append(UInt8((word >> 8) & 0xFF))
-                    bytes.append(UInt8(word & 0xFF))
-                }
-            }
+            // Read the data bytes through a raw pointer offset from the packet base,
+            // not via packetPtr.pointee.data — the tuple copy caps at 256 bytes while
+            // a packet's declared length can exceed it.
+            let dataOffset = MemoryLayout<MIDIPacket>.offset(of: \MIDIPacket.data)!
+            let dataPtr = UnsafeRawPointer(packetPtr) + dataOffset
+            let bytes = [UInt8](UnsafeRawBufferPointer(start: dataPtr, count: length))
 
-            // Determine the source port ID
-            let portId = srcRefCon.map { String(Int(bitPattern: $0)) } ?? "unknown"
-
-            let capturedPortId = portId
-            let capturedBytes = bytes
             DispatchQueue.main.async { [weak self] in
-                self?.onMIDIReceived?(capturedPortId, capturedBytes)
-            }
-
-            withUnsafePointer(to: &packet) { ptr in
-                let next = MIDIEventPacketNext(ptr)
-                packet = next.pointee
+                self?.onMIDIReceived?(portId, bytes)
             }
         }
     }
@@ -248,27 +242,5 @@ final class MIDIManager: MIDIPort {
         let displayName = (name?.takeRetainedValue() as String?) ?? "Unknown MIDI Device"
 
         return MIDIDevice(id: String(uniqueID), name: displayName)
-    }
-}
-
-// MARK: - MIDIManagerObservable
-
-/// ObservableObject wrapper around MIDIManager for SwiftUI environment injection.
-///
-/// Created once in EP133SampleToolApp as a @StateObject and injected via .environmentObject().
-/// iOS 16 target requires ObservableObject + @Published (not @Observable which requires iOS 17).
-final class MIDIManagerObservable: ObservableObject {
-
-    let midi = MIDIManager()
-
-    @Published var isConnected: Bool = false
-
-    init() {
-        midi.onDevicesChanged = { [weak self] in
-            guard let self else { return }
-            let devices = self.midi.getUSBDevices()
-            self.isConnected = !devices.inputs.isEmpty || !devices.outputs.isEmpty
-        }
-        midi.setup()
     }
 }

@@ -50,7 +50,7 @@ final class MIDIBridge: NSObject, WKScriptMessageHandler {
             )
 
         default:
-            print("[EP133] Unknown MIDI bridge action: \(action)")
+            EP133Log.warning(.midi, "Unknown MIDI bridge action: \(action)")
         }
     }
 
