@@ -109,7 +109,7 @@ cmake --build build --config Release
 
 ## Desktop App Features
 
-**100% fully offline.** No internet connection required. All WebAssembly modules are bundled and the original Factory Sound Pack is included.
+**Works fully offline.** No account or internet connection required - all WebAssembly modules are bundled and the original Factory Sound Pack is included. The desktop app makes no outbound network calls. (The native mobile apps add one optional check against Teenage Engineering's public firmware list to flag out-of-date firmware; it sends nothing about you and degrades gracefully offline.)
 
 **Backup projects only.** Standard backup saves all sounds and projects. This tool adds a "Projects Only" option — faster to backup and restore, preserves your base sounds.
 

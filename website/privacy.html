@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light" data-sku="ep133">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — EP-133 Sample Tool</title>
+<meta name="description" content="Privacy policy for the EP-133 Sample Tool. No accounts, no analytics, no data collection. The only network call is a firmware-version check against Teenage Engineering's public list.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ NAV ============ -->
+<nav class="nav">
+  <div class="nav-in">
+    <a class="brand" href="index.html">
+      <span class="badge">EP·133</span>
+      <span>Sample Tool <small>// by Bombest Audio</small></span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Overview</a>
+      <a href="protocol.html">SysEx Protocol</a>
+      <a href="app.html">App Concept</a>
+      <a href="privacy.html" aria-current="page">Privacy</a>
+      <a href="https://github.com/Bombest-Audio/ep_133_sample_tool" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <div class="toggles">
+      <button class="tog" data-toggle-sku><span class="sw"></span><span class="lab">EP-133</span></button>
+      <button class="tog" data-toggle-theme><span class="sw teal"></span><span class="lab">LIGHT</span></button>
+    </div>
+  </div>
+</nav>
+
+<!-- ============ CONTENT ============ -->
+<header class="hero wrap">
+  <span class="eyebrow">The fine print, in plain English</span>
+  <h1 style="margin-top:18px;max-width:18ch">Privacy Policy</h1>
+  <p class="lede" style="max-width:60ch">The short version: the app collects nothing about you. No account, no analytics, no crash reporting, no data leaves your device except one firmware-version check. Here are the details.</p>
+  <p class="muted" style="font-size:13px;margin-top:10px">Last updated: July 12, 2026</p>
+</header>
+
+<section class="section wrap" style="padding-top:0">
+  <div style="max-width:70ch;display:flex;flex-direction:column;gap:26px">
+
+    <div>
+      <h3>What I collect</h3>
+      <p>Nothing about you. The EP-133 Sample Tool has no accounts, no sign-in, no analytics, and no crash reporting. Your samples, kits, projects, and backups stay on your own device. I never see them, and there is no server for them to go to.</p>
+    </div>
+
+    <div>
+      <h3>The one network call</h3>
+      <p>The app makes a single outbound request: it fetches Teenage Engineering's public firmware list (<code>teenage.engineering/_software/releases.json</code>) so it can tell you whether your KO-II's firmware is out of date. That request sends nothing about you beyond what any web request sends (your device's IP address, visible to Teenage Engineering as the host, the same as visiting their website). It does not identify you, and if you are offline the app falls back to a bundled version and keeps working. Nothing else phones home.</p>
+    </div>
+
+    <div>
+      <h3>The embedded backup tool</h3>
+      <p>For backup, restore, sync, and format, the app can open Teenage Engineering's own compiled web tool inside a web view. That is TE's code, not mine. It shipped with error-reporting (Sentry) built in; I have disabled it, so it does not send crash or error data anywhere.</p>
+    </div>
+
+    <div>
+      <h3>Device access</h3>
+      <p>The app talks to your EP-133 / EP-1320 over a USB-MIDI connection to read and write samples and projects. That communication is entirely local, between your computer or phone and the hardware in front of you. It never touches the internet.</p>
+    </div>
+
+    <div>
+      <h3>Third parties</h3>
+      <p>The only third party involved is Teenage Engineering, and only for the firmware-version check described above. Their handling of that request is governed by their own privacy practices. I do not use any advertising, analytics, or tracking SDKs.</p>
+    </div>
+
+    <div>
+      <h3>Changes</h3>
+      <p>If this policy changes, I will update this page and the "last updated" date above. The source is open, so you can always read exactly what the app does for yourself.</p>
+    </div>
+
+    <div>
+      <h3>Contact</h3>
+      <p>Questions about privacy? Open an issue on <a href="https://github.com/Bombest-Audio/ep_133_sample_tool/issues" target="_blank" rel="noopener">the GitHub repo</a>.</p>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<footer class="footer wrap">
+  <div class="footer-grid">
+    <div>
+      <a class="brand" href="index.html" style="margin-bottom:14px">
+        <span class="badge">EP·133</span>
+        <span>Sample Tool</span>
+      </a>
+      <p>Built by makers who got tired of not being able to load their own samples. This one's for the community, from Bombest Audio. Use it, fork it, send us a beat.</p>
+    </div>
+    <div>
+      <h4>Project</h4>
+      <ul>
+        <li><a href="index.html">Overview</a></li>
+        <li><a href="protocol.html">SysEx Protocol</a></li>
+        <li><a href="app.html">App Concept</a></li>
+        <li><a href="privacy.html">Privacy</a></li>
+        <li><a href="https://github.com/Bombest-Audio/ep_133_sample_tool" target="_blank" rel="noopener">Source on GitHub</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>The fine print</h4>
+      <ul>
+        <li>Our code is <a href="https://opensource.org/license/mit" target="_blank" rel="noopener">MIT licensed</a>.</li>
+        <li>TE's bundled assets stay TE's.</li>
+        <li>Built on <a href="https://github.com/garrettjwilke/ep_133_sample_tool" target="_blank" rel="noopener">garrettjwilke's tool</a>.</li>
+        <li>Not affiliated with Teenage Engineering.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-base">
+    <span>© Bombest Audio · MIT · No telemetry</span>
+    <span>EP-133 K.O. II · EP-1320 K.O. II · made by hand</span>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

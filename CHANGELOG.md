@@ -6,6 +6,29 @@ All notable changes to this project are tracked here. Format follows
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-07-12
+
+A privacy fix and a big iOS addition since 2.0.0. The Android APK below is rebuilt from
+current `main`; the native iOS app ships separately (TestFlight or build from source).
+
+### Security / Privacy
+- **Disabled leftover telemetry.** The bundled Teenage Engineering web tool still had its
+  Sentry error-reporting live (a real DSN plus `enabled: true`). It's now fully disabled, so
+  the app sends no crash or analytics data anywhere. This makes the "no telemetry" promise
+  actually true, verified with the network inspector.
+- Added a [privacy policy](https://bombest-audio.github.io/ep_133_sample_tool/privacy.html),
+  an iOS privacy manifest, and the iOS export-compliance flag.
+
+### Added
+- **Native iOS app** rebuilt in Swift/SwiftUI, replacing the old WebView-only wrapper. Native
+  Pads, Device, Projects, Kit, and Sample Import screens talk straight to the MIDI layer, with
+  the web tool kept as a backup/restore sheet.
+
+### Changed
+- Large internal clean-up pass across the Android app (extracted file-transfer client and
+  pad-assignment service, typed port ids, decomposed screens) with no change to behavior. The
+  same hardening landed on iOS.
+
 ## [2.0.0] - 2026-06-26
 
 The big one: this release turns a desktop-only tool into a real cross-platform app
