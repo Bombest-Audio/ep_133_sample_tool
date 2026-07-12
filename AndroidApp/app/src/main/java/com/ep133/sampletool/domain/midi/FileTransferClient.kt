@@ -282,7 +282,7 @@ open class FileTransferClient(
         val portId = outputPortId() ?: throw IllegalStateException("no output port")
         return fileOpMutex.withLock {
             var nextReqId = PUT_INIT_REQUEST_ID
-            val initReqId = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK
+            val initReqId = nextReqId; nextReqId = nextTransferReqId(nextReqId)
             val initFrame = SysExProtocol.buildFilePutInitFrame(deviceId(), slotNodeId, tarBytes.size, requestId = initReqId)
             if (!putAckOk(awaitFileOp(initReqId, FileOpKind.PUT_INIT, portId, initFrame, PUT_ACK_TIMEOUT_MS))) {
                 return@withLock false
@@ -292,7 +292,7 @@ open class FileTransferClient(
             while (offset < tarBytes.size) {
                 val end = minOf(offset + SysExProtocol.MAX_PAGE_BYTES, tarBytes.size)
                 val chunk = tarBytes.copyOfRange(offset, end)
-                val dataReqId = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK
+                val dataReqId = nextReqId; nextReqId = nextTransferReqId(nextReqId)
                 val dataFrame = SysExProtocol.buildFilePutDataFrame(deviceId(), page, chunk, requestId = dataReqId)
                 if (!putAckOk(awaitFileOp(dataReqId, FileOpKind.PUT_DATA, portId, dataFrame, PUT_ACK_TIMEOUT_MS))) {
                     return@withLock false
@@ -367,7 +367,7 @@ open class FileTransferClient(
             // live at a time (await-then-remove), so a stale/duplicate ack can't mis-route. The
             // [next] closure advances it; the raw var stays readable for the cancellation cleanup.
             var nextReqId = PUT_INIT_REQUEST_ID  // 30
-            val next = { val v = nextReqId; nextReqId = (nextReqId + 1) and REQ_ID_MASK; v }
+            val next = { val v = nextReqId; nextReqId = nextTransferReqId(nextReqId); v }
             var initAcked = false
             try {
                 val initResp = sendSampleInit(portId, parent, name, pcmBytes, channels, sampleRate, next())
@@ -841,8 +841,9 @@ open class FileTransferClient(
         private const val METADATA_TIMEOUT_MS = 5_000L
         // FILE_INIT handshake (Task 3 — once per connection).
         private const val FILE_INIT_TIMEOUT_MS = 5_000L
-        // putSampleFile uses a transfer-local counter starting here; each frame increments it.
-        // This is the INIT reqId; DATA pages and terminator get 31, 32, ... (masked to 14-bit).
+        // putSampleFile uses a transfer-local counter starting here; each frame increments it
+        // via [nextTransferReqId]. This is the INIT reqId; DATA pages and terminator get 31,
+        // 32, ..., wrapping within the 11-bit wire space (never past FILE_REQ_ID_MAX).
         // The global nextFileReqId() counter skips the range 30..99 so it never aliases these.
         internal const val PUT_INIT_REQUEST_ID = 30
         // Short timeout for the best-effort force-close terminator.
@@ -857,8 +858,18 @@ open class FileTransferClient(
         internal const val FILE_REQ_ID_MAX = 2046
         internal const val FILE_REQ_ID_INITIAL = 100
 
-        // reqId is a 14-bit field; every increment wraps within it.
-        private const val REQ_ID_MASK = 0x3FFF
+        /**
+         * Advance a transfer-local reqId, wrapping within the 11-bit wire space
+         * [FILE_REQ_ID_MIN]..[FILE_REQ_ID_MAX]. [SysExProtocol.buildFrame] encodes reqId as a
+         * 4-bit flags nibble + 7-bit byte = 11 bits (max 2047), so the counter must never exceed
+         * FILE_REQ_ID_MAX or it wire-truncates and the device's echoed id decodes to a different
+         * value than the waiter was registered under — the ack matches nothing and the page times
+         * out mid-transfer (issue #24). A transfer only ever has one waiter live at a time
+         * (each page awaits its ack before the next, under fileOpMutex), so reusing an id across
+         * pages within a transfer is safe.
+         */
+        internal fun nextTransferReqId(current: Int): Int =
+            if (current >= FILE_REQ_ID_MAX) FILE_REQ_ID_MIN else current + 1
 
         // Sample-upload chunk sizing (see computeSampleChunkSize): fallback + clamp bounds.
         private const val DEFAULT_SAMPLE_CHUNK = 256

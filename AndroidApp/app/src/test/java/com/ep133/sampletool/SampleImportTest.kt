@@ -1,5 +1,6 @@
 package com.ep133.sampletool
 
+import com.ep133.sampletool.domain.midi.FileTransferClient
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SysExProtocol
 import com.ep133.sampletool.domain.model.DeviceState
@@ -826,7 +827,7 @@ private class UniqueReqIdFakeRepo(
         val metaJson = """{"channels":$channels,"samplerate":$sampleRate}"""
 
         // Mirror the real putSampleFile reqId scheme: start at PUT_INIT_REQUEST_ID,
-        // increment for each frame, mask to 14-bit.
+        // advance each frame through the 11-bit-safe wrap helper.
         var nextReqId = MIDIRepository.PUT_INIT_REQUEST_ID
 
         // INIT frame
@@ -838,7 +839,7 @@ private class UniqueReqIdFakeRepo(
             requestId = nextReqId,
             metadataJson = metaJson,
         ))
-        nextReqId = (nextReqId + 1) and 0x3FFF
+        nextReqId = FileTransferClient.nextTransferReqId(nextReqId)
 
         // DATA pages
         var page = 0
@@ -847,7 +848,7 @@ private class UniqueReqIdFakeRepo(
             val end = minOf(offset + rawChunk, pcmBytes.size)
             val chunk = pcmBytes.copyOfRange(offset, end)
             spy.sendMidi(portId, SysExProtocol.buildFilePutDataFrame(0, page, chunk, requestId = nextReqId))
-            nextReqId = (nextReqId + 1) and 0x3FFF
+            nextReqId = FileTransferClient.nextTransferReqId(nextReqId)
             offset = end
             page = (page + 1) and 0xFFFF
         }
@@ -913,6 +914,41 @@ class ReqIdUniquenessTest {
         assertEquals("INIT reqId", MIDIRepository.PUT_INIT_REQUEST_ID, reqIds[0])
         assertEquals("DATA reqId", MIDIRepository.PUT_INIT_REQUEST_ID + 1, reqIds[1])
         assertEquals("terminator reqId", MIDIRepository.PUT_INIT_REQUEST_ID + 2, reqIds[2])
+    }
+}
+
+/**
+ * Regression for issue #24: the transfer-local reqId counter used to step with a 14-bit mask
+ * (`and 0x3FFF`) while the wire only encodes 11 bits (a 4-bit flags nibble + a 7-bit byte, max
+ * 2047). A long transfer (~2017 pages, ~861 KB of PCM) pushed the counter past 2047, buildFrame
+ * truncated it, the device echoed the truncated id, and the ack matched no waiter — the page
+ * timed out and the upload force-closed mid-transfer. The fix bounds the counter to the 11-bit
+ * space and wraps at FILE_REQ_ID_MAX back to FILE_REQ_ID_MIN.
+ */
+class TransferReqIdWrapTest {
+
+    @Test
+    fun nextTransferReqId_wrapsAtMax_backToMin() {
+        assertEquals(
+            "must wrap FILE_REQ_ID_MAX to FILE_REQ_ID_MIN, not step into the untransmittable range",
+            FileTransferClient.FILE_REQ_ID_MIN,
+            FileTransferClient.nextTransferReqId(FileTransferClient.FILE_REQ_ID_MAX),
+        )
+        assertEquals(101, FileTransferClient.nextTransferReqId(100))
+    }
+
+    @Test
+    fun transferReqIds_neverExceedWireCapacity_andSurviveRoundTrip() {
+        // Step well past a full wrap and assert every id fits the 11-bit wire AND survives a
+        // buildFrame → decode round-trip. Under the old 14-bit mask, ids 2048..16383 fail both.
+        var id = MIDIRepository.PUT_INIT_REQUEST_ID
+        repeat(5000) {
+            assertTrue("reqId $id exceeds the 11-bit wire capacity (2047)", id <= 0x7FF)
+            assertTrue("reqId $id exceeds FILE_REQ_ID_MAX", id <= FileTransferClient.FILE_REQ_ID_MAX)
+            val frame = SysExProtocol.buildFilePutDataFrame(0, 0, ByteArray(0), requestId = id)
+            assertEquals("reqId $id must survive the 11-bit wire round-trip", id, decodeReqId(frame))
+            id = FileTransferClient.nextTransferReqId(id)
+        }
     }
 }
 
