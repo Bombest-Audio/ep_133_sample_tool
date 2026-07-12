@@ -191,6 +191,15 @@ final class KitViewModelTests: XCTestCase {
         }
     }
 
+    /// Pin PAD_FILL_ORDER to its hardware-derived literal. The chop tests assert
+    /// `PAD_FILL_ORDER[i] == gridIndex`, which proves the fill *iterates* in that order but not
+    /// that the order's *values* are the correct EP-133 pad mapping (. 0 ENT then 1-9). This
+    /// anchors the values themselves, so changing the constant is a deliberate two-place edit
+    /// that trips a test rather than silently re-mapping every chopped slice.
+    func test_padFillOrder_matchesHardwareNumericOrder() {
+        XCTAssertEqual([9, 10, 11, 6, 7, 8, 3, 4, 5, 0, 1, 2], PAD_FILL_ORDER)
+    }
+
     // ── Per-group state is independent and persists across group switches ──────
 
     func testPerGroup_stateIsIndependentAndPersists() async {

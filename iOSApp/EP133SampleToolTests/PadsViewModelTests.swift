@@ -90,9 +90,17 @@ final class PadsViewModelTests: XCTestCase {
     }
 
     func test_velocity_fromPressure_halfPressure_yields63or64() {
-        // Pure math test — mirrors the touch layer's pressure→velocity mapping
-        let pressure: Float = 0.5
-        let velocity = max(Int(min(max(pressure, 0), 1) * 127), 1)
+        // Calls the production mapping (PadVelocity.fromNormalizedForce), so a regression in the
+        // touch layer's pressure→velocity curve fails here. The old test re-implemented the
+        // formula inline and asserted on its own arithmetic, which passed regardless of the app.
+        let velocity = PadVelocity.fromNormalizedForce(0.5)
         XCTAssertTrue((63...64).contains(velocity), "Half pressure should yield 63 or 64")
+    }
+
+    func test_velocity_fromPressure_boundaries() {
+        XCTAssertEqual(1, PadVelocity.fromNormalizedForce(0), "Zero/started touch floors to 1")
+        XCTAssertEqual(1, PadVelocity.fromNormalizedForce(-0.5), "Negative clamps to the 1 floor")
+        XCTAssertEqual(127, PadVelocity.fromNormalizedForce(1), "Full force maps to max velocity")
+        XCTAssertEqual(127, PadVelocity.fromNormalizedForce(2), "Over-range clamps to 127")
     }
 }

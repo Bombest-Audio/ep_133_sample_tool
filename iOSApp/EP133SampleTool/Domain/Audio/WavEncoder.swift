@@ -3,7 +3,9 @@ import Foundation
 /// RIFF/PCM-16 WAV encoder hard-locked to the EP-133's native format.
 ///
 /// Swift port of AndroidApp/app/src/main/java/com/ep133/sampletool/domain/audio/WavEncoder.kt.
-/// Output is byte-exact with the Kotlin implementation.
+/// The 44-byte header is byte-identical to the Kotlin implementation. Sample bytes match too,
+/// save for the single-ULP rounding boundary noted on `Resampler` (Java `Math.round` vs
+/// `floor(x + 0.5)`), so the encoded PCM is not guaranteed bit-identical across platforms.
 ///
 /// The EP-133 K.O. II expects samples in /sounds at exactly:
 ///   - Sample rate: 46875 Hz

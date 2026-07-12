@@ -17,7 +17,10 @@ extension ResamplerError: LocalizedError {
 /// Per-channel linear interpolation resampler targeting the EP-133 K.O. II's 46875 Hz rate.
 ///
 /// Swift port of AndroidApp/app/src/main/java/com/ep133/sampletool/domain/audio/Resampler.kt.
-/// Pure math — output is sample-for-sample identical to the Kotlin implementation.
+/// Pure math — matches the Kotlin implementation sample-for-sample except at a single-ULP
+/// rounding boundary: Kotlin's `roundToInt()` is Java `Math.round` (corrected), while this uses
+/// `floor(x + 0.5)`, so a sample landing on the largest double below 0.5 rounds one LSB apart.
+/// Inaudible and practically unreachable, but the outputs are not guaranteed bit-identical.
 ///
 /// Cap rule: the device never upsamples beyond 46875 Hz, so the effective target is
 /// clamped to the device rate — passing a higher `dstRate` cannot drive upsampling past

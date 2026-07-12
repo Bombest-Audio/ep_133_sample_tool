@@ -318,6 +318,16 @@ private struct LegendItem: View {
 
 // ── Multi-touch layer — Android's grid-level pointerInteropFilter ─────────────
 
+/// Pure pressure→velocity mapping: normalized force (0..1) → MIDI velocity 1...127. Extracted
+/// from the touch layer so the curve is unit-testable without a live `UITouch`. Android maps
+/// `MotionEvent.pressure` through the same `max(Int(pressure * 127), 1)`.
+enum PadVelocity {
+    static func fromNormalizedForce(_ force: CGFloat) -> Int {
+        let normalized = min(max(force, 0), 1)
+        return max(Int(normalized * 127), 1)
+    }
+}
+
 /// Transparent UIKit layer over the pad grid handling true multi-touch: several simultaneous
 /// fingers each trigger their own noteOn/noteOff, exactly like Android's grid-level
 /// `pointerInteropFilter`. Same coordinate math (uniform column/row division of the grid
@@ -385,8 +395,7 @@ private final class MultiTouchGridView: UIView {
     /// Kotlin's `padDown` defaults to.
     private func velocity(for touch: UITouch) -> Int {
         guard touch.maximumPossibleForce > 0, touch.force > 0 else { return 100 }
-        let normalized = min(max(touch.force / touch.maximumPossibleForce, 0), 1)
-        return max(Int(normalized * 127), 1)
+        return PadVelocity.fromNormalizedForce(touch.force / touch.maximumPossibleForce)
     }
 
     // ACTION_DOWN / ACTION_POINTER_DOWN
