@@ -178,6 +178,36 @@ class MIDIRepository {
     @ObservationIgnored private var currentDeviceId: Int = 0
     @ObservationIgnored private var statsQueryInFlight = false
 
+    // ── GREET idempotency (issue #27) — DRAFT, hardware-gated ──
+    // The device double-sends responses, and the stats query self-issues a GREET. A second GREET
+    // copy processed after a stats query has advanced into file-session init/ops would fail the
+    // in-flight waiter and tear the session down. We swallow a greet whose signature matches the
+    // previous one within greetDedupWindowMs (an echo); a genuine reconnect greet arrives well
+    // after the window and still resets. This does NOT gate on solicited-vs-unsolicited, so an
+    // unsolicited reconnect greet is unaffected. Clock is injectable so the decision is testable.
+    @ObservationIgnored var greetClockMs: () -> Double = {
+        Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000.0
+    }
+    @ObservationIgnored private var lastGreetSignature: Int?
+    @ObservationIgnored private var lastGreetAtMs: Double = 0
+
+    nonisolated static let greetDedupWindowMs: Double = 500
+
+    /// Stable signature of a greet: adopted device id + its payload bytes (deterministic, unlike
+    /// Swift's per-run-seeded `hashValue`). Pure, so nonisolated (callable from tests).
+    nonisolated static func greetSignature(deviceId: Int, payload: [UInt8]) -> Int {
+        var h = deviceId &* 31
+        for b in payload { h = h &* 31 &+ Int(b) }
+        return h
+    }
+
+    /// True if this greet is a duplicate echo of the previous one: same signature and within
+    /// `greetDedupWindowMs`. False on the first greet (`lastSignature` nil) and for a
+    /// genuinely-later greet with the same signature (a reconnect), which must still reset.
+    nonisolated static func isDuplicateGreet(signature: Int, nowMs: Double, lastSignature: Int?, lastAtMs: Double) -> Bool {
+        signature == lastSignature && (nowMs - lastAtMs) < greetDedupWindowMs
+    }
+
     // ── FILE_INIT session state (hardware-required handshake, once per connection) ──
     @ObservationIgnored private var fileSessionInitialized = false
     @ObservationIgnored private var deviceChunkSize: Int = 512
@@ -386,11 +416,24 @@ class MIDIRepository {
                 currentDeviceId = reportedDeviceId
             }
             // Reset file session and structure caches on new greet (new connection), and fail
-            // any file ops still awaiting so they don't hang to timeout against a reset device.
-            fileSessionInitialized = false
-            groupsNodeCache.removeAll()
-            groupNodeNameCache.removeAll()
-            fileWaiters.failAll(MIDIRepositoryError.invalidState("device greet/reconnect"))
+            // any file ops still awaiting so they don't hang to timeout against a reset device —
+            // but skip a duplicate greet echo so it can't tear down an in-flight file session
+            // that started after the first copy (issue #27).
+            let signature = Self.greetSignature(deviceId: reportedDeviceId, payload: payload)
+            let now = greetClockMs()
+            let duplicate = Self.isDuplicateGreet(
+                signature: signature, nowMs: now,
+                lastSignature: lastGreetSignature, lastAtMs: lastGreetAtMs)
+            lastGreetSignature = signature
+            lastGreetAtMs = now
+            if duplicate {
+                EP133Log.debug(.app, "GREET: duplicate within \(Self.greetDedupWindowMs)ms - skipping session reset (issue #27)")
+            } else {
+                fileSessionInitialized = false
+                groupsNodeCache.removeAll()
+                groupNodeNameCache.removeAll()
+                fileWaiters.failAll(MIDIRepositoryError.invalidState("device greet/reconnect"))
+            }
 
             let parsed = SysExProtocol.parseGreetResponse(payload)
             pendingGreetDeferred?.complete(parsed)
