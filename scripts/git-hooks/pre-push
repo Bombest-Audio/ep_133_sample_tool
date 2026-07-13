@@ -8,6 +8,8 @@
 #   - full connected UI test suite
 # Else when EP133_GMD=1:
 #   - headless Gradle Managed Device UI test run
+# Opt-in (EP133_REVIEW=1):
+#   - local multi-subagent code review (advisory, never blocks)
 #
 # Escape hatches: SKIP_TESTS=1 git push   |   git push --no-verify
 set -euo pipefail
@@ -46,3 +48,10 @@ else
 fi
 
 echo "pre-push: gate passed"
+
+# Opt-in local review (advisory). Off by default so it never slows a normal push.
+# Enable with: EP133_REVIEW=1 git push
+if [[ "${EP133_REVIEW:-0}" == "1" ]]; then
+    echo "pre-push: EP133_REVIEW=1 - running local subagent review (advisory)…"
+    "$REPO_ROOT/scripts/local-review.sh" "${EP133_REVIEW_BASE:-origin/main}" || true
+fi
