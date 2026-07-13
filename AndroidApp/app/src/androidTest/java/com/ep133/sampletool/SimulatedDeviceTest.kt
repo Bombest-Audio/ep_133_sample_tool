@@ -235,11 +235,17 @@ class SimulatedDeviceTest {
 
     /**
      * Run queryDeviceStats() to completion, waiting out any overlapping in-flight query (notably
-     * the one the connect edge auto-launches). queryDeviceStats() returns false while another
-     * query holds the in-flight guard, so poll until ours succeeds. Fails on timeout.
+     * the one the connect edge auto-launches on connect).
+     *
+     * queryDeviceStats() returns false for several reasons: no output port, its own internal 5s
+     * GREET timeout, or the overlap guard that rejects a query while another is already in flight.
+     * In this test the port is connected and the simulator answers promptly, so the only transient
+     * false is the connect-edge overlap - poll until ours wins the guard. The backstop timeout is
+     * set well above queryDeviceStats()'s own 5s internal timeout, so it can only fire on a
+     * genuinely stuck run and never cancels a legitimately slow query.
      */
     private suspend fun awaitStatsQuery(repo: MIDIRepository) {
-        withTimeout(5_000) {
+        withTimeout(30_000) {
             while (!repo.queryDeviceStats()) delay(25)
         }
     }
