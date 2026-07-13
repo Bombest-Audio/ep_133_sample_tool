@@ -130,7 +130,7 @@ open class MIDIRepository internal constructor(
     // to track here. Node FILE_LIST, FILE_INFO, and metadata GET/SET all correlate by reqId via
     // those waiters (see getMetadataJson / setMetadata). Session state, fileWaiters, and the group
     // node caches live in FileTransferClient; the root reaches them via `ftc.*` (e.g. resetting on
-    // greet/port-swap through ftc.onDeviceGreet() / ftc.onPortSwapped()).
+    // the connect edge / port-swap through ftc.onDeviceConnected() / ftc.onPortSwapped()).
 
     // ── File protocol flows (for BackupManager) ──
     data class FileListEntry(val path: String, val nodeId: Int)
@@ -194,8 +194,12 @@ open class MIDIRepository internal constructor(
         // Pre-warm send port so sequencer noteOn is immediate
         devices.outputs.firstOrNull()?.id?.let { midiManager.prewarmSendPort(it) }
 
-        // Auto-trigger stats query on device connect
+        // Auto-trigger stats query on device connect. The connect edge — not a greet frame — is
+        // the (re)connection signal, so reset FTC's per-connection session/caches and fail any
+        // stale in-flight waiters here, before the fresh stats query re-establishes the session
+        // (issue #27).
         if (connected && !wasConnected) {
+            ftc.onDeviceConnected()
             repositoryScope.launch { queryDeviceStats() }
         }
     }
@@ -218,17 +222,16 @@ open class MIDIRepository internal constructor(
 
         when (command) {
             SysExProtocol.CMD_GREET -> {
-                // Task 2: adopt the device's real ID from the greet response (byte[4] of message).
-                // The device reports 0x33; use whatever it sends so we echo it back in requests.
+                // Adopt the device's real ID from the greet response (byte[4] of message). The
+                // device reports 0x33; use whatever it sends so we echo it back in requests.
                 val reportedDeviceId = message[4].toInt() and 0x7F
                 if (reportedDeviceId != 0) {
                     currentDeviceId = reportedDeviceId
                     Log.d("EP133MIDI", "GREET: adopted deviceId=0x${reportedDeviceId.toString(16)}")
                 }
-                // Reset file session, structure caches, and fail in-flight file waiters —
-                // all owned by FTC.
-                ftc.onDeviceGreet()
-
+                // A greet response is pure data — firmware/identity. The session reset lives on the
+                // port connect edge (see updateDeviceStateOnly / ftc.onDeviceConnected), NOT here,
+                // so a greet can never tear down a healthy in-flight file session (issue #27).
                 val parsed = SysExProtocol.parseGreetResponse(payload)
                 Log.d("EP133APP", "GREET response: $parsed")
                 pendingGreetDeferred?.complete(parsed)

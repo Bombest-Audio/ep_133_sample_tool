@@ -10,6 +10,7 @@ import com.ep133.sampletool.ui.theme.EP133Theme
 import com.ep133.sampletool.ui.`import`.SampleImportScreen
 import com.ep133.sampletool.ui.`import`.SampleImportViewModel
 import com.ep133.sampletool.support.sim.EP133DeviceSimulator
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -194,5 +195,35 @@ class SimulatedDeviceTest {
         // Assert: an actual 0x90 frame crossed the wire
         composeTestRule.waitUntil(5_000) { sim.sentNoteOns().isNotEmpty() }
         assertEquals(36, sim.sentNoteOns().first().first)
+    }
+
+    /**
+     * Full-stack proof of issue #27 / option 1: an unsolicited greet arriving mid-session does
+     * NOT tear down an established file session. The reset lives on the port connect edge, not on
+     * the greet response, so a greet is pure data. Under the old reset-on-greet path this cleared
+     * the session and forced a redundant FILE_INIT; here the session survives and is reused.
+     *
+     * FILE_INIT count is the observable: a live session is not re-initialized (stays 1), a torn-
+     * down one is (becomes 2). Runs the real MIDIRepository → SysEx → simulator stack end-to-end.
+     */
+    @Test
+    fun unsolicitedGreetMidSession_doesNotTearDownTheFileSession() = runBlocking {
+        // Arrange: connect and establish a file session via a stats query.
+        val sim = EP133DeviceSimulator()
+        val repo = connect(sim)
+        assertTrue("stats query establishes the session", repo.queryDeviceStats())
+        assertEquals("session initialized exactly once", 1, sim.fileInitCount)
+
+        // Act: the device pushes an unsolicited greet while the session is up.
+        sim.pushGreet()
+        sim.awaitDelivery()
+
+        // Assert: a second stats query reuses the live session — no second FILE_INIT handshake.
+        assertTrue(repo.queryDeviceStats())
+        assertEquals(
+            "an unsolicited greet must not tear down the file session (issue #27)",
+            1,
+            sim.fileInitCount,
+        )
     }
 }

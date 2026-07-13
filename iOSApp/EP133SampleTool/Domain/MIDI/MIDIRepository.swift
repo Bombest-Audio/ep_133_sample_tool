@@ -258,8 +258,12 @@ class MIDIRepository {
             port.startListening(portId: input.id)
         }
 
-        // Auto-trigger stats query on device connect (D-13).
+        // Auto-trigger stats query on device connect (D-13). The connect edge — not a greet
+        // frame — is the (re)connection signal, so reset the per-connection session/caches and
+        // fail any stale in-flight waiters here, before the fresh stats query re-establishes the
+        // session (issue #27).
         if connected && !wasConnected {
+            resetFileSessionForNewConnection()
             autoStatsTask = Task { [weak self] in
                 _ = try? await self?.queryDeviceStats()
             }
@@ -282,6 +286,25 @@ class MIDIRepository {
         s.inputPorts = devices.inputs
         s.outputPorts = devices.outputs
         deviceState = s
+    }
+
+    /// Reset per-connection session state on the device **connect edge** (issue #27): clear the
+    /// file-session flag and structure caches, and fail any file ops still awaiting so they don't
+    /// hang against a device whose session is gone. Called from [updateDeviceStateOnly] when the
+    /// USB connection transitions disconnected→connected — the port lifecycle, not a greet frame,
+    /// is the reconnection signal. (A greet response is now pure data: the device does not
+    /// double-send on the wire — the historical "double-send" was an already-fixed dual-receiver
+    /// artifact — so a greet must never tear down a healthy session.)
+    ///
+    /// Hardware-verified (fw 2.5.0): the EP-133 never emits an unsolicited greet — not on mode
+    /// changes, power cycle, or USB reconnect (only a standard MIDI Identity Request on reconnect,
+    /// which the app ignores). Every greet is solicited, and a real reconnect fires the OS
+    /// device-change that reaches this edge, so the connect-edge reset is sufficient.
+    private func resetFileSessionForNewConnection() {
+        fileSessionInitialized = false
+        groupsNodeCache.removeAll()
+        groupNodeNameCache.removeAll()
+        fileWaiters.failAll(MIDIRepositoryError.invalidState("device connect/reconnect"))
     }
 
     /// Swap the underlying MIDI port at runtime (debug-only Simulated EP-133 toggle seam).
@@ -385,13 +408,9 @@ class MIDIRepository {
             if reportedDeviceId != 0 {
                 currentDeviceId = reportedDeviceId
             }
-            // Reset file session and structure caches on new greet (new connection), and fail
-            // any file ops still awaiting so they don't hang to timeout against a reset device.
-            fileSessionInitialized = false
-            groupsNodeCache.removeAll()
-            groupNodeNameCache.removeAll()
-            fileWaiters.failAll(MIDIRepositoryError.invalidState("device greet/reconnect"))
-
+            // A greet response is pure data — firmware/identity. The session reset lives on the
+            // port connect edge (see updateDeviceStateOnly / resetFileSessionForNewConnection),
+            // NOT here, so a greet can never tear down a healthy in-flight file session (issue #27).
             let parsed = SysExProtocol.parseGreetResponse(payload)
             pendingGreetDeferred?.complete(parsed)
             pendingGreetDeferred = nil

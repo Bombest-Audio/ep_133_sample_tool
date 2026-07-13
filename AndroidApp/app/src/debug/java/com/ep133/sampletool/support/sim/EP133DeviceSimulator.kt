@@ -151,6 +151,31 @@ class EP133DeviceSimulator(
         activePut = null
     }
 
+    /**
+     * Count of FILE_INIT handshakes the host has performed. A fresh session re-inits; a session
+     * that survived does not. Lets a test assert an unsolicited greet did NOT reset the session
+     * (issue #27).
+     */
+    var fileInitCount = 0
+        private set
+
+    /**
+     * Deliver an UNSOLICITED greet to the host, out-of-band — models a device that re-greets with
+     * the USB link still up (no re-enumeration). Runs on the delivery thread so it is ordered
+     * against normal request/response traffic. Pair with [awaitDelivery] for a deterministic
+     * barrier before asserting.
+     */
+    fun pushGreet() {
+        deliveryExecutor.execute {
+            respond(reqId = 0, command = SysExProtocol.CMD_GREET, status = 0, body = greetBody())
+        }
+    }
+
+    /** Block until the single-threaded delivery queue has drained (all frames dispatched). */
+    fun awaitDelivery() {
+        deliveryExecutor.submit {}.get()
+    }
+
     // ── MIDIPort ────────────────────────────────────────────────────────────
 
     override var onMidiReceived: ((String, ByteArray) -> Unit)? = null
@@ -240,6 +265,7 @@ class EP133DeviceSimulator(
         when (sub) {
             SysExProtocol.TE_SYSEX_FILE_INIT -> {
                 sessionInitialized = true
+                fileInitCount++
                 // HW-capture-shaped body; parseFileInitResponse reads a u32 at [1..4].
                 respond(
                     reqId, SysExProtocol.TE_SYSEX_FILE, 0,
