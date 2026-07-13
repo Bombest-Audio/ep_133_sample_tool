@@ -781,6 +781,13 @@ open class FileTransferClient(
             withTimeoutOrNull(timeoutMs) { waiter.deferred.await() }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: Exception) {
+            // failAll() completes waiters exceptionally on a connect/reconnect edge (see
+            // onDeviceConnected). Treat that as a failed op (null) — the same signal every caller
+            // already handles as a timeout — rather than letting it escape into the repository's
+            // launch-without-handler scope and crash the app.
+            Log.d("EP133APP", "file op reqId=$reqId aborted: ${e.message}")
+            null
         } finally {
             fileWaiters.remove(reqId)
         }
