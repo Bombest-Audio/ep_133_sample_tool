@@ -8,6 +8,7 @@ import com.ep133.sampletool.domain.model.PermissionState
 import com.ep133.sampletool.domain.model.Scale
 import com.ep133.sampletool.midi.MIDIManager
 import com.ep133.sampletool.midi.MIDIPort
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -147,7 +148,14 @@ open class MIDIRepository internal constructor(
     // Use Dispatchers.Default (not Main) to avoid requiring Android Looper in unit tests.
     // queryDeviceStats() is a suspend function — callers control dispatch context.
     private val repositoryJob = SupervisorJob()
-    private val repositoryScope = CoroutineScope(Dispatchers.Default + repositoryJob)
+    // Belt-and-suspenders: background stats launches are best-effort, so a stray uncaught
+    // exception (e.g. a file op failed on a connect edge) must never crash the app. The primary
+    // guard is in FileTransferClient.awaitFileOp; this handler catches anything that slips past it.
+    private val repositoryExceptionHandler = CoroutineExceptionHandler { _, e ->
+        Log.w("EP133APP", "repositoryScope coroutine failed: $e", e)
+    }
+    private val repositoryScope =
+        CoroutineScope(Dispatchers.Default + repositoryJob + repositoryExceptionHandler)
 
     // @Volatile for cross-thread visibility, matching the other in-flight guards (statsQueryInFlight,
     // activeGroupPollInFlight). Not a full lock — it only debounces re-entrant refreshDeviceState calls.
