@@ -5,7 +5,7 @@
 // host platform's native MIDI APIs.
 //
 // Supported platforms:
-//   JUCE     – window.__JUCE__.invoke() / addEventListener('midiIn', ...)
+//   JUCE     – window.__JUCE__.backend emitEvent('__juce__invoke') / addEventListener('midiIn')
 //   Android  – window.EP133Bridge.getMidiDevices() / .sendMidi()
 //   iOS      – window.webkit.messageHandlers.midibridge.postMessage()
 //   Browser  – falls through to native Web MIDI API (Electron / Chrome)
@@ -35,13 +35,41 @@
     return null;
   }
 
+  // ---- JUCE 8 native interop ----
+  // JUCE 8 has NO window.__JUCE__.invoke(). A native function registered with
+  // WebBrowserComponent::Options::withNativeFunction is called by emitting the
+  // "__juce__invoke" event on window.__JUCE__.backend with {name, params, resultId}
+  // and awaiting a "__juce__complete" event carrying {promiseId=resultId, result}.
+  // (JUCE's frontend lib provides getNativeFunction() for this; we replicate the
+  // wire protocol here so the shared polyfill stays a dependency-free ES5 IIFE.)
+  var juceInvokeFn = null;
+  function juceInvoke(name, paramsArray) {
+    if (!juceInvokeFn) {
+      var backend = window.__JUCE__.backend;
+      var pending = {};
+      var nextId  = 0;
+      backend.addEventListener('__juce__complete', function (payload) {
+        var resolve = pending[payload.promiseId];
+        if (resolve) { delete pending[payload.promiseId]; resolve(payload.result); }
+      });
+      juceInvokeFn = function (n, p) {
+        return new Promise(function (resolve) {
+          var id = nextId++;
+          pending[id] = resolve;
+          backend.emitEvent('__juce__invoke', { name: n, params: p, resultId: id });
+        });
+      };
+    }
+    return juceInvokeFn(name, paramsArray);
+  }
+
   // ---- Native bridge abstraction ----
 
   function getNativeDevices() {
     var platform = detectPlatform();
 
     if (platform === 'juce') {
-      return window.__JUCE__.invoke('getMidiDevices');
+      return juceInvoke('getMidiDevices', []);
     }
 
     if (platform === 'android') {
@@ -67,7 +95,7 @@
     var platform = detectPlatform();
 
     if (platform === 'juce') {
-      window.__JUCE__.invoke('sendMidi', portId, Array.from(data));
+      juceInvoke('sendMidi', [portId, Array.from(data)]);
       return;
     }
 
@@ -111,21 +139,38 @@
 
   // ---- Install the polyfill ----
 
-  function installBridge() {
-    var platform = detectPlatform();
+  // Resolve once a native bridge is present. JUCE sets up window.__JUCE__
+  // asynchronously, so a call made at app startup may arrive before it exists;
+  // Android/iOS bridges are synchronous, so this resolves immediately for them.
+  function whenBridgeReady() {
+    return new Promise(function (resolve, reject) {
+      if (detectPlatform()) { resolve(); return; }
+      var attempts = 0;
+      var timer = setInterval(function () {
+        if (detectPlatform()) { clearInterval(timer); resolve(); }
+        else if (++attempts >= 100) { clearInterval(timer); reject(new Error('no MIDI bridge')); }
+      }, 100);
+    });
+  }
 
-    // JUCE pushes incoming MIDI via its own event system
-    if (platform === 'juce') {
-      window.__JUCE__.addEventListener('midiIn', function (event) {
+  // Wire INCOMING MIDI. JUCE pushes it via its own event system; Android/iOS
+  // deliver it through their own global callbacks (nothing to wire here).
+  function wireIncoming() {
+    if (detectPlatform() === 'juce') {
+      // Incoming MIDI arrives as a JUCE backend event (emitEventIfBrowserIsVisible
+      // "midiIn" on the C++ side) — listen on window.__JUCE__.backend, not __JUCE__.
+      window.__JUCE__.backend.addEventListener('midiIn', function (event) {
         window.__ep133_onMidiIn(event.portId, event.data);
       });
     }
+  }
 
-    console.log('[EP133] MIDI bridge installed (' + platform + ')');
-
-    // Override the Web MIDI API
+  function installOverride() {
+    // Override the Web MIDI API. Safe to call before the native bridge is ready:
+    // the query awaits whenBridgeReady() and detects the platform lazily, so the
+    // app sees navigator.requestMIDIAccess immediately even while __JUCE__ inits.
     navigator.requestMIDIAccess = function (options) {
-      return getNativeDevices().then(function (devices) {
+      return whenBridgeReady().then(getNativeDevices).then(function (devices) {
         var inputs  = new Map();
         var outputs = new Map();
 
@@ -226,26 +271,28 @@
     }
   };
 
-  // ---- Initialization with retry ----
+  // ---- Initialization ----
 
-  function tryInstall() {
-    var platform = detectPlatform();
-    if (platform) {
-      installBridge();
-      return true;
-    }
-    return false;
-  }
+  // In a native host, install the Web MIDI override NOW so the app detects support
+  // even before the bridge finishes initialising. window.__ep133_expectJuceBridge is
+  // set synchronously by the JUCE wrapper (whose __JUCE__ object arrives async); the
+  // Android/iOS bridges are already present so detectPlatform() covers them. In a real
+  // browser (no bridge, no marker) leave the native Web MIDI API untouched.
+  if (detectPlatform() || window.__ep133_expectJuceBridge) {
+    installOverride();
 
-  if (!tryInstall()) {
     var attempts = 0;
     var timer = setInterval(function () {
-      if (tryInstall() || ++attempts >= 50) {
+      if (detectPlatform()) {
         clearInterval(timer);
-        if (attempts >= 50) {
-          console.log('[EP133] No native bridge detected, using Web MIDI API');
-        }
+        wireIncoming();
+        console.log('[EP133] MIDI bridge ready (' + detectPlatform() + ')');
+      } else if (++attempts >= 100) {
+        clearInterval(timer);
+        console.warn('[EP133] MIDI bridge never appeared after 10s');
       }
     }, 100);
+  } else {
+    console.log('[EP133] No native bridge detected, using native Web MIDI API');
   }
 })();

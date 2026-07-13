@@ -9,9 +9,11 @@
 // via juce_add_binary_data). That polyfill auto-detects the host - it sees
 // window.__JUCE__ and routes MIDI through JUCE 8's native function bridge:
 //
-//  JS → JUCE  : window.__JUCE__.invoke('getMidiDevices')  → {inputs, outputs}
-//  JS → JUCE  : window.__JUCE__.invoke('sendMidi', portId, [bytes])
-//  JUCE → JS  : window.__JUCE__ emits event 'midiIn' {portId, data:[bytes]}
+//  JS → JUCE  : native fn 'getMidiDevices'  → {inputs, outputs}
+//  JS → JUCE  : native fn 'sendMidi'(portId, [bytes])
+//  JUCE → JS  : backend event 'midiIn' {portId, data:[bytes]}
+// (JUCE 8 wire protocol: emitEvent '__juce__invoke' + backend.addEventListener;
+//  the polyfill replicates it — there is no window.__JUCE__.invoke().)
 //
 // The native functions and 'midiIn' event this editor provides (below) are
 // exactly what that polyfill's JUCE branch expects, so no bespoke copy is kept.
@@ -94,9 +96,22 @@ void EP133AudioProcessorEditor::resized()
 std::optional<juce::WebBrowserComponent::Resource>
 EP133AudioProcessorEditor::getResource (const juce::String& url)
 {
-    // Extract the path portion from the full internal URL.
-    // e.g. "https://juce.resource.provider/index.js" → "index.js"
-    auto path = juce::URL (url).getSubPath().trimCharactersAtStart ("/");
+    // Extract the path portion. The resource provider hands us either a bare path
+    // ("/index.js") or a full provider URL ("juce://juce.backend/index.js") depending
+    // on the platform WebView backend (Logic's AU host uses the bare form). juce::URL
+    // getSubPath() returns EMPTY for the bare form (no scheme/host), which would route
+    // every request into the index.html branch and serve HTML in place of index.js/css
+    // — a blank WebView. Parse the path by hand so both forms resolve correctly.
+    juce::String path = url;
+    if (auto schemeIdx = path.indexOf ("://"); schemeIdx >= 0)
+    {
+        auto afterHost = path.substring (schemeIdx + 3);
+        auto slash = afterHost.indexOfChar ('/');
+        path = (slash >= 0) ? afterHost.substring (slash) : juce::String ("/");
+    }
+    path = path.upToFirstOccurrenceOf ("?", false, false)
+               .upToFirstOccurrenceOf ("#", false, false)
+               .trimCharactersAtStart ("/");
 
     if (path.isEmpty() || path == "index.html")
         return getIndexHtmlResource();
@@ -123,11 +138,15 @@ EP133AudioProcessorEditor::getIndexHtmlResource()
     if (!indexFile.existsAsFile())
         return std::nullopt;
 
-    // Inject the shared MIDI bridge polyfill into the page before any other scripts
+    // Inject the shared MIDI bridge polyfill into the page before any other scripts.
+    // A synchronous marker tells the polyfill a JUCE bridge is coming, so it installs
+    // the Web MIDI override immediately even though window.__JUCE__ initialises async.
     auto html = indexFile.loadFileAsString();
-    juce::String injection = juce::String ("\n<script>\n")
-                           + midiBridgeScript()
-                           + juce::String ("</script>\n");
+    juce::String injection =
+          juce::String ("\n<script>window.__ep133_expectJuceBridge = true;</script>\n")
+        + juce::String ("<script>\n")
+        + midiBridgeScript()
+        + juce::String ("</script>\n");
 
     // Insert right after <head> (case-insensitive search)
     html = html.replace ("<head>", "<head>" + injection, true);
