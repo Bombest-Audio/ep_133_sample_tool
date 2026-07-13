@@ -292,74 +292,59 @@ h1,h2,h3,h4 { font-weight: 700; line-height: 1.05; letter-spacing: -0.02em; }
   box-shadow: inset 0 1px 0 var(--inset);
   position: relative;
 }
-.device::after {
-  content: "EP·133"; position: absolute; top: 16px; right: 20px;
-  font-family: var(--font-mono); font-size: 10px; letter-spacing: .22em;
-  color: var(--text-3); font-weight: 600;
-}
-.device-top { display: grid; grid-template-columns: 1fr 52px auto; gap: 14px; align-items: stretch; margin-bottom: 14px; }
-.device-screen {
-  background: var(--pad-face); border-radius: var(--r); padding: 14px 16px;
-  border: var(--hair) solid var(--pad-edge); display: flex; flex-direction: column; justify-content: space-between;
-  min-height: 92px;
-}
-.device-screen .big { font-family: var(--font-mono); font-weight: 700; font-size: 30px; color: var(--accent); letter-spacing: .02em; line-height: 1; }
-.device-screen .row { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 10px; color: #9a9b9c; letter-spacing: .08em; }
-/* dot-matrix speaker grille */
+/* ---- faceplate head: K.O. II branding, speaker grille, MAIN dial ---- */
+.dv-head { display: grid; grid-template-columns: 1fr 46px 60px; gap: 12px; align-items: center; }
+.dv-brand { display: flex; flex-direction: column; gap: 3px; }
+.dv-brand b { font-family: var(--font-mono); font-weight: 700; font-size: 22px; letter-spacing: .03em; color: var(--text); line-height: 1; }
+.dv-brand i { font-style: normal; font-size: 11px; letter-spacing: .16em; color: var(--accent); }
 .grille {
-  border-radius: var(--r); border: var(--hair) solid var(--pad-edge);
-  background:
-    radial-gradient(circle, #575859 33%, transparent 36%) 0 0 / 8px 8px,
-    var(--pad-face);
-  background-position: center;
+  height: 56px; border-radius: var(--r); border: var(--hair) solid var(--pad-edge);
+  background: radial-gradient(circle, #575859 32%, transparent 35%) center / 7px 7px, var(--pad-face);
 }
-.encoder { width: 74px; align-self: end; }
 .encoder .knob {
-  width: 66px; height: 66px; border-radius: 50%;
+  width: 56px; height: 56px; border-radius: 50%; margin-inline: auto;
   background: var(--pad-face); border: 3px solid var(--pad-top);
   position: relative; box-shadow: inset 0 2px 4px rgba(0,0,0,.5);
 }
-.encoder .knob::after { content: ""; position: absolute; top: 7px; left: 50%; width: 3px; height: 15px; background: var(--accent); transform: translateX(-50%); border-radius: 2px; }
-.encoder .cap { font-family: var(--font-mono); font-size: 9px; text-align: center; color: var(--text-3); margin-top: 7px; letter-spacing: .1em; }
+.encoder .knob::after { content: ""; position: absolute; top: 6px; left: 50%; width: 3px; height: 13px; background: var(--accent); transform: translateX(-50%); border-radius: 2px; }
+.encoder .cap { font-family: var(--font-mono); font-size: 9px; text-align: center; color: var(--text-3); margin-top: 6px; letter-spacing: .1em; }
 
-/* body: level fader + the numeric keypad (A-D | 7-9 4-6 1-3 . 0 ENT | fn) */
-.device-body { display: grid; grid-template-columns: 34px 1fr; gap: 13px; align-items: stretch; }
-.fader { display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.fader-track {
-  flex: 1; width: 12px; border-radius: 8px; position: relative;
-  background: var(--pad-face); border: var(--hair) solid var(--pad-edge);
-  box-shadow: inset 0 2px 5px rgba(0,0,0,.5);
-}
-.fader-track i {
-  position: absolute; left: 50%; top: 40%; transform: translate(-50%,-50%);
-  width: 26px; height: 13px; border-radius: 3px;
-  background: linear-gradient(var(--pad-top), var(--pad-face)); border: var(--hair) solid var(--pad-edge);
-  box-shadow: 0 1px 3px rgba(0,0,0,.5);
-}
-.fader .cap { font-family: var(--font-mono); font-size: 9px; color: var(--text-3); letter-spacing: .08em; }
+/* blank display strip (no invented readout) */
+.dv-screen { height: 40px; border-radius: var(--r); background: #0c0d0c; border: var(--hair) solid var(--pad-edge); box-shadow: inset 0 2px 8px rgba(0,0,0,.6); position: relative; overflow: hidden; }
+.dv-screen span { position: absolute; left: 12px; right: 12px; top: 50%; height: 1px; background: repeating-linear-gradient(90deg, #2f6b3e 0 5px, transparent 5px 12px); opacity: .3; }
 
-.keypad { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+/* IN / OUT jacks */
+.dv-io { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.io-lab { font-family: var(--font-mono); font-size: 9px; font-weight: 700; letter-spacing: .1em; padding: 2px 6px; border-radius: var(--r); border: var(--hair) solid var(--pad-edge); background: var(--pad-face); color: var(--text-3); }
+.io-lab.on { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.knob.sm { width: 26px; height: 26px; border-radius: 50%; background: var(--pad-face); border: 2px solid var(--pad-top); box-shadow: inset 0 1px 3px rgba(0,0,0,.5); position: relative; }
+.knob.sm.on { border-color: var(--accent); }
+.knob.sm.on::after { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: var(--accent); }
+
+/* body: level fader + the 6-column keypad */
+.device-body { display: grid; grid-template-columns: 26px 1fr; gap: 12px; align-items: stretch; }
+.fader { display: flex; flex-direction: column; align-items: center; gap: 7px; }
+.fader-track { flex: 1; width: 10px; border-radius: 6px; position: relative; background: var(--pad-face); border: var(--hair) solid var(--pad-edge); box-shadow: inset 0 2px 5px rgba(0,0,0,.5); }
+.fader-track i { position: absolute; left: 50%; top: 42%; transform: translate(-50%,-50%); width: 22px; height: 11px; border-radius: 3px; background: linear-gradient(var(--pad-top), var(--pad-face)); border: var(--hair) solid var(--pad-edge); box-shadow: 0 1px 3px rgba(0,0,0,.5); }
+.fader .cap { font-family: var(--font-mono); font-size: 9px; color: var(--text-3); letter-spacing: .06em; }
+
+.keypad { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
 .pad {
   aspect-ratio: 1; border-radius: var(--r);
-  background: linear-gradient(var(--pad-top), var(--pad-face) 38%);
+  background: linear-gradient(var(--pad-top), var(--pad-face) 40%);
   border: var(--hair) solid var(--pad-edge);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.06), inset 0 -3px 6px rgba(0,0,0,.45);
-  position: relative; display: grid; place-items: start; padding: 7px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05), inset 0 -3px 6px rgba(0,0,0,.5);
+  position: relative; display: grid; place-items: start; padding: 6px;
 }
-.pad span { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); font-weight: 600; letter-spacing: .03em; }
-.pad.lit { box-shadow: inset 0 0 0 1.5px var(--accent), inset 0 -3px 6px rgba(0,0,0,.45); }
-.pad.lit span { color: var(--accent); }
-.pad.lit-teal { box-shadow: inset 0 0 0 1.5px var(--live), inset 0 -3px 6px rgba(0,0,0,.45); }
-.pad.lit-teal span { color: var(--live); }
-/* group letter pads A-D: lighter face, centered glyph */
-.pad.ltr { background: linear-gradient(#3b3c3c, #313232 42%); place-items: center; padding: 0; }
-.pad.ltr span { font-size: 13px; font-weight: 700; color: #c9cacc; }
-.pad.ltr.on { background: var(--accent); box-shadow: inset 0 -3px 6px rgba(0,0,0,.28); }
-.pad.ltr.on span { color: var(--on-accent); }
-/* function pads REC / PLAY / FX: small caption; the record pad glows orange */
-.pad.fn span { font-size: 8px; color: var(--text-3); letter-spacing: .05em; }
-.pad.fn.rec { place-items: center; padding: 0; }
-.pad.fn.rec span { color: var(--accent); font-size: 14px; }
+.pad span { font-family: var(--font-mono); font-size: 10px; color: var(--text-3); font-weight: 600; }
+/* A-D group pads: light face, centered dark glyph; A shows the active group */
+.pad.ltr { background: linear-gradient(#f1efeb, #dcdad3 60%); border-color: #bcbab3; box-shadow: inset 0 1px 0 #fff, inset 0 -3px 6px rgba(0,0,0,.14); place-items: center; padding: 0; }
+.pad.ltr span { font-size: 13px; font-weight: 700; color: #2a2a27; }
+.pad.ltr.act { box-shadow: inset 0 0 0 1.5px var(--accent), inset 0 -3px 6px rgba(0,0,0,.14); }
+/* function pads: mostly dark, some white, one grey, and the orange record pad */
+.pad.fn.wht { background: linear-gradient(#f1efeb, #dcdad3 60%); border-color: #bcbab3; box-shadow: inset 0 1px 0 #fff, inset 0 -3px 6px rgba(0,0,0,.14); }
+.pad.fn.gry { background: linear-gradient(#9a9b9c, #86878a 60%); border-color: #6f7073; }
+.pad.fn.rec { background: linear-gradient(#ff6a44, var(--accent) 55%); border-color: var(--accent-ink); box-shadow: inset 0 1px 0 rgba(255,255,255,.25), inset 0 -3px 6px rgba(0,0,0,.25); }
 
 /* platform cards ------------------------------------------- */
 .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--hair); background: var(--rule); border: var(--hair) solid var(--rule); border-radius: var(--r-lg); overflow: hidden; }
