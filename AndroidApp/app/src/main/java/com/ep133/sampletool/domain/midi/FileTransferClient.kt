@@ -134,9 +134,10 @@ open class FileTransferClient(
      * data: the device does not double-send on the wire — the historical "double-send" was an
      * Android dual-receiver bug, since fixed — so a greet must never tear down a healthy session.)
      *
-     * Residual assumption (hardware-gated): a genuine device reset that re-greets *without* a USB
-     * re-enumeration would not reach this edge. Confirm on hardware whether the EP-133 ever pushes
-     * an unsolicited greet with the USB link still up before dropping this branch's draft status.
+     * Hardware-verified (fw 2.5.0): the EP-133 never emits an unsolicited greet — not on mode
+     * changes, power cycle, or USB reconnect (it sends only a standard MIDI Identity Request on
+     * reconnect, which the app ignores). Every greet is a solicited response, and a real reconnect
+     * fires the OS device-change that reaches this edge, so the connect-edge reset is sufficient.
      */
     fun onDeviceConnected() {
         fileSessionInitialized = false

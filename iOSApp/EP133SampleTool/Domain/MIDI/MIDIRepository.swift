@@ -296,9 +296,10 @@ class MIDIRepository {
     /// double-send on the wire — the historical "double-send" was an already-fixed dual-receiver
     /// artifact — so a greet must never tear down a healthy session.)
     ///
-    /// Residual assumption (hardware-gated): a device that re-greets *without* a USB
-    /// re-enumeration would not reach this edge. Confirm on hardware whether the EP-133 ever pushes
-    /// an unsolicited greet with the link still up before dropping this branch's draft status.
+    /// Hardware-verified (fw 2.5.0): the EP-133 never emits an unsolicited greet — not on mode
+    /// changes, power cycle, or USB reconnect (only a standard MIDI Identity Request on reconnect,
+    /// which the app ignores). Every greet is solicited, and a real reconnect fires the OS
+    /// device-change that reaches this edge, so the connect-edge reset is sufficient.
     private func resetFileSessionForNewConnection() {
         fileSessionInitialized = false
         groupsNodeCache.removeAll()
