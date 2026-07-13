@@ -34,12 +34,18 @@ jobs:
             base="$PUSH_BEFORE"; head="$PUSH_AFTER"
           fi
           # If the base commit is unavailable (new branch / force push), build to be safe.
-          if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+          # Fail safe: if either commit is unavailable, run the full build.
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null || ! git cat-file -e "$head^{commit}" 2>/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "Base commit unavailable; running the full build."
+            echo "A base or head commit is unavailable; running the full build."
             exit 0
           fi
-          files=$(git diff --name-only "$base" "$head")
+          # Merge-base diff (base...head) matches the PR's own changes; any diff failure also runs.
+          if ! files=$(git diff --name-only "$base...$head" 2>/dev/null); then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "git diff failed; running the full build."
+            exit 0
+          fi
           printf 'changed files:\n%s\n' "$files"
           if printf '%s\n' "$files" | grep -qE '^(iOSApp/|data/|shared/|\.github/workflows/build-ios\.yml)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
