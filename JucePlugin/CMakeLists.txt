@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(EP133SampleTool VERSION 1.2.0)
+project(EP133SampleTool VERSION 2.0.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -30,7 +30,7 @@ juce_add_plugin(EP133SampleTool
     PRODUCT_NAME                "EP-133 Sample Tool"
     DESCRIPTION                 "EP-133 / EP-1320 sample management tool"
     IS_MIDI_EFFECT              FALSE
-    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+    EDITOR_WANTS_KEYBOARD_FOCUS TRUE
     COPY_PLUGIN_AFTER_BUILD     FALSE
 )
 
@@ -94,4 +94,15 @@ if(APPLE)
             VERBATIM
         )
     endforeach()
+elseif(WIN32 OR UNIX)
+    # On Windows and Linux, VST3 bundles are directories too; copy assets next
+    # to the plugin binary so findDataDirectory()'s walk-up fallback finds them.
+    add_custom_command(
+        TARGET EP133SampleTool_VST3 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${WEB_DATA_DIR}"
+            "$<TARGET_FILE_DIR:EP133SampleTool_VST3>/data"
+        COMMENT "Copying web assets to EP133SampleTool_VST3 binary dir"
+        VERBATIM
+    )
 endif()

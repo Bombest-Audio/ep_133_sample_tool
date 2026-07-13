@@ -59,7 +59,6 @@ private:
     // -----------------------------------------------------------------------
     static juce::File   findDataDirectory();
     static juce::String getMimeType (const juce::String& fileExtension);
-    static juce::String getMidiBridgeScript();
 
     // -----------------------------------------------------------------------
     // Members

@@ -272,9 +272,14 @@ void EP133AudioProcessorEditor::handleIncomingMidiMessage (
 
     juce::var eventVar (event.get());
 
-    // emitEventIfBrowserIsVisible must be called on the message thread
-    juce::MessageManager::callAsync ([this, eventVar] {
-        webBrowser.emitEventIfBrowserIsVisible ("midiIn", eventVar);
+    // emitEventIfBrowserIsVisible must be called on the message thread.
+    // Capture a SafePointer so the lambda is a no-op if the editor is
+    // destroyed before the async callback fires (e.g. host closes the UI
+    // while a MIDI message is already queued on the background thread).
+    juce::Component::SafePointer<EP133AudioProcessorEditor> safeThis (this);
+    juce::MessageManager::callAsync ([safeThis, eventVar] {
+        if (safeThis != nullptr)
+            safeThis->webBrowser.emitEventIfBrowserIsVisible ("midiIn", eventVar);
     });
 }
 
@@ -328,6 +333,7 @@ juce::String EP133AudioProcessorEditor::getMimeType (const juce::String& ext)
     if (ext == ".wasm")  return "application/wasm";
     if (ext == ".json")  return "application/json";
     if (ext == ".png")   return "image/png";
+    if (ext == ".svg")   return "image/svg+xml";
     if (ext == ".ico")   return "image/x-icon";
     if (ext == ".otf")   return "font/otf";
     if (ext == ".woff")  return "font/woff";
