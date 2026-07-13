@@ -604,6 +604,67 @@ table.tbl tr:hover td { background: color-mix(in srgb, var(--panel) 60%, transpa
 .upload .pages i.now { background: var(--accent); }
 .upload .umeta { font-family: var(--font-mono); font-size: 10px; color: var(--text-3); display: flex; justify-content: space-between; }
 
+/* pads legend */
+.padlegend { font-family: var(--font-mono); font-size: 9px; letter-spacing: .04em; color: var(--text-3); display: flex; gap: 14px; margin-top: 4px; }
+.padlegend .dot { width: 7px; height: 7px; }
+
+/* samples - chop / kit */
+.seg { display: flex; gap: 6px; }
+.seg .s { flex: 1; text-align: center; font-family: var(--font-mono); font-weight: 700; font-size: 12px; letter-spacing: .08em; padding: 11px 0; border-radius: var(--r); border: var(--hair) solid var(--rule); background: var(--panel-2); color: var(--text-2); }
+.seg .s.on { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.groupsel .g small { display: block; font-size: 8px; font-weight: 500; opacity: .7; margin-top: 2px; letter-spacing: .1em; }
+.chokerow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 13px; border: var(--hair) solid var(--rule); border-radius: var(--r); background: var(--panel-2); }
+.chokerow .cl b { font-size: 12px; letter-spacing: .04em; }
+.chokerow .cl span { display: block; font-family: var(--font-mono); font-size: 9.5px; color: var(--text-3); margin-top: 2px; }
+.slicebox { border: var(--hair) solid var(--rule); border-radius: var(--r); background: var(--panel-2); padding: 14px; }
+.slicebox .scl { font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-3); }
+.slicebox .scn { display: flex; align-items: baseline; gap: 10px; margin-top: 4px; }
+.slicebox .scn b { font-family: var(--font-mono); font-size: 42px; line-height: 1; color: var(--accent); font-weight: 700; }
+.slicebox .scn span { font-family: var(--font-mono); font-size: 13px; letter-spacing: .15em; color: var(--text-2); }
+.slicebox .scc { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.slicebox .scc button { width: 38px; height: 34px; border-radius: var(--r); border: var(--hair) solid var(--rule); background: var(--pad-face); color: #fff; font-size: 16px; }
+.slicebox .scc small { font-family: var(--font-mono); font-size: 9px; color: var(--text-3); letter-spacing: .06em; line-height: 1.4; }
+.app-pad.slice { justify-content: center; align-items: center; position: relative; }
+.app-pad.slice .n { font-family: var(--font-mono); font-size: 22px; font-weight: 700; color: var(--text-2); }
+.app-pad.slice.fill { background: var(--accent); border-color: transparent; box-shadow: none; }
+.app-pad.slice.fill .n { color: var(--on-accent); }
+.app-pad.slice.scale { box-shadow: inset 0 0 0 2px var(--live); }
+.app-pad.slice .sup { position: absolute; top: 6px; right: 8px; font-family: var(--font-mono); font-size: 9px; color: rgba(0,0,0,.55); }
+.wbtn { width: 100%; justify-content: center; }
+
+/* projects - list */
+.projects.list { grid-template-columns: 1fr; gap: 10px; }
+.proj.active { border-color: var(--live); }
+.proj .pn .dot { width: 7px; height: 7px; margin-right: 5px; }
+.proj .pno.live { color: var(--live); display: flex; align-items: center; gap: 7px; }
+.proj .pno .pencil { color: var(--text-3); }
+.prow { display: flex; gap: 8px; }
+.pbtn { flex: 1; text-align: center; font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; padding: 10px 0; border-radius: var(--r); border: var(--hair) solid var(--rule); background: var(--panel); color: var(--text-2); }
+.pbtn.hot { color: var(--accent); }
+.pbtn.solid { background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 700; }
+
+/* device */
+.devcard { background: var(--pad-face); border: var(--hair) solid var(--pad-edge); border-radius: var(--r); padding: 15px; }
+.devcard .top { display: flex; align-items: flex-start; justify-content: space-between; }
+.devcard .co { font-family: var(--font-mono); font-size: 9px; letter-spacing: .12em; color: #9a9b9c; }
+.devcard .nm { color: #fff; font-weight: 700; font-size: 22px; margin-top: 4px; }
+.devcard .meta { font-family: var(--font-mono); font-size: 10px; color: #76777a; margin-top: 7px; letter-spacing: .06em; display: flex; gap: 16px; }
+.devcard .meta b { color: #fff; }
+.devcard .meta b.fw { color: var(--live); }
+.storagebar { border: var(--hair) solid var(--rule); border-radius: var(--r); background: var(--panel-2); padding: 12px 13px; }
+.storagebar .sr { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em; }
+.storagebar .sr .l { color: var(--text-3); }
+.storagebar .bar { height: 5px; background: var(--rule); border-radius: 3px; margin-top: 9px; overflow: hidden; }
+.storagebar .bar i { display: block; height: 100%; width: 2%; background: var(--live); }
+.statgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.statcell { border: var(--hair) solid var(--rule); border-radius: var(--r); background: var(--panel-2); padding: 11px 12px; }
+.statcell span { font-family: var(--font-mono); font-size: 9px; letter-spacing: .1em; color: var(--text-3); }
+.statcell b { display: block; font-family: var(--font-mono); font-size: 18px; margin-top: 3px; }
+.fwbanner { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px; border-radius: var(--r); background: rgba(238,90,53,.1); border: var(--hair) solid rgba(238,90,53,.35); }
+.fwbanner span { font-size: 12.5px; }
+.fwbanner .hot { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: .04em; }
+.devlabel { font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-3); }
+
 /* component sheet ------------------------------------------ */
 .sheet { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px,1fr)); gap: var(--hair); background: var(--rule); border: var(--hair) solid var(--rule); border-radius: var(--r-lg); overflow: hidden; }
 .cell { background: var(--panel); padding: 22px; display: flex; flex-direction: column; gap: 14px; }
