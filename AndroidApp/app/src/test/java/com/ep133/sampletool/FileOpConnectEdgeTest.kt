@@ -56,6 +56,7 @@ class FileOpConnectEdgeTest {
         // exceptionally. Before the fix this IllegalStateException escaped awaitFileOp and crashed
         // the repository launch scope; op.await() below would rethrow it and fail the test.
         ftc.onDeviceConnected()
+        runCurrent() // let the resumed coroutine run deterministically on StandardTestDispatcher
 
         // Assert: the op completes as a failed op (null), not by throwing.
         assertNull("in-flight file op must return null on a connect-edge failAll, not throw", op.await())

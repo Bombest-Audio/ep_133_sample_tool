@@ -152,7 +152,7 @@ open class MIDIRepository internal constructor(
     // exception (e.g. a file op failed on a connect edge) must never crash the app. The primary
     // guard is in FileTransferClient.awaitFileOp; this handler catches anything that slips past it.
     private val repositoryExceptionHandler = CoroutineExceptionHandler { _, e ->
-        Log.w("EP133APP", "repositoryScope coroutine failed: ${e.message}", e)
+        Log.w("EP133APP", "repositoryScope coroutine failed: $e", e)
     }
     private val repositoryScope =
         CoroutineScope(Dispatchers.Default + repositoryJob + repositoryExceptionHandler)

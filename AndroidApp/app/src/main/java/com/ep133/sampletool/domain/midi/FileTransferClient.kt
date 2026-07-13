@@ -782,11 +782,12 @@ open class FileTransferClient(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // failAll() completes waiters exceptionally on a connect/reconnect edge (see
+            // failAll() completes the waiter exceptionally on a connect/reconnect edge (see
             // onDeviceConnected). Treat that as a failed op (null) — the same signal every caller
-            // already handles as a timeout — rather than letting it escape into the repository's
-            // launch-without-handler scope and crash the app.
-            Log.d("EP133APP", "file op reqId=$reqId aborted: ${e.message}")
+            // already handles as a timeout. (MIDIRepository's repositoryScope also carries a
+            // CoroutineExceptionHandler as a separate backstop, but the op still resolves cleanly
+            // here rather than unwinding through its caller.)
+            Log.d("EP133APP", "file op reqId=$reqId aborted: $e")
             null
         } finally {
             fileWaiters.remove(reqId)
