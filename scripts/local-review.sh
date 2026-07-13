@@ -32,7 +32,7 @@ echo "local-review: running local subagent review vs $BASE (advisory)…"
 # Whitelist only the tools the review needs so it runs headless without prompting, and
 # without a blanket permission bypass. The reviewer subagents are read-only by contract.
 claude -p "/local-review vs $BASE" \
-  --allowedTools "Task,Read,Grep,Glob,Bash" \
+  --allowedTools Task Read Grep Glob Bash \
   2>&1 || true
 
 exit 0
