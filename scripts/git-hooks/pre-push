@@ -53,5 +53,6 @@ echo "pre-push: gate passed"
 # Enable with: EP133_REVIEW=1 git push
 if [[ "${EP133_REVIEW:-0}" == "1" ]]; then
     echo "pre-push: EP133_REVIEW=1 - running local subagent review (advisory)…"
-    "$REPO_ROOT/scripts/local-review.sh" "${EP133_REVIEW_BASE:-origin/main}" || true
+    # Invoke via bash so it runs regardless of the script's executable bit.
+    bash "$REPO_ROOT/scripts/local-review.sh" "${EP133_REVIEW_BASE:-origin/main}" || true
 fi

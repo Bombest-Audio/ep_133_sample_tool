@@ -1,4 +1,4 @@
-# Copilot code review instructions — EP-133 Sample Tool
+# Copilot code review instructions - EP-133 Sample Tool
 
 Review effort is set to **Low**, so spend the budget where it catches real bugs. Prefer a few
 high-confidence findings over broad coverage. If nothing here is wrong, say so instead of

@@ -17,7 +17,7 @@ Pick the review target, in this order:
 
 Get the changed file list and the actual diff. If there are no changes, say so and stop.
 
-**Never review `data/index.js` or `data/*.wasm`** — compiled third-party bundle. `data/custom.js` is fair game.
+**Never review `data/index.js` or `data/*.wasm`** - compiled third-party bundle. `data/custom.js` is fair game.
 
 ## 2. Route files to reviewers
 
@@ -32,7 +32,7 @@ Group changed files by type and dispatch one subagent per group, **all in parall
 | any of the above (cross-cutting) | `everything-claude-code:silent-failure-hunter` |
 | any of the above (cross-cutting) | `everything-claude-code:comment-analyzer` |
 
-Always run the two cross-cutting passes when any code changed — comment/code drift and silent
+Always run the two cross-cutting passes when any code changed - comment/code drift and silent
 failures are this repo's two most common defects.
 
 In each subagent prompt, include the repo-specific rules from `.github/copilot-instructions.md`
@@ -44,13 +44,13 @@ StateFlow rules, cross-platform parity. Tell each subagent to return findings as
 
 Collect all subagent findings. Dedup by file+line. Rank by severity, and within severity tag each
 finding by category: **correctness / performance / style / nit** (this is the review format Thomas
-expects — top issues first, don't bury the lede). Present as:
+expects - top issues first, don't bury the lede). Present as:
 
 ```
-## Local review — <N> findings
+## Local review - <N> findings
 
 ### Correctness
-- `file:line` — <problem>. Fix: <fix>.
+- `file:line` - <problem>. Fix: <fix>.
 
 ### Performance / Style / Nit
 ...
@@ -61,5 +61,5 @@ If clean, say "Local review: no findings" and stop.
 ## 4. Optional: post to the PR
 
 If the user asked to post (or this is running against an open PR), offer to post the confirmed
-findings as PR review comments. Do not post automatically — confirm first (per Thomas's git
+findings as PR review comments. Do not post automatically - confirm first (per Thomas's git
 workflow rules). Apply fixes only when asked; commit atomically, one logical fix per commit.

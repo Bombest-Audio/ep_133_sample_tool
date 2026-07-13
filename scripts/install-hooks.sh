@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # One-time setup: point git at the repo's committed hooks.
 # The relative hooksPath resolves per working tree, so a single install covers
-# the main checkout and every worktree sharing this repo.
+# the main checkout and every standard git worktree sharing this repo. Exception:
+# Claude Code worktrees set their own core.hooksPath, so these hooks do NOT fire
+# there - run the checks manually inside such a worktree (see the notes below).
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"

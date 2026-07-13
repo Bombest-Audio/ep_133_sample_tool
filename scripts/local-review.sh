@@ -15,10 +15,22 @@
 set -uo pipefail
 
 BASE="${1:-origin/main}"
-cd "$(git rev-parse --show-toplevel)"
+
+# Must be inside a git repo.
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "local-review: not inside a git repo - skipping."
+  exit 0
+}
+cd "$REPO_ROOT"
 
 if ! command -v claude >/dev/null 2>&1; then
   echo "local-review: claude CLI not found - skipping. Run /local-review in a Claude session instead."
+  exit 0
+fi
+
+# The base ref must exist, or every git diff below is meaningless.
+if ! git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null 2>&1; then
+  echo "local-review: base ref '$BASE' not found - skipping (pass a valid base, e.g. origin/main)."
   exit 0
 fi
 
