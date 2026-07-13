@@ -264,33 +264,41 @@ void EP133AudioProcessorEditor::handleIncomingMidiMessage (
 // =============================================================================
 juce::File EP133AudioProcessorEditor::findDataDirectory()
 {
-    // When installed as a plugin bundle on macOS the layout is:
-    //   EP-133 Sample Tool.component/Contents/Resources/data/
-    auto pluginBundle = juce::File::getSpecialLocation (
-        juce::File::currentApplicationFile);
-    auto bundleData = pluginBundle.getChildFile ("Contents/Resources/data");
+    // Base every lookup on currentExecutableFile, NOT currentApplicationFile: when the
+    // plugin is loaded by a host, JUCE resolves currentApplicationFile to the HOST app
+    // (e.g. Logic.app), so "Contents/Resources/data" would resolve against Logic and the
+    // WebView loads blank. currentExecutableFile is the plugin binary itself.
+    auto exeFile = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
 
+    // Installed/built bundle layout on macOS:
+    //   EP-133 Sample Tool.component/Contents/MacOS/EP-133 Sample Tool  (exeFile)
+    //   EP-133 Sample Tool.component/Contents/Resources/data/           (assets)
+    auto bundleData = exeFile.getParentDirectory()       // Contents/MacOS
+                             .getParentDirectory()       // Contents
+                             .getChildFile ("Resources/data");
     if (bundleData.isDirectory())
         return bundleData;
 
-    // Fallback: walk up from the executable to find the data/ directory
-    // (useful during development / running from the build tree)
-    auto dir = juce::File::getSpecialLocation (
-        juce::File::currentExecutableFile).getParentDirectory();
+    // Fallback: walk up from the executable to find the data/ directory, checking both a
+    // bare data/ (repo/build tree) and Contents/Resources/data (nested bundle layouts)
+    // (useful during development / running from the build tree).
+    auto dir = exeFile.getParentDirectory();
 
     for (int i = 0; i < 6; ++i)
     {
-        auto candidate = dir.getChildFile ("data");
-        if (candidate.isDirectory())
-            return candidate;
+        auto bare = dir.getChildFile ("data");
+        if (bare.isDirectory())
+            return bare;
+
+        auto nested = dir.getChildFile ("Resources/data");
+        if (nested.isDirectory())
+            return nested;
+
         dir = dir.getParentDirectory();
     }
 
     // Last resort: look next to the repository root
-    return juce::File::getSpecialLocation (
-        juce::File::currentExecutableFile)
-           .getParentDirectory()
-           .getSiblingFile ("data");
+    return exeFile.getParentDirectory().getSiblingFile ("data");
 }
 
 juce::String EP133AudioProcessorEditor::getMimeType (const juce::String& ext)
