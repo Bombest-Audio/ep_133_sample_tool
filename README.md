@@ -43,6 +43,26 @@ wrote it all down: the [**SysEx protocol reference**](docs/ep133-sysex-protocol.
 
 ---
 
+## Screenshots
+
+One tool, every machine you own - same project format everywhere.
+
+**Desktop (Electron)** - the full editor. Drag, drop, sync.
+
+<img src="docs/assets/platform-desktop.png" width="720" alt="Desktop app running in Electron">
+
+**Android & iOS** - native apps with the same pad grid, sample browser, and USB sample import. Shown here in the "no device connected" state.
+
+<img src="docs/assets/platform-android.png" width="260" alt="Android app - Pads screen"> <img src="docs/assets/platform-ios.png" width="260" alt="iOS app - Pads screen">
+
+**AU/VST3 plugin** - manage samples without leaving your DAW (the same UI, hosted in a JUCE WebView).
+
+<img src="docs/assets/platform-plugin.png" width="720" alt="AU/VST3 plugin">
+
+> More Android screens - every tab, light/dark, both device themes - are in the **[user manual](docs/manual/README.md)**.
+
+---
+
 ## Repository Structure
 
 ```
