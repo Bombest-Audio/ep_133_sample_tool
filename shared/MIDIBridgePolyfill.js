@@ -5,7 +5,7 @@
 // host platform's native MIDI APIs.
 //
 // Supported platforms:
-//   JUCE     – window.__JUCE__.backend emitEvent('__juce__invoke') / addEventListener('midiIn')
+//   JUCE     – window.__JUCE__.backend.emitEvent('__juce__invoke') / backend.addEventListener('midiIn')
 //   Android  – window.EP133Bridge.getMidiDevices() / .sendMidi()
 //   iOS      – window.webkit.messageHandlers.midibridge.postMessage()
 //   Browser  – falls through to native Web MIDI API (Electron / Chrome)

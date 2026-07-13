@@ -41,8 +41,10 @@ EP133AudioProcessorEditor::EP133AudioProcessorEditor (EP133AudioProcessor& p)
               })
           // Enable window.__JUCE__ in JavaScript
           .withNativeIntegrationEnabled()
-          // JS: await window.__JUCE__.invoke('getMidiDevices')
-          //     → { inputs:[{id,name},...], outputs:[{id,name},...] }
+          // Invoked from JS via the JUCE 8 backend protocol (there is no
+          // window.__JUCE__.invoke()): the shared polyfill emits "__juce__invoke"
+          // {name:"getMidiDevices"} on window.__JUCE__.backend and awaits the
+          // "__juce__complete" reply → { inputs:[{id,name},...], outputs:[{id,name},...] }
           .withNativeFunction (
               "getMidiDevices",
               [this] (const juce::Array<juce::var>& /*args*/,
@@ -50,7 +52,8 @@ EP133AudioProcessorEditor::EP133AudioProcessorEditor (EP133AudioProcessor& p)
               {
                   handleGetMidiDevices (std::move (complete));
               })
-          // JS: await window.__JUCE__.invoke('sendMidi', portId, [byte, ...])
+          // Invoked the same way: "__juce__invoke" {name:"sendMidi",
+          // params:[portId, [byte, ...]]} on window.__JUCE__.backend
           .withNativeFunction (
               "sendMidi",
               [this] (const juce::Array<juce::var>& args,
@@ -117,6 +120,13 @@ EP133AudioProcessorEditor::getResource (const juce::String& url)
         return getIndexHtmlResource();
 
     auto file = dataDir.getChildFile (path);
+
+    // Reject any request that escapes the data directory. getChildFile resolves
+    // "../" segments at construction, so a traversal attempt (e.g. "../../etc/
+    // passwd") normalises to a path outside dataDir and is no longer a child.
+    if (! file.isAChildOf (dataDir))
+        return std::nullopt;
+
     if (!file.existsAsFile())
         return std::nullopt;
 
@@ -160,7 +170,8 @@ EP133AudioProcessorEditor::getIndexHtmlResource()
 }
 
 // =============================================================================
-// Native MIDI functions (called from JavaScript via window.__JUCE__.invoke)
+// Native MIDI functions (invoked from JS via the JUCE 8 "__juce__invoke"
+// backend event; the shared polyfill drives it — there is no __JUCE__.invoke())
 // =============================================================================
 void EP133AudioProcessorEditor::handleGetMidiDevices (
     std::function<void(const juce::var&)> complete)
@@ -238,11 +249,28 @@ void EP133AudioProcessorEditor::handleSendMidi (
         return;
     }
 
-    // Build raw byte buffer
+    // Build raw byte buffer. The array comes straight from JS, so validate each
+    // element: reject anything non-numeric or outside a single MIDI byte (0-255)
+    // rather than let a blind cast truncate/wrap it into unintended MIDI data.
     std::vector<uint8_t> bytes;
     bytes.reserve ((size_t) dataArr->size());
     for (const auto& b : *dataArr)
-        bytes.push_back (static_cast<uint8_t> (static_cast<int> (b)));
+    {
+        if (! (b.isInt() || b.isInt64() || b.isDouble()))
+        {
+            complete (juce::var (false));
+            return;
+        }
+
+        const int value = static_cast<int> (b);
+        if (value < 0 || value > 255)
+        {
+            complete (juce::var (false));
+            return;
+        }
+
+        bytes.push_back (static_cast<uint8_t> (value));
+    }
 
     auto msg = juce::MidiMessage (bytes.data(), (int) bytes.size());
     it->second->sendMessageNow (msg);

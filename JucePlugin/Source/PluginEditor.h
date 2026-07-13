@@ -16,9 +16,11 @@
  * MidiInput / MidiOutput APIs so the plugin communicates directly with
  * the EP-133 hardware regardless of the DAW's MIDI routing.
  *
- * MIDI bridge (C++ ↔ JS) uses JUCE 8's native function interface:
- *   JS calls  : window.__JUCE__.invoke('getMidiDevices')  → Promise<{inputs,outputs}>
- *   JS calls  : window.__JUCE__.invoke('sendMidi', portId, [bytes])
+ * MIDI bridge (C++ ↔ JS) uses JUCE 8's native function interface. There is no
+ * window.__JUCE__.invoke(); the shared polyfill drives it via the backend event
+ * protocol (emit "__juce__invoke" on window.__JUCE__.backend, await "__juce__complete"):
+ *   JS calls  : invoke('getMidiDevices')          → Promise<{inputs,outputs}>
+ *   JS calls  : invoke('sendMidi', portId, [bytes])
  *   JUCE emits: webBrowser.emitEventIfBrowserIsVisible("midiIn", {portId, data})
  */
 class EP133AudioProcessorEditor : public juce::AudioProcessorEditor,
