@@ -9,26 +9,26 @@
 
 Compatible with any **EP-133** or **EP-1320**.
 
-**A gift to the EP-133 community, from [Bombest Audio](https://bom.best).** Free,
-offline, open source. Our code is MIT — fork it, build on it, make it yours.
+Free, offline, open source. MIT-licensed. Fork it, build on it, make it yours.
 
-🌐 **Website:** [bombest-audio.github.io/ep_133_sample_tool](https://bombest-audio.github.io/ep_133_sample_tool/) — overview, the [SysEx protocol reference](https://bombest-audio.github.io/ep_133_sample_tool/protocol.html), and the app design concept. (Source in [`website/`](website/).)
+- 🌐 **[Website](https://bombest-audio.github.io/ep_133_sample_tool/)**
+- 🎼 **[SysEx protocol reference](https://bombest-audio.github.io/ep_133_sample_tool/protocol.html)**
+
 
 ---
 
 ## The Android app
 
-Load your own samples onto the K.O. II right from your phone — plus play your kit, sketch
-beats, browse 661 sounds, and build chord progressions. All offline, all on-device.
+Load your own samples onto the K.O. II right from your device. Play your kit, sketch
+beats, browse sounds, and build chord progressions. All offline, all on-device.
 
 <img src="docs/manual/img/01-pads.png" width="280" alt="Pads screen"> <img src="docs/manual/img/04-chords.png" width="280" alt="Chords screen"> <img src="docs/manual/img/07-import.png" width="280" alt="Sample Import screen">
 
-📖 **[Read the full user manual →](docs/manual/README.md)** — a screen-by-screen tour with
+📖 **[Read the full user manual →](docs/manual/README.md)** - a screen-by-screen tour with
 shots of every tab, light/dark, and the EP-133 / EP-1320 themes.
 
-We reverse-engineered the K.O. II's whole USB-MIDI file protocol to make the import work, and
-wrote it all down: the [**SysEx protocol reference**](docs/ep133-sysex-protocol.md) (or the
-[web version](https://bombest-audio.github.io/ep_133_sample_tool/protocol.html)).
+Reverse-engineered the K.O. II's whole USB-MIDI file protocol to make import work, and
+wrote it all down ✍🏽: the [**SysEx protocol reference**](https://bombest-audio.github.io/ep_133_sample_tool/protocol.html) (docs/ep133-sysex-protocol.md).
 
 ---
 
@@ -67,14 +67,14 @@ One tool, every machine you own - same project format everywhere.
 
 ```
 ep_133_sample_tool/
-├── data/              # Web app — compiled React UI, WASM audio libs, factory pack
-├── shared/            # Cross-platform — MIDI polyfill JS, EP-133 pad/sound/scale JSON
+├── data/              # Web app - compiled React UI, WASM audio libs, factory pack
+├── shared/            # Cross-platform - MIDI polyfill JS, EP-133 pad/sound/scale JSON
 ├── AndroidApp/        # Native Android app (Kotlin/Compose)
 ├── iOSApp/            # Native iOS app (Swift/SwiftUI)
 ├── JucePlugin/        # AU/VST3 plugin (JUCE 8, macOS)
 ├── scripts/           # Build and release automation (BBM)
 ├── docs/              # Architecture docs and screenshots
-├── .github/workflows/ # CI — Electron, Android
+├── .github/workflows/ # CI - Electron, Android
 ├── main.js            # Electron app entry point
 └── package.json       # Electron app config
 ```
@@ -131,7 +131,7 @@ cmake --build build --config Release
 
 **Works fully offline.** No account or internet connection required - all WebAssembly modules are bundled and the original Factory Sound Pack is included. The desktop app makes no outbound network calls. (The native mobile apps add one optional check against Teenage Engineering's public firmware list to flag out-of-date firmware; it sends nothing about you and degrades gracefully offline.)
 
-**Backup projects only.** Standard backup saves all sounds and projects. This tool adds a "Projects Only" option — faster to backup and restore, preserves your base sounds.
+**Backup projects only.** Standard backup saves all sounds and projects. This tool adds a "Projects Only" option - faster to backup and restore, preserves your base sounds.
 
 ![Backup options](docs/assets/backup.png)
 
@@ -160,16 +160,16 @@ cmake --build build --config Release
 
 This is a **web-app-first monorepo**. A single compiled React application (`data/`) runs inside every platform wrapper. Native code handles MIDI connectivity; the web app handles everything else.
 
-- **Web app** (`data/`) — all sample management UI, SysEx protocol, audio processing (WASM)
-- **MIDI polyfill** (`shared/MIDIBridgePolyfill.js`) — bridges Web MIDI API to each native MIDI stack
-- **Native wrappers** — Electron, Android WebView + Kotlin/Compose native screens, iOS WKWebView, JUCE WebBrowserComponent
+- **Web app** (`data/`) - all sample management UI, SysEx protocol, audio processing (WASM)
+- **MIDI polyfill** (`shared/MIDIBridgePolyfill.js`) - bridges Web MIDI API to each native MIDI stack
+- **Native wrappers** - Electron, Android WebView + Kotlin/Compose native screens, iOS WKWebView, JUCE WebBrowserComponent
 
 → [docs/architecture.md](docs/architecture.md) for the full data flow and platform routing table.
 
 ### EP-133 SysEx protocol
 
-Reverse-engineered notes on the EP-133 / EP-1320 USB-MIDI **file-transfer SysEx protocol** —
-frame format, the file-session handshake, directory listing, sample upload, and the gotchas —
+Reverse-engineered notes on the EP-133 / EP-1320 USB-MIDI **file-transfer SysEx protocol** -
+frame format, the file-session handshake, directory listing, sample upload, and the gotchas -
 verified on real hardware. For anyone building for the K.O. II.
 
 → [docs/ep133-sysex-protocol.md](docs/ep133-sysex-protocol.md) (or the [designed web version](https://bombest-audio.github.io/ep_133_sample_tool/protocol.html))
@@ -186,11 +186,11 @@ verified on real hardware. For anyone building for the K.O. II.
 
 ## Contributing
 
-Pull requests welcome — bug fixes, new platform features, protocol findings, all of it.
+Pull requests welcome - bug fixes, new platform features, protocol findings, all of it.
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) for branch/commit conventions and per-platform
 setup. We follow the [Contributor Covenant](CODE_OF_CONDUCT.md); be cool to each other.
 
-Found a security issue? Don't open a public issue — see [SECURITY.md](SECURITY.md).
+Found a security issue? Don't open a public issue - see [SECURITY.md](SECURITY.md).
 
 Release notes live in [CHANGELOG.md](CHANGELOG.md).
 
@@ -201,12 +201,12 @@ Release notes live in [CHANGELOG.md](CHANGELOG.md).
 This builds on [garrettjwilke/ep_133_sample_tool](https://github.com/garrettjwilke/ep_133_sample_tool).
 Thanks to everyone who reverse-engineered this device before us.
 
-**Our code is [MIT](LICENSE)** — the native wrappers (Android/iOS/JUCE/Electron), the MIDI
+**Our code is [MIT](LICENSE)** - the native wrappers (Android/iOS/JUCE/Electron), the MIDI
 polyfill, the [SysEx protocol docs](docs/ep133-sysex-protocol.md), and the build tooling. Use it freely.
 
 **The `data/` bundle is not ours.** The compiled web app, WASM audio libraries, factory
 sound content, and fonts under `data/` are Teenage Engineering's property, included unmodified
-so the tool can talk to hardware you already own. They're **not** covered by our MIT license —
+so the tool can talk to hardware you already own. They're **not** covered by our MIT license -
 see [NOTICE](NOTICE) for the full split before you fork or redistribute.
 
 Not affiliated with or endorsed by Teenage Engineering. "EP-133", "EP-1320", and "K.O. II"
