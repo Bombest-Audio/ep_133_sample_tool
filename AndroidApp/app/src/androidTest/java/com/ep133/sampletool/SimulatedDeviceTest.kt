@@ -10,7 +10,9 @@ import com.ep133.sampletool.ui.theme.EP133Theme
 import com.ep133.sampletool.ui.`import`.SampleImportScreen
 import com.ep133.sampletool.ui.`import`.SampleImportViewModel
 import com.ep133.sampletool.support.sim.EP133DeviceSimulator
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -208,22 +210,43 @@ class SimulatedDeviceTest {
      */
     @Test
     fun unsolicitedGreetMidSession_doesNotTearDownTheFileSession() = runBlocking {
-        // Arrange: connect and establish a file session via a stats query.
+        // Arrange: connecting fires the port connect edge, which auto-launches a stats query on
+        // the repository scope. queryDeviceStats() guards against overlap and returns false while
+        // that in-flight query holds the lock — so wait it out rather than assuming a lone naked
+        // call wins (a naked assertTrue here races the auto-query and flakes). The guard also means
+        // only one query ever runs FILE_INIT, so the count settles at 1 regardless of who wins.
         val sim = EP133DeviceSimulator()
         val repo = connect(sim)
-        assertTrue("stats query establishes the session", repo.queryDeviceStats())
+        awaitStatsQuery(repo)
         assertEquals("session initialized exactly once", 1, sim.fileInitCount)
 
         // Act: the device pushes an unsolicited greet while the session is up.
         sim.pushGreet()
         sim.awaitDelivery()
 
-        // Assert: a second stats query reuses the live session — no second FILE_INIT handshake.
-        assertTrue(repo.queryDeviceStats())
+        // Assert: a follow-up stats query reuses the live session — no second FILE_INIT handshake.
+        awaitStatsQuery(repo)
         assertEquals(
             "an unsolicited greet must not tear down the file session (issue #27)",
             1,
             sim.fileInitCount,
         )
+    }
+
+    /**
+     * Run queryDeviceStats() to completion, waiting out any overlapping in-flight query (notably
+     * the one the connect edge auto-launches on connect).
+     *
+     * queryDeviceStats() returns false for several reasons: no output port, its own internal 5s
+     * GREET timeout, or the overlap guard that rejects a query while another is already in flight.
+     * In this test the port is connected and the simulator answers promptly, so the only transient
+     * false is the connect-edge overlap - poll until ours wins the guard. The backstop timeout is
+     * set well above queryDeviceStats()'s own 5s internal timeout, so it can only fire on a
+     * genuinely stuck run and never cancels a legitimately slow query.
+     */
+    private suspend fun awaitStatsQuery(repo: MIDIRepository) {
+        withTimeout(30_000) {
+            while (!repo.queryDeviceStats()) delay(25)
+        }
     }
 }
