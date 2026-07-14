@@ -15,14 +15,53 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Android-relevant changes
+        id: changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE_SHA"; head="$PR_HEAD_SHA"
+          else
+            base="$PUSH_BEFORE"; head="$PUSH_AFTER"
+          fi
+          # Fail safe: if either commit is unavailable, run the full build.
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null || ! git cat-file -e "$head^{commit}" 2>/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "A base or head commit is unavailable; running the full build."
+            exit 0
+          fi
+          # Merge-base diff (base...head) matches the PR's own changes; any diff failure also runs.
+          if ! files=$(git diff --name-only "$base...$head" 2>/dev/null); then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "git diff failed; running the full build."
+            exit 0
+          fi
+          printf 'changed files:\n%s\n' "$files"
+          if printf '%s\n' "$files" | grep -qE '^(AndroidApp/|data/|shared/|\.github/workflows/build-android\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Android-relevant changes; skipping the Android build and tests (fast pass)."
+          fi
 
       - name: Set up JDK 17
+        if: steps.changes.outputs.run == 'true'
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Cache Gradle packages
+        if: steps.changes.outputs.run == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -32,14 +71,17 @@ jobs:
           restore-keys: gradle-
 
       - name: Run unit tests
+        if: steps.changes.outputs.run == 'true'
         working-directory: AndroidApp
         run: ./gradlew :app:testDebugUnitTest
 
       - name: Build debug APK
+        if: steps.changes.outputs.run == 'true'
         working-directory: AndroidApp
         run: ./gradlew :app:assembleDebug
 
       - name: Upload APK
+        if: steps.changes.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
@@ -52,20 +94,60 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Android-relevant changes
+        id: changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE_SHA"; head="$PR_HEAD_SHA"
+          else
+            base="$PUSH_BEFORE"; head="$PUSH_AFTER"
+          fi
+          # Fail safe: if either commit is unavailable, run the full build.
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null || ! git cat-file -e "$head^{commit}" 2>/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "A base or head commit is unavailable; running the full build."
+            exit 0
+          fi
+          # Merge-base diff (base...head) matches the PR's own changes; any diff failure also runs.
+          if ! files=$(git diff --name-only "$base...$head" 2>/dev/null); then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "git diff failed; running the full build."
+            exit 0
+          fi
+          printf 'changed files:\n%s\n' "$files"
+          if printf '%s\n' "$files" | grep -qE '^(AndroidApp/|data/|shared/|\.github/workflows/build-android\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Android-relevant changes; skipping the UI tests (fast pass)."
+          fi
 
       - name: Enable KVM for hardware-accelerated emulation
+        if: steps.changes.outputs.run == 'true'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
       - name: Set up JDK 17
+        if: steps.changes.outputs.run == 'true'
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Cache Gradle packages
+        if: steps.changes.outputs.run == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -75,11 +157,12 @@ jobs:
           restore-keys: gradle-
 
       - name: Run Compose UI tests on Gradle Managed Device
+        if: steps.changes.outputs.run == 'true'
         working-directory: AndroidApp
         run: ./gradlew :app:pixel2Api33DebugAndroidTest
 
       - name: Upload UI test report
-        if: failure()
+        if: failure() && steps.changes.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ui-test-report

@@ -18,19 +18,60 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Electron-relevant changes
+        id: changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE_SHA"; head="$PR_HEAD_SHA"
+          else
+            base="$PUSH_BEFORE"; head="$PUSH_AFTER"
+          fi
+          # Fail safe: if either commit is unavailable, run the full build.
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null || ! git cat-file -e "$head^{commit}" 2>/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "A base or head commit is unavailable; running the full build."
+            exit 0
+          fi
+          # Merge-base diff (base...head) matches the PR's own changes; any diff failure also runs.
+          if ! files=$(git diff --name-only "$base...$head" 2>/dev/null); then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "git diff failed; running the full build."
+            exit 0
+          fi
+          printf 'changed files:\n%s\n' "$files"
+          if printf '%s\n' "$files" | grep -qE '^(data/|shared/|main\.js|preload\.js|renderer\.js|icon\.(png|ico|icns)|package\.json|package-lock\.json|\.github/workflows/build-electron\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Electron-relevant changes; skipping the Electron build (fast pass)."
+          fi
 
       - name: Set up Node.js
+        if: steps.changes.outputs.run == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
       - name: Install dependencies
+        if: steps.changes.outputs.run == 'true'
         run: npm install
 
       - name: Build Electron app (no publish)
+        if: steps.changes.outputs.run == 'true'
         run: npm run package -- --publish=never
 
       - name: Upload artifacts
+        if: steps.changes.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.os }}-build
