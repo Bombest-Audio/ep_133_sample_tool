@@ -494,6 +494,13 @@ open class MIDIRepository internal constructor(
     /** Thin delegation to [FileTransferClient.getNodeInfo]. */
     suspend fun getNodeInfo(nodeId: Int): SysExProtocol.NodeInfo? = ftc.getNodeInfo(nodeId)
 
+    /**
+     * Enumerate ALL children of [nodeId], paging FILE_LIST until an empty page. Thin
+     * delegation to [FileTransferClient.listAllChildren] (Phase 6 pattern-write spike —
+     * closes the page-0-only enumeration gap).
+     */
+    open suspend fun listAllChildren(nodeId: Int): List<SysExProtocol.FileEntry> = ftc.listAllChildren(nodeId)
+
     // ── Pad-assignment layer (thin delegations to PadAssignmentService) ───────────
     // getActiveGroupIndex/setActiveGroup/assignSampleToPad/clearPad/clearProject/
     // readGroupPadState (and their NoLock helpers) live in `pas`, layered on FTC.

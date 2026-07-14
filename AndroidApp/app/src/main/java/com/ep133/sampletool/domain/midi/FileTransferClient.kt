@@ -604,12 +604,34 @@ open class FileTransferClient(
      * (Phase 2's /sounds path). To switch, replace [SysExProtocol.buildFileListByNodeFrame]
      * with [SysExProtocol.buildFileListFrame] and pass the path — a one-line change.
      */
-    suspend fun listNodeBody(nodeId: Int, requestId: Int): ByteArray? {
+    suspend fun listNodeBody(nodeId: Int, requestId: Int, page: Int = 0): ByteArray? {
         val portId = outputPortId() ?: return null
-        val frame = SysExProtocol.buildFileListByNodeFrame(deviceId(), nodeId, requestId = requestId)
+        val frame = SysExProtocol.buildFileListByNodeFrame(deviceId(), nodeId, page = page, requestId = requestId)
         val resp = awaitFileOp(requestId, FileOpKind.LIST, portId, frame, FILE_LIST_TIMEOUT_MS) ?: return null
         // Body = [page u16 BE][entries...]; skip the 2-byte page word to return raw entry data.
         return if (resp.body.size > 2) resp.body.copyOfRange(2, resp.body.size) else ByteArray(0)
+    }
+
+    /**
+     * Enumerate ALL children of [nodeId] by paging FILE_LIST until an empty page — closes the
+     * page-0-only enumeration gap (RESEARCH "Pattern 2" / Pitfall 1): a node sitting on page 1+
+     * would otherwise be invisible to a single [listNodeBody] call.
+     *
+     * Composes the public, unlocked [listNodeBody] directly — does NOT itself acquire
+     * [fileOpMutex], mirroring [listNodeBody]'s own no-lock contract so callers that need
+     * session-init ordering can wrap this in their own locked context.
+     */
+    suspend fun listAllChildren(nodeId: Int): List<SysExProtocol.FileEntry> {
+        val all = mutableListOf<SysExProtocol.FileEntry>()
+        var page = 0
+        while (true) {
+            val body = listNodeBody(nodeId, page = page, requestId = nextFileReqId()) ?: break
+            val entries = SysExProtocol.parseFileListEntries(body)
+            if (entries.isEmpty()) break
+            all += entries
+            page++
+        }
+        return all
     }
 
     /**
