@@ -117,4 +117,40 @@ class PatternSpikeWalkerSimTest {
         assertEquals(5, groups.fileListChildren)
         assertTrue(dump.any { it.name == "extra-group-child" })
     }
+
+    @Test
+    fun writeRoundTrip_changesLandsThenRestoresByteIdentical() = runBlocking {
+        // Arrange: seed a writable pattern node (Plan 02's positive control) — metadata
+        // {"steps":16} — and read its pre-round-trip metadata via the REAL METADATA GET path
+        // (not an internal writeRoundTrip artifact) so the final assertion is independent.
+        val sim = EP133DeviceSimulator()
+        sim.setActiveProject(3000)
+        val patternNode = sim.seedPatternNode(groupNode = 3200)
+        val repo = connect(sim)
+        val originalMetadata = repo.getMetadataJson(patternNode.id).toString()
+
+        // Act: flip "steps" to a different valid value, then restore — METADATA SET only,
+        // which cannot wedge the device (RESEARCH §The Wedge).
+        val result = PatternSpikeWalker(repo).writeRoundTrip(patternNode.id) { json ->
+            json.put("steps", 32)
+        }
+
+        // Assert: the round trip reports success, and the node's metadata — re-read
+        // independently via the same real GET path — is byte-identical to its state before the
+        // round trip ran, i.e. the device-persisted value (via EP133DeviceSimulator.handleMetadata)
+        // was actually restored, not just verified in-memory inside writeRoundTrip.
+        assertTrue("writeRoundTrip must report success", result)
+        val finalMetadata = repo.getMetadataJson(patternNode.id).toString()
+        assertEquals(
+            "the scratch node must end byte-identical to its pre-round-trip state",
+            originalMetadata,
+            finalMetadata,
+        )
+
+        // NOTE: FILE_PUT wedge safety is intentionally NOT re-tested here. This round trip uses
+        // METADATA SET exclusively, which cannot wedge the device. Wedge coverage for the
+        // FILE_PUT fallback path already exists and is relied on, not duplicated:
+        //   - SimulatedDeviceTest.sampleImport_pageFailure_forceClosesTheTransfer
+        //   - SimulatedDeviceTest.wedgedDevice_importFailsWithoutCommitting
+    }
 }
