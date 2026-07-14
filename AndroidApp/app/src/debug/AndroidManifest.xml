@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only manifest fragment (Gradle-merged into the debug variant only). Declares
+  PatternSpikeActivity — the Phase 6 pattern-write spike's hardware-run trigger — as a
+  separate launcher entry so it can be run standalone (USB-MIDI ports are exclusive; do
+  not run this alongside MainActivity). Never merged into a release build.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".spike.PatternSpikeActivity"
+            android:exported="true"
+            android:label="EP-133 Pattern Spike"
+            android:theme="@style/Theme.EP133SampleTool">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
