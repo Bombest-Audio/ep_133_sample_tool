@@ -3,6 +3,7 @@ package com.ep133.sampletool.spike
 import android.util.Log
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SysExProtocol
+import org.json.JSONObject
 
 private const val TAG = "EP133SPIKE"
 
@@ -131,5 +132,133 @@ class PatternSpikeWalker(private val repo: MIDIRepository) {
                 )
             }
         }
+    }
+
+    // ── Write round-trip (Phase 6 Plan 03) ─────────────────────────────────────────────────
+    //
+    // GO-path demonstration code only — never invoked unless Plan 04's hardware evidence run
+    // surfaces an actual write-candidate node. Prefer [writeRoundTrip] (METADATA SET) always;
+    // it is the ONLY path that cannot wedge the device (RESEARCH §The Wedge). Reach for
+    // [writeRoundTripFileBytes] only when a candidate node is proven to be binary file bytes,
+    // not metadata — and even then it reuses the existing FILE_PUT primitive verbatim.
+
+    /**
+     * Wedge-safe, reversible metadata write round-trip (RESEARCH's 8-step safest-write recipe,
+     * steps 1-7, metadata variant): save the exact original for [nodeId], apply [mutate] to a
+     * COPY, write the change via `METADATA SET` (cannot wedge — `setMetadata` never touches the
+     * FILE_PUT paging/terminator path), read back to confirm the change landed, then restore the
+     * retained original and confirm the node is byte-identical to how it started.
+     *
+     * The retained "original" is the exact JSON STRING read back from the device, not a
+     * JSONObject reconstructed from it — restoring that string verbatim (rather than
+     * re-serializing a JSONObject, which could reorder keys) is what makes the final state
+     * byte-identical to the start state.
+     *
+     * @return true only if BOTH the change-landed assertion (step 4) and the restore-verified
+     *   assertion (step 6) pass. Always attempts the restore write even if the change-landed
+     *   check fails, so the scratch slot is never left stuck on the mutated value.
+     */
+    suspend fun writeRoundTrip(nodeId: Int, mutate: (JSONObject) -> Unit): Boolean {
+        // 1. Read + retain the exact original as a string — the restore source of truth.
+        val originalString = repo.getMetadataJson(nodeId).toString()
+
+        // 2. Apply the smallest reversible change to a COPY re-parsed from the retained string;
+        //    `mutate` never sees (and can never accidentally corrupt) the retained original.
+        val changed = JSONObject(originalString)
+        mutate(changed)
+        val changedString = changed.toString()
+
+        // 3. Write the change. setMetadata cannot wedge the device (RESEARCH §The Wedge).
+        if (!repo.setMetadata(nodeId, changedString)) {
+            Log.w(TAG, "writeRoundTrip($nodeId): METADATA SET (change) did not ack")
+            return false
+        }
+
+        // 4. Read back and assert the change landed.
+        val afterChange = repo.getMetadataJson(nodeId).toString()
+        val changeLanded = afterChange == changedString
+        if (!changeLanded) {
+            Log.w(
+                TAG,
+                "writeRoundTrip($nodeId): change did not land — after='$afterChange' expected='$changedString'",
+            )
+        }
+
+        // 5. Restore the retained original — attempted unconditionally so the scratch slot never
+        //    ends stuck on the mutated value even if step 4's landing check failed.
+        if (!repo.setMetadata(nodeId, originalString)) {
+            Log.w(TAG, "writeRoundTrip($nodeId): METADATA SET (restore) did not ack")
+            return false
+        }
+
+        // 6. Re-read and assert byte-identical restoration.
+        val afterRestore = repo.getMetadataJson(nodeId).toString()
+        val restored = afterRestore == originalString
+        if (!restored) {
+            Log.w(
+                TAG,
+                "writeRoundTrip($nodeId): restore verification failed — after='$afterRestore' original='$originalString'",
+            )
+        }
+
+        return changeLanded && restored
+    }
+
+    /**
+     * FILE_PUT fallback (documented, wedge-risk) — reserved for a write target PROVEN to be
+     * binary file bytes, never metadata. Prefer [writeRoundTrip] (METADATA SET); it cannot
+     * wedge. This fallback exists only because RESEARCH's Write-Candidate table allows for a
+     * node that is writable but is NOT metadata (a binary FILE node).
+     *
+     * Contains NO paging or terminator logic of its own — re-implementing that would reintroduce
+     * the wedge (RESEARCH §Anti-Patterns: "Hand-rolling a FILE_PUT"). [MIDIRepository.putSampleFile]
+     * is the only existing byte-PUT primitive in the FTC stack; it always creates a file under
+     * `/sounds` addressed by [name] (there is no existing "overwrite this nodeId's bytes in
+     * place" primitive on the device protocol). [nodeId] identifies the ORIGINAL node whose bytes
+     * are read via [MIDIRepository.getFileBytes] for save/restore; the mutated/restore writes
+     * are necessarily routed through that same name-addressed `/sounds` upload path. If Plan 04's
+     * hardware evidence surfaces a genuinely different binary-FILE write target with its own
+     * overwrite primitive, that primitive must be added as new, tested FTC code — never
+     * hand-rolled here.
+     *
+     * Per RESEARCH's 8-step recipe (step 8), follows the mutated PUT with one more trivial
+     * successful PUT — via the SAME proven [MIDIRepository.putSampleFile] path — to confirm the
+     * device did not wedge, before attempting the restore PUT.
+     *
+     * @return true only if the mutated PUT, the post-write wedge-check PUT, and the restore PUT
+     *   all succeed.
+     */
+    suspend fun writeRoundTripFileBytes(
+        nodeId: Int,
+        name: String,
+        mutate: (ByteArray) -> ByteArray,
+    ): Boolean {
+        val original = repo.getFileBytes(nodeId) ?: run {
+            Log.w(TAG, "writeRoundTripFileBytes($nodeId): could not read original bytes")
+            return false
+        }
+        val mutated = mutate(original)
+
+        if (repo.putSampleFile(name, mutated) == null) {
+            Log.w(TAG, "writeRoundTripFileBytes($nodeId): mutated PUT failed")
+            return false
+        }
+
+        // Step 8: confirm no wedge with one more trivial successful PUT via the same proven
+        // path before attempting the restore write.
+        if (repo.putSampleFile("$name-wedge-check", ByteArray(1)) == null) {
+            Log.w(
+                TAG,
+                "writeRoundTripFileBytes($nodeId): post-write wedge-check PUT failed — " +
+                    "device may be wedged, STOP and power-cycle per RESEARCH",
+            )
+            return false
+        }
+
+        if (repo.putSampleFile(name, original) == null) {
+            Log.w(TAG, "writeRoundTripFileBytes($nodeId): restore PUT failed")
+            return false
+        }
+        return true
     }
 }
