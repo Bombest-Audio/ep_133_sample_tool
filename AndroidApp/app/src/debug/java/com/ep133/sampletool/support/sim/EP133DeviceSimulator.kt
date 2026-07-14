@@ -101,6 +101,24 @@ class EP133DeviceSimulator(
     /** Files currently in /sounds — for asserting uploads landed. */
     fun soundFiles(): List<SimNode> = childrenOf(SOUNDS_NODE)
 
+    /**
+     * Positive-control seam (Phase 6 pattern-write spike, Plan 02 Task 3): seed a fake
+     * write-flagged FILE node under [groupNode], mirroring [seedSound]'s id/flags shape but
+     * named "pattern" so `PatternSpikeWalkerSimTest` can prove the walker WOULD surface a real
+     * on-device pattern node if one existed — guarding a NO-GO finding against being a walker
+     * bug rather than a genuine absence.
+     */
+    fun seedPatternNode(groupNode: Int, name: String = "pattern"): SimNode {
+        val id = nextSoundNodeId++
+        val node = SimNode(
+            id, groupNode, name, isDir = false,
+            data = ByteArray(64),
+            metadata = """{"steps":16}""",
+        )
+        addNode(node)
+        return node
+    }
+
     fun setActiveProject(projectNode: Int) {
         nodes.getValue(PROJECTS_NODE).metadata = """{"active":$projectNode}"""
     }
@@ -251,8 +269,10 @@ class EP133DeviceSimulator(
                 // [LIST, page u16, nodeId u16]
                 val page = u16(body, 1)
                 val nodeId = u16(body, 3)
-                val node = nodes[nodeId] ?: return respondError(reqId, SysExProtocol.TE_SYSEX_FILE, "invalid id")
-                if (!node.isDir) return respondError(reqId, SysExProtocol.TE_SYSEX_FILE, "invalid id")
+                nodes[nodeId] ?: return respondError(reqId, SysExProtocol.TE_SYSEX_FILE, "invalid id")
+                // FILE_LIST against a FILE (non-dir) node is a read-only, generic-FSNode query —
+                // it can't wedge and simply has no children (Phase 6 spike RESEARCH gap C). Fall
+                // through and let childrenOf(nodeId) naturally return empty, rather than erroring.
                 val out = ByteArrayOutputStream()
                 out.write(page shr 8); out.write(page and 0xFF)
                 if (page == 0) {
