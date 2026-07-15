@@ -19,8 +19,11 @@ contextBridge.exposeInMainWorld('spliceSync', {
   }),
   chooseFolder: () => ipcRenderer.invoke('splice:choose-folder'),
   readFile: (filePath) => ipcRenderer.invoke('splice:read-file', String(filePath)),
+  // Replace semantics: registering a new callback drops any previous one,
+  // so repeated calls cannot accumulate ipcRenderer listeners.
   onNewSamples: (callback) => {
     if (typeof callback !== 'function') return
+    ipcRenderer.removeAllListeners('splice:new-samples')
     ipcRenderer.on('splice:new-samples', (event, samples) => callback(samples))
   }
 })

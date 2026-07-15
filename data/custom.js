@@ -167,10 +167,10 @@ if (typeof window !== "undefined" && window.spliceSync) {
       window.spliceSync.readFile(item.path).then(function (result) {
         var mime = "audio/wav";
         var lower = item.name.toLowerCase();
-        if (lower.indexOf(".mp3") !== -1) { mime = "audio/mpeg"; }
-        else if (lower.indexOf(".fla") !== -1) { mime = "audio/flac"; }
-        else if (lower.indexOf(".ogg") !== -1) { mime = "audio/ogg"; }
-        else if (lower.indexOf(".aif") !== -1) { mime = "audio/aiff"; }
+        if (/\.mp3$/.test(lower)) { mime = "audio/mpeg"; }
+        else if (/\.flac$/.test(lower)) { mime = "audio/flac"; }
+        else if (/\.ogg$/.test(lower)) { mime = "audio/ogg"; }
+        else if (/\.aiff?$/.test(lower)) { mime = "audio/aiff"; }
         item.file = new File([result.bytes], result.name, { type: mime });
         renderList();
       }, function () {
@@ -310,9 +310,11 @@ if (typeof window !== "undefined" && window.spliceSync) {
           path: samples[i].path, name: samples[i].name,
           size: samples[i].size, file: null, failed: false
         });
-        prefetch(items[0]);
       }
       if (items.length > MAX_ITEMS) { items.length = MAX_ITEMS; }
+      // Prefetch only the most recent sample; the rest load lazily on
+      // mouseenter so a big download batch cannot balloon memory.
+      if (items.length > 0) { prefetch(items[0]); }
       if (collapsed && bodyEl) { collapsed = false; bodyEl.style.display = "block"; }
       renderList();
     });

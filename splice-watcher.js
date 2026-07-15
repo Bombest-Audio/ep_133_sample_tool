@@ -41,11 +41,11 @@ function isIgnoredFile(name) {
 
 /**
  * Platform default for the local Splice folder.
- * macOS: ~/Splice. Windows: C:\Documents\Splice. Other platforms fall back
- * to ~/Splice so the feature still works if the user points it elsewhere.
+ * macOS: ~/Splice. Windows: the per-user Documents\Splice folder. Other
+ * platforms fall back to ~/Splice; the user can point it elsewhere.
  */
 function defaultSpliceFolder(platform, homeDir) {
-  if (platform === 'win32') return 'C:\\Documents\\Splice';
+  if (platform === 'win32') return path.join(homeDir, 'Documents', 'Splice');
   return path.join(homeDir, 'Splice');
 }
 
