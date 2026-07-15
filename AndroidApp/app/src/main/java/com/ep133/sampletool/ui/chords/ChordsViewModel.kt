@@ -12,6 +12,7 @@ import com.ep133.sampletool.domain.model.EP133Sound
 import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.domain.model.Progressions
 import com.ep133.sampletool.domain.model.Vibe
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -26,6 +27,7 @@ import kotlinx.coroutines.launch
 class ChordsViewModel(
     private val chordPlayer: ChordPlayer,
     private val midiRepo: MIDIRepository,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
 
     // ── Vibe / key / BPM filters ──────────────────────────────────────────────
@@ -83,6 +85,7 @@ class ChordsViewModel(
     val showGroupPicker: StateFlow<Boolean> = _showGroupPicker.asStateFlow()
 
     private var chordMapJob: Job? = null
+    private var padLoadJob: Job? = null
 
     // ── Public actions ────────────────────────────────────────────────────────
 
@@ -118,7 +121,7 @@ class ChordsViewModel(
         // Pre-load sound on EP-133 if connected
         val sound = _selectedSound.value
         if (sound != null && midiRepo.deviceState.value.connected) {
-            midiRepo.programChange(sound.number - 1, ch = midiRepo.channel)
+            midiRepo.selectSound(sound.number)
         }
         _isPlaying.value = true
         _playingProgressionId.value = progression.id
@@ -130,7 +133,13 @@ class ChordsViewModel(
                 loop = _looping.value,
                 onStep = { step ->
                     _playingStep.value = step
-                    if (step == -1) _isPlaying.value = false
+                    // Natural completion: clear all playback state so the card's Stop
+                    // icon flips back to Play without requiring an explicit stop tap.
+                    if (step == -1) {
+                        _isPlaying.value = false
+                        _playingProgressionId.value = null
+                        playbackJob = null
+                    }
                 },
             )
         }
@@ -158,7 +167,7 @@ class ChordsViewModel(
         _showSoundPicker.value = false
         // Immediately load onto EP-133 when connected
         if (sound != null && midiRepo.deviceState.value.connected) {
-            midiRepo.programChange(sound.number - 1, ch = midiRepo.channel)
+            midiRepo.selectSound(sound.number)
         }
     }
 
@@ -174,8 +183,9 @@ class ChordsViewModel(
 
         cancelChordMap()
 
-        // 1. Load the selected sound to all 12 pads in the group (staggered to avoid MIDI flooding)
-        viewModelScope.launch(Dispatchers.IO) {
+        // 1. Load the selected sound to all 12 pads in the group (staggered to avoid MIDI
+        // flooding). Tracked in padLoadJob so reprogramming or cancelling stops the sweep.
+        padLoadJob = viewModelScope.launch(ioDispatcher) {
             EP133Pads.padsForChannel(group).forEach { pad ->
                 midiRepo.loadSoundToPad(sound.number, pad.note, pad.midiChannel)
                 delay(30L)
@@ -204,6 +214,8 @@ class ChordsViewModel(
     }
 
     fun cancelChordMap() {
+        padLoadJob?.cancel()
+        padLoadJob = null
         chordMapJob?.cancel()
         chordMapJob = null
         _chordMapGroup.value = null
