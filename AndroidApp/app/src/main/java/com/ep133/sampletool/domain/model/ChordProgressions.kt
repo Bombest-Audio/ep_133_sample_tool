@@ -283,9 +283,16 @@ object Progressions {
 
 private val NOTE_NAMES = listOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
+// Flat spellings map to their enharmonic sharp pitch class (Eb = D#, etc.) so key roots
+// offered in the UI (Eb, Ab, Bb) resolve correctly instead of falling back to C.
+private val FLAT_NOTE_INDEX = mapOf(
+    "Db" to 1, "Eb" to 3, "Fb" to 4, "Gb" to 6, "Ab" to 8, "Bb" to 10, "Cb" to 11,
+)
+
 fun noteNameToMidi(name: String, octave: Int = 3): Int {
-    val index = NOTE_NAMES.indexOf(name)
-    if (index < 0) return 60
+    val index = NOTE_NAMES.indexOf(name).takeIf { it >= 0 }
+        ?: FLAT_NOTE_INDEX[name]
+        ?: return 60
     return 12 * (octave + 1) + index
 }
 
