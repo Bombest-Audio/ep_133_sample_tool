@@ -71,6 +71,10 @@ object TestTags {
     const val CHORDS_GROUP_PICKER_SHEET = "chords_group_picker_sheet"
     const val CHORDS_BAKE_BUTTON = "chords_bake_button"
     const val CHORDS_BAKE_BANNER = "chords_bake_banner"
+    const val CHORDS_GENERATOR_BARS = "chords_generator_bars"
+    const val CHORDS_GENERATOR_BARS_MINUS = "chords_generator_bars_minus"
+    const val CHORDS_GENERATOR_BARS_PLUS = "chords_generator_bars_plus"
+    const val CHORDS_GENERATE_BUTTON = "chords_generate_button"
 
     // Kit Builder (embedded in the SAMPLES screen's KIT mode)
     fun kbPadCell(index: Int) = "kb_pad_cell_$index"

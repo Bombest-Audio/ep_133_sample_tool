@@ -76,6 +76,7 @@ fun ChordsScreen(
     val deviceState by viewModel.deviceState.collectAsState()
     val selectedSound by viewModel.selectedSound.collectAsState()
     val showSoundPicker by viewModel.showSoundPicker.collectAsState()
+    val generatorBars by viewModel.generatorBars.collectAsState()
 
     Column(
         modifier = Modifier
@@ -162,6 +163,14 @@ fun ChordsScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
+        GeneratorRow(
+            bars = generatorBars,
+            onBarsDelta = viewModel::adjustGeneratorBars,
+            onGenerate = { viewModel.generateProgression() },
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier
@@ -203,6 +212,46 @@ fun ChordsScreen(
             onSoundSelected = viewModel::selectSound,
             onDismiss = viewModel::dismissSoundPicker,
         )
+    }
+}
+
+@Composable
+private fun GeneratorRow(
+    bars: Int,
+    onBarsDelta: (Int) -> Unit,
+    onGenerate: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        AssistChip(
+            onClick = { onBarsDelta(-1) },
+            label = { Text(text = "-", style = MaterialTheme.typography.labelLarge) },
+            modifier = Modifier.testTag(TestTags.CHORDS_GENERATOR_BARS_MINUS),
+        )
+        Text(
+            text = "$bars BARS",
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.testTag(TestTags.CHORDS_GENERATOR_BARS),
+        )
+        AssistChip(
+            onClick = { onBarsDelta(1) },
+            label = { Text(text = "+", style = MaterialTheme.typography.labelLarge) },
+            modifier = Modifier.testTag(TestTags.CHORDS_GENERATOR_BARS_PLUS),
+        )
+        Spacer(modifier = Modifier.weight(1f))
+        FilledTonalButton(
+            onClick = onGenerate,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.testTag(TestTags.CHORDS_GENERATE_BUTTON),
+        ) {
+            Text(
+                text = "GENERATE",
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
     }
 }
 

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ep133.sampletool.domain.audio.voice.NativeSynthVoice
 import com.ep133.sampletool.domain.audio.voice.RenderableVoice
+import com.ep133.sampletool.domain.generate.ProgressionGenerator
 import com.ep133.sampletool.domain.midi.ChordBakeManager
 import com.ep133.sampletool.domain.midi.ChordBakeProgress
 import com.ep133.sampletool.domain.midi.ChordPlayer
@@ -59,6 +60,9 @@ class ChordsViewModel(
 
     private val _bpm = MutableStateFlow(90)
     val bpm: StateFlow<Int> = _bpm.asStateFlow()
+
+    private val _generatorBars = MutableStateFlow(4)
+    val generatorBars: StateFlow<Int> = _generatorBars.asStateFlow()
 
     val filteredProgressions: StateFlow<List<ChordProgression>> = _selectedVibes
         .combine(MutableStateFlow(Unit)) { vibes, _ -> Progressions.forVibes(vibes) }
@@ -116,6 +120,27 @@ class ChordsViewModel(
 
     fun setKey(root: String) {
         _keyRoot.value = root
+    }
+
+    fun adjustGeneratorBars(delta: Int) {
+        _generatorBars.value = (_generatorBars.value + delta).coerceIn(2, 16)
+    }
+
+    /**
+     * Generate a progression from the current key, selected vibe, and bar
+     * count, then select it so it flows into the builder/audition path.
+     * The lowest-ordinal selected vibe wins; CHILL is the fallback. Pass a
+     * [seed] for a reproducible result.
+     */
+    fun generateProgression(seed: Long = System.currentTimeMillis()) {
+        val vibe = _selectedVibes.value.minByOrNull { it.ordinal } ?: Vibe.CHILL
+        val generated = ProgressionGenerator.generate(
+            keyRoot = _keyRoot.value,
+            vibe = vibe,
+            barCount = _generatorBars.value,
+            seed = seed,
+        )
+        selectProgression(generated)
     }
 
     fun selectProgression(p: ChordProgression?) {
