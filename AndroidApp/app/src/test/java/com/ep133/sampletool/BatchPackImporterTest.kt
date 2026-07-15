@@ -152,6 +152,17 @@ class BatchPackImporterTest {
         assertEquals(3, repo.uploaded.size)
     }
 
+    // Corrupt/over-reported stats (used > total) clamp to 0 free via availableStorageBytes()
+    // and block instead of arithmetic-underflowing into a bogus allow.
+    @Test
+    fun preflightBlocks_whenStorageStatsReportNegativeFree() = runTest {
+        val repo = BatchFakeRepo(storageUsed = 2000 * 1024L, storageTotal = 1000 * 1024L)
+        val events = importer(repo).import(items) { pcm(1) }.toList()
+
+        assertTrue(events.last() is BatchImportEvent.Blocked)
+        assertTrue(repo.uploaded.isEmpty())
+    }
+
     // Unknown storage (stats not yet queried) → best-effort allow, matching SampleImportManager.
     @Test
     fun preflightAllows_whenStorageUnknown() = runTest {

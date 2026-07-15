@@ -418,8 +418,13 @@ class KitBuilderViewModel(
 
     // ── Pack batch import (Phase 11): multi-select + IMPORT ALL / IMPORT SELECTED ──
 
-    /** Toggle a sample's membership in the batch-import selection. */
+    /**
+     * Toggle a sample's membership in the batch-import selection. No-op while a batch is
+     * running: the selection was snapshotted into the batch at launch, and mutating it
+     * mid-run would desync the panel's results from what IMPORT SELECTED actually sent.
+     */
     fun onToggleImportSelect(sample: KitSample) = _globals.update {
+        if (it.importState.running) return@update it
         val sel = if (sample.uri in it.selectedForImport) it.selectedForImport - sample.uri
         else it.selectedForImport + sample.uri
         it.copy(selectedForImport = sel)

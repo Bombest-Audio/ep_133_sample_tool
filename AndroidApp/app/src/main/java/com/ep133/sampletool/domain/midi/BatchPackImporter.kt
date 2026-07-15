@@ -55,8 +55,8 @@ sealed class BatchImportEvent {
  * - **Convert**: every item is decoded/resampled up front (per-item failures become
  *   [BatchImportEvent.FileFailed] and are excluded from the preflight sum).
  * - **Preflight + upload**: the summed converted byte size is checked against the device's
- *   remaining /sounds storage ([DeviceState.storageUsedBytes] / storageTotalBytes, populated
- *   by queryDeviceStats). If it doesn't fit, the whole batch is blocked BEFORE any device
+ *   remaining /sounds storage ([MIDIRepository.availableStorageBytes], populated by
+ *   queryDeviceStats). If it doesn't fit, the whole batch is blocked BEFORE any device
  *   write. Uploads then run strictly sequentially via [MIDIRepository.putSampleFile].
  *
  * Wedge safety: cancellation mid-upload is handled inside [FileTransferClient.putSampleFile],
@@ -121,7 +121,7 @@ class BatchPackImporter(
 
         // Phase 2: free-space preflight over the items that actually converted.
         val requiredBytes = converted.values.sumOf { it.pcm.size.toLong() }
-        val available = availableBytes()
+        val available = midi.availableStorageBytes()
         if (available != null && requiredBytes > available) {
             emit(
                 BatchImportEvent.Blocked(
@@ -178,13 +178,5 @@ class BatchPackImporter(
         }
 
         emit(BatchImportEvent.BatchComplete(ok = ok, failed = failed))
-    }
-
-    /** Remaining /sounds bytes, or null when device stats haven't been read yet. */
-    private fun availableBytes(): Long? {
-        val state = midi.deviceState.value
-        val used = state.storageUsedBytes ?: return null
-        val total = state.storageTotalBytes ?: return null
-        return total - used
     }
 }
