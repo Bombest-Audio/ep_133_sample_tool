@@ -41,6 +41,8 @@ object TestTags {
     fun projectSlot(nodeId: Int) = "project_slot_$nodeId"
     fun backupCard(name: String) = "backup_card_$name"
     const val PROJECTS_RESTORE_CONFIRM_DIALOG = "projects_restore_confirm_dialog"
+    const val PROJECTS_EXPORT_DIALOG = "projects_export_dialog"
+    fun exportFormatOption(id: String) = "export_format_$id"
 
     // Import
     const val IMPORT_PICK_BUTTON = "import_pick_button"

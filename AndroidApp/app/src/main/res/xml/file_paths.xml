@@ -11,4 +11,11 @@
     <files-path
         name="backups_internal"
         path="backups/" />
+    <!-- DAW exports (ROADMAP 999.6): getExternalFilesDir("exports") + internal fallback -->
+    <external-files-path
+        name="exports"
+        path="exports/" />
+    <files-path
+        name="exports_internal"
+        path="exports/" />
 </paths>
