@@ -2,6 +2,10 @@ package com.ep133.sampletool.ui.chords
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ep133.sampletool.domain.audio.voice.NativeSynthVoice
+import com.ep133.sampletool.domain.audio.voice.RenderableVoice
+import com.ep133.sampletool.domain.midi.ChordBakeManager
+import com.ep133.sampletool.domain.midi.ChordBakeProgress
 import com.ep133.sampletool.domain.midi.ChordPlayer
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.model.ChordDegree
@@ -24,11 +28,26 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+/** UI state for the bake-to-sample action on the Chords screen. */
+sealed class BakeUiState {
+    object Idle : BakeUiState()
+    /** Bake running: [stage] is a short user-facing label ("Rendering", "Uploading"). */
+    data class Running(val stage: String) : BakeUiState()
+    /** Bake finished: sample saved on the device as [name]. */
+    data class Done(val name: String) : BakeUiState()
+    data class Error(val message: String) : BakeUiState()
+}
+
 class ChordsViewModel(
     private val chordPlayer: ChordPlayer,
     private val midiRepo: MIDIRepository,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    bakeManager: ChordBakeManager? = null,
+    /** Lazy so JVM unit tests can inject [KotlinSynthVoice] and never touch libnativesynth.so. */
+    private val bakeVoiceProvider: () -> RenderableVoice = { NativeSynthVoice() },
 ) : ViewModel() {
+
+    private val bakeManager: ChordBakeManager = bakeManager ?: ChordBakeManager(midiRepo)
 
     // ── Vibe / key / BPM filters ──────────────────────────────────────────────
 
@@ -232,6 +251,61 @@ class ChordsViewModel(
         chordMapJob = null
         _chordMapGroup.value = null
         chordPlayer.stopCurrentChord()
+    }
+
+    // ── Bake to sample ────────────────────────────────────────────────────────
+
+    private val _bakeState = MutableStateFlow<BakeUiState>(BakeUiState.Idle)
+    val bakeState: StateFlow<BakeUiState> = _bakeState.asStateFlow()
+
+    private var bakeJob: Job? = null
+
+    /**
+     * Bake the selected progression to a sample on the connected EP-133.
+     *
+     * Guarded on the real preconditions (device connected, progression selected,
+     * no bake already running), not just the UI button state - firing early must
+     * be a no-op, never a bogus bake.
+     */
+    fun bakeSelectedProgression() {
+        val prog = _selectedProgression.value ?: return
+        if (!midiRepo.deviceState.value.connected) return
+        if (_bakeState.value is BakeUiState.Running) return
+
+        val chords = RenderableVoice.chordsOf(prog, _keyRoot.value)
+        _bakeState.value = BakeUiState.Running("Rendering")
+
+        bakeJob = viewModelScope.launch {
+            try {
+                bakeManager.bake(prog.name, chords, _bpm.value, bakeVoiceProvider())
+                    .collect { progress ->
+                        _bakeState.value = when (progress) {
+                            is ChordBakeProgress.Rendering -> BakeUiState.Running("Rendering")
+                            is ChordBakeProgress.Uploading -> BakeUiState.Running("Uploading")
+                            is ChordBakeProgress.Done -> BakeUiState.Done(progress.name)
+                            is ChordBakeProgress.Error -> BakeUiState.Error(progress.message)
+                        }
+                    }
+            } finally {
+                // Failure and cancellation must both restore the control - never
+                // strand the button in a stuck Running state.
+                if (_bakeState.value is BakeUiState.Running) {
+                    _bakeState.value = BakeUiState.Idle
+                }
+            }
+        }
+    }
+
+    fun cancelBake() {
+        bakeJob?.cancel()
+        bakeJob = null
+    }
+
+    /** Dismiss a Done/Error bake result banner. */
+    fun dismissBakeResult() {
+        if (_bakeState.value !is BakeUiState.Running) {
+            _bakeState.value = BakeUiState.Idle
+        }
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────

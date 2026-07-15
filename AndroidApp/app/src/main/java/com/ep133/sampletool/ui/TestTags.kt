@@ -69,6 +69,8 @@ object TestTags {
     fun chordsProgressionCard(id: String) = "chords_progression_card_$id"
     const val CHORDS_SOUND_PICKER_SHEET = "chords_sound_picker_sheet"
     const val CHORDS_GROUP_PICKER_SHEET = "chords_group_picker_sheet"
+    const val CHORDS_BAKE_BUTTON = "chords_bake_button"
+    const val CHORDS_BAKE_BANNER = "chords_bake_banner"
 
     // Kit Builder (embedded in the SAMPLES screen's KIT mode)
     fun kbPadCell(index: Int) = "kb_pad_cell_$index"
