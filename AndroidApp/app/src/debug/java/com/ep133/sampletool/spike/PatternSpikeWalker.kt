@@ -3,6 +3,7 @@ package com.ep133.sampletool.spike
 import android.util.Log
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SysExProtocol
+import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 
 private const val TAG = "EP133SPIKE"
@@ -62,6 +63,8 @@ class PatternSpikeWalker(private val repo: MIDIRepository) {
     private suspend fun walkInto(nodeId: Int, out: MutableList<NodeDump>) {
         val children = try {
             repo.listAllChildren(nodeId)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "listAllChildren($nodeId) failed — skipping subtree", e)
             emptyList()
@@ -71,6 +74,8 @@ class PatternSpikeWalker(private val repo: MIDIRepository) {
         for (child in children) {
             val info = try {
                 repo.getNodeInfo(child.nodeId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "getNodeInfo(${child.nodeId}) failed — skipping node", e)
                 null
@@ -82,6 +87,8 @@ class PatternSpikeWalker(private val repo: MIDIRepository) {
 
             val metadataJson = try {
                 repo.getMetadataJson(child.nodeId).toString()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "getMetadataJson(${child.nodeId}) failed — recording empty metadata", e)
                 "{}"
@@ -92,6 +99,8 @@ class PatternSpikeWalker(private val repo: MIDIRepository) {
                 // count, from the FILE_LIST we're about to recurse through), then descend.
                 val dirChildren = try {
                     repo.listAllChildren(info.nodeId)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "listAllChildren(${info.nodeId}) failed — recording 0 children", e)
                     emptyList()
@@ -114,6 +123,8 @@ class PatternSpikeWalker(private val repo: MIDIRepository) {
                 // cannot wedge. Expected-empty, but this makes the absence TESTED evidence.
                 val fileListChildren = try {
                     repo.listAllChildren(info.nodeId).size
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "gap-C FILE_LIST probe on FILE node ${info.nodeId} failed", e)
                     0
