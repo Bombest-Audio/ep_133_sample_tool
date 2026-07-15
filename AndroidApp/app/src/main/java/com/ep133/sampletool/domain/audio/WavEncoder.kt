@@ -91,6 +91,41 @@ object WavEncoder {
     }
 
     /**
+     * Encode raw interleaved s16 LE PCM BYTES as a RIFF/PCM-16 WAV.
+     *
+     * Byte-level counterpart to [encodeWav] for callers whose pipeline already holds
+     * little-endian PCM bytes (ConvertedSample.pcm) - avoids a bytes -> shorts -> bytes
+     * round trip. Any trailing incomplete sample (odd byte count) is dropped.
+     *
+     * @param pcm         Interleaved s16 LE PCM bytes (no header), as produced by the
+     *                    convert pipeline.
+     * @param sampleRate  Sample rate to embed in the header (default 46875).
+     * @param channels    Number of audio channels: 1 (mono) or 2 (stereo).
+     * @return            Complete RIFF WAV bytes including the 44-byte header.
+     */
+    fun encodeWavBytes(pcm: ByteArray, sampleRate: Int = DEVICE_SAMPLE_RATE, channels: Int = 1): ByteArray {
+        val dataSize = pcm.size and 0x7FFFFFFE          // whole s16 samples only
+        val buf = ByteBuffer.allocate(44 + dataSize).order(ByteOrder.LITTLE_ENDIAN)
+
+        buf.put("RIFF".toByteArray(Charsets.US_ASCII))
+        buf.putInt(36 + dataSize)
+        buf.put("WAVE".toByteArray(Charsets.US_ASCII))
+        buf.put("fmt ".toByteArray(Charsets.US_ASCII))
+        buf.putInt(16)
+        buf.putShort(1)
+        buf.putShort(channels.toShort())
+        buf.putInt(sampleRate)
+        buf.putInt(sampleRate * channels * 2)
+        buf.putShort((channels * 2).toShort())
+        buf.putShort(DEVICE_BIT_DEPTH.toShort())
+        buf.put("data".toByteArray(Charsets.US_ASCII))
+        buf.putInt(dataSize)
+        buf.put(pcm, 0, dataSize)
+
+        return buf.array()
+    }
+
+    /**
      * Returns `true` iff [wavBytes] is already in the EP-133's required format:
      *   - Valid RIFF/WAVE container
      *   - audioFormat == 1 (PCM, uncompressed)
