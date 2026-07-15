@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Share
@@ -63,6 +64,8 @@ import com.ep133.sampletool.domain.model.DeviceState
 import com.ep133.sampletool.domain.project.InMemoryProjectNameStore
 import com.ep133.sampletool.domain.project.ProjectNameStore
 import com.ep133.sampletool.ui.TestTags
+import com.ep133.sampletool.ui.offline.OfflineBrowserScreen
+import com.ep133.sampletool.ui.offline.OfflineBrowserViewModel
 import com.ep133.sampletool.ui.theme.Ep133ConfirmDialog
 import com.ep133.sampletool.ui.theme.Ep133SectionLabel
 import com.ep133.sampletool.ui.theme.Ep133StatusDot
@@ -349,7 +352,17 @@ private fun miniBars(seed: Int): List<Float> =
     }
 
 @Composable
-fun ProjectsScreen(viewModel: ProjectsViewModel) {
+fun ProjectsScreen(
+    viewModel: ProjectsViewModel,
+    offlineViewModel: OfflineBrowserViewModel? = null,
+) {
+    // Offline browser takes over the body while a manifest-backed backup is open (issue #55).
+    val offlineManifest = offlineViewModel?.manifest?.collectAsState()?.value
+    if (offlineViewModel != null && offlineManifest != null) {
+        OfflineBrowserScreen(offlineViewModel)
+        return
+    }
+
     val t = LocalEP133Tokens.current
     val context = LocalContext.current
     val deviceState by viewModel.deviceState.collectAsState()
@@ -389,6 +402,15 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
         snackbarMessage?.let { msg ->
             snackbarHostState.showSnackbar(msg)
             viewModel.dismissSnackbar()
+        }
+    }
+
+    // Offline-browser messages (no-manifest taps, missing sample files) share the snackbar host.
+    val offlineMessage = offlineViewModel?.message?.collectAsState()?.value
+    LaunchedEffect(offlineMessage) {
+        offlineMessage?.let { msg ->
+            snackbarHostState.showSnackbar(msg)
+            offlineViewModel.dismissMessage()
         }
     }
 
@@ -533,6 +555,7 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
                         onShare = { shareBackup(context, backup.file) },
                         onRestore = { viewModel.requestRestore(backup.file) },
                         onExport = { backupToExport = backup },
+                        onBrowse = offlineViewModel?.let { vm -> { vm.open(backup) } },
                     )
                 }
             }
@@ -593,7 +616,8 @@ private fun NotConnectedPanel() {
             tint = t.text3,
         )
         Text(
-            text = "Connect your EP-133 via USB to browse and back up projects.",
+            text = "Connect your EP-133 via USB to browse and back up projects. " +
+                "Saved backups with a MANIFEST badge below are browsable offline.",
             color = t.text2,
             fontFamily = Mono,
             fontSize = 11.5.sp,
@@ -733,6 +757,7 @@ private fun BackupCard(
     onShare: () -> Unit,
     onRestore: () -> Unit,
     onExport: () -> Unit,
+    onBrowse: (() -> Unit)? = null,
 ) {
     val t = LocalEP133Tokens.current
     Column(
@@ -758,8 +783,23 @@ private fun BackupCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (backup.hasManifest) {
+                Text(
+                    text = "MANIFEST",
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(t.accent, RoundedCornerShape(3.dp))
+                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                    color = t.onAccent,
+                    fontFamily = Mono,
+                    fontSize = 8.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp,
+                )
+            }
             Text(
                 text = "BACKUP",
+                modifier = Modifier.padding(start = 6.dp),
                 color = t.accent,
                 fontFamily = Mono,
                 fontSize = 9.sp,
@@ -769,7 +809,8 @@ private fun BackupCard(
         }
 
         Text(
-            text = formatTimestamp(backup.timestamp),
+            text = formatTimestamp(backup.timestamp) +
+                if (backup.hasManifest) "" else " · NO MANIFEST - RE-BACKUP TO BROWSE OFFLINE",
             color = t.text3,
             fontFamily = Mono,
             fontSize = 9.sp,
@@ -783,6 +824,19 @@ private fun BackupCard(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
+            if (onBrowse != null) {
+                // Legacy tars without a manifest stay visible but the browse action is disabled.
+                ActionButton(
+                    label = "BROWSE",
+                    icon = Icons.Filled.LibraryMusic,
+                    enabled = backup.hasManifest,
+                    contentColor = t.accent,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag(TestTags.backupBrowseButton(backup.name)),
+                    onClick = onBrowse,
+                )
+            }
             ActionButton(
                 label = "SHARE",
                 icon = Icons.Filled.Share,

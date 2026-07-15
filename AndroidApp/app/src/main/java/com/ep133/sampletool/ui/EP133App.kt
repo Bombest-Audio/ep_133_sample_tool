@@ -54,6 +54,7 @@ import com.ep133.sampletool.ui.kit.KitViewModel
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 import com.ep133.sampletool.ui.chords.ChordsScreen
 import com.ep133.sampletool.ui.chords.ChordsViewModel
+import com.ep133.sampletool.ui.offline.OfflineBrowserViewModel
 
 private val BadgeShape = RoundedCornerShape(3.dp)
 
@@ -79,6 +80,7 @@ fun EP133App(
     kitBuilderViewModel: KitBuilderViewModel,
     chordsViewModel: ChordsViewModel,
     isConnected: Boolean = false,
+    offlineViewModel: OfflineBrowserViewModel? = null,
 ) {
     // Theme state lives above EP133Theme so the header controls can re-theme the whole app.
     var themeMode by remember { mutableIntStateOf(0) } // 0 = follow system, 1 = light, 2 = dark
@@ -185,7 +187,9 @@ fun EP133App(
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     composable(NavRoute.PADS.route) { PadsScreen(padsViewModel) }
-                    composable(NavRoute.PROJECTS.route) { ProjectsScreen(projectsViewModel) }
+                    composable(NavRoute.PROJECTS.route) {
+                        ProjectsScreen(projectsViewModel, offlineViewModel)
+                    }
                     composable(NavRoute.DEVICE.route) {
                         DeviceScreen(viewModel = deviceViewModel)
                     }

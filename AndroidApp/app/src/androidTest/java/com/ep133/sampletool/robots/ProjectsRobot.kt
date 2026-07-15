@@ -19,7 +19,10 @@ import com.ep133.sampletool.ui.TestTags
 class ProjectsRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
 
     fun assertOfflinePanel() = apply {
-        text("Connect your EP-133 via USB to browse and back up projects.").assertIsDisplayed()
+        text(
+            "Connect your EP-133 via USB to browse and back up projects. " +
+                "Saved backups with a MANIFEST badge below are browsable offline.",
+        ).assertIsDisplayed()
         text("OFFLINE").assertIsDisplayed()
     }
 

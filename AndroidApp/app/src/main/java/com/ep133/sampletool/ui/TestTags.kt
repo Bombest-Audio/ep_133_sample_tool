@@ -45,6 +45,14 @@ object TestTags {
     const val PROJECTS_EXPORT_DIALOG = "projects_export_dialog"
     fun exportFormatOption(id: String) = "export_format_$id"
 
+    // Offline browser (manifest-backed backups, issue #55)
+    const val OFFLINE_BROWSER = "offline_browser"
+    const val OFFLINE_CLOSE = "offline_close"
+    const val OFFLINE_PARAM_READOUT = "offline_param_readout"
+    fun offlineGroupTab(group: String) = "offline_group_tab_$group"
+    fun offlinePad(group: String, pad: String) = "offline_pad_${group}_$pad"
+    fun backupBrowseButton(name: String) = "backup_browse_button_$name"
+
     // Import
     const val IMPORT_PICK_BUTTON = "import_pick_button"
     fun importRow(name: String) = "import_row_$name"
