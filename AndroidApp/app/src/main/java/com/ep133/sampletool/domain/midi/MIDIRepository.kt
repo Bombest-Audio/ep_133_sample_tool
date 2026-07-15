@@ -606,6 +606,27 @@ open class MIDIRepository internal constructor(
         ))
     }
 
+    /**
+     * Select a factory sound for keys/chord playback on [ch] via Bank Select + Program Change.
+     * Sound numbers are 1-999; a bank holds 128 programs, so sounds above 128 need CC0 (MSB).
+     * Same bank math as [loadSoundToPad], without the pad-select note. Sent as one byte
+     * array to guarantee ordering through the async port path.
+     */
+    fun selectSound(soundNumber: Int, ch: Int = channel) {
+        val portId = _deviceState.value.outputPortId ?: return
+        val index = (soundNumber - 1).coerceAtLeast(0)
+        val bankMsb = index / PROGRAMS_PER_BANK
+        val program = index % PROGRAMS_PER_BANK
+        Log.d("EP133APP", "MIDI OUT: selectSound #$soundNumber bank=$bankMsb pc=$program ch=$ch")
+        val ccStatus = (STATUS_CONTROL_CHANGE or (ch and 0x0F)).toByte()
+        val pcStatus = (STATUS_PROGRAM_CHANGE or (ch and 0x0F)).toByte()
+        midiManager.sendMidi(portId, byteArrayOf(
+            ccStatus, CC_BANK_SELECT_MSB.toByte(), (bankMsb and 0x7F).toByte(),
+            ccStatus, CC_BANK_SELECT_LSB.toByte(), 0,
+            pcStatus, (program and 0x7F).toByte(),
+        ))
+    }
+
     fun allNotesOff(ch: Int = channel) {
         controlChange(CC_ALL_NOTES_OFF, 0, ch)
     }
