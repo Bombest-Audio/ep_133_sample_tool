@@ -49,6 +49,10 @@ import androidx.compose.ui.platform.testTag
 
 private val KEY_OPTIONS = listOf("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
 
+// The builder screen can preview and push a progression but has no add/edit chord UI yet,
+// so entering it with an empty custom progression would dead-end. Flip when editing lands.
+private const val CUSTOM_BUILDER_ENABLED = false
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ChordsScreen(
@@ -178,13 +182,14 @@ fun ChordsScreen(
             item {
                 FilledTonalButton(
                     onClick = { viewModel.selectProgression(ChordProgression("custom", "My Progression", emptyList(), emptySet())) },
+                    enabled = CUSTOM_BUILDER_ENABLED,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 8.dp),
                     shape = RoundedCornerShape(12.dp),
                 ) {
                     Text(
-                        text = "+ BUILD YOUR OWN",
+                        text = if (CUSTOM_BUILDER_ENABLED) "+ BUILD YOUR OWN" else "+ BUILD YOUR OWN · SOON",
                         style = MaterialTheme.typography.titleMedium,
                     )
                 }
