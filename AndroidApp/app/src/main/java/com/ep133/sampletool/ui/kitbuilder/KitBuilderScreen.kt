@@ -48,6 +48,10 @@ import androidx.lifecycle.viewModelScope
 import com.ep133.sampletool.domain.PadUploadResult
 import com.ep133.sampletool.domain.PadUploadService
 import com.ep133.sampletool.domain.SliceUpload
+import com.ep133.sampletool.domain.midi.BatchImportEvent
+import com.ep133.sampletool.domain.midi.BatchImportItem
+import com.ep133.sampletool.domain.midi.BatchPackImporter
+import com.ep133.sampletool.domain.midi.ConvertedSample
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.model.PadChannel
@@ -64,6 +68,7 @@ import com.ep133.sampletool.ui.theme.PadFilledInk
 import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -97,6 +102,27 @@ private val KB_FILL_RANK = intArrayOf(10, 11, 12, 7, 8, 9, 4, 5, 6, 1, 2, 3)
 
 /** Per-pad load status while a kit upload runs. */
 enum class KbLoadState { Idle, Uploading, Done, Error }
+
+/** Outcome of one file in a pack batch import: [ok] with an optional error [message]. */
+data class KbImportResult(val name: String, val ok: Boolean, val message: String? = null)
+
+/**
+ * State of the pack batch import panel. [running] while the batch job is alive; [finished]
+ * once it completed (or was blocked/cancelled) so the panel shows results until dismissed.
+ * [processed] counts terminal per-file outcomes (done + failed) out of [total].
+ */
+data class KbImportState(
+    val running: Boolean = false,
+    val finished: Boolean = false,
+    val total: Int = 0,
+    val processed: Int = 0,
+    val currentName: String? = null,
+    val phase: String? = null,          // "CONVERTING" or "UPLOADING"
+    val results: List<KbImportResult> = emptyList(),
+    val blocked: String? = null,
+) {
+    val active: Boolean get() = running || finished
+}
 
 /**
  * Per-group Kit Builder working state: each A/B/C/D group keeps its own staged kit, pad selection,
@@ -132,6 +158,8 @@ data class KitBuilderState(
     val loadedBanner: String? = null,
     val clearingPad: Int? = null,
     val devicePads: Map<Int, String> = emptyMap(),
+    val selectedForImport: Set<Uri> = emptySet(),
+    val importState: KbImportState = KbImportState(),
 )
 
 /** The pack-browser globals (shared across groups — a pack is a browsing resource, not kit state). */
@@ -140,12 +168,15 @@ private data class KbGlobals(
     val packLoading: Boolean = false,
     val category: String? = null,
     val auditioningUri: Uri? = null,
+    val selectedForImport: Set<Uri> = emptySet(),
+    val importState: KbImportState = KbImportState(),
 )
 
 class KitBuilderViewModel(
     private val midi: MIDIRepository,
     private val manager: SampleImportManager,
     private val session: GroupSession = GroupSession(),
+    private val importer: BatchPackImporter = BatchPackImporter(midi, manager),
 ) : ViewModel() {
 
     private val _globals = MutableStateFlow(KbGlobals())
@@ -162,6 +193,7 @@ class KitBuilderViewModel(
                 selectedPad = gs.selectedPad, assignments = gs.assignments,
                 loading = gs.loading, loadStates = gs.loadStates, loadedBanner = gs.loadedBanner,
                 clearingPad = gs.clearingPad, devicePads = gs.devicePads,
+                selectedForImport = g.selectedForImport, importState = g.importState,
             )
         }.stateIn(viewModelScope, SharingStarted.Eagerly, KitBuilderState())
 
@@ -174,6 +206,7 @@ class KitBuilderViewModel(
     private val deviceMutex = Mutex()
     private val uploads = PadUploadService(midi, deviceMutex)
     private var player: MediaPlayer? = null
+    private var importJob: Job? = null
 
     private fun updateGroup(g: PadChannel, block: (KbGroupState) -> KbGroupState) {
         _groups.update { it + (g to block(it.getValue(g))) }
@@ -244,7 +277,8 @@ class KitBuilderViewModel(
             return
         }
         _globals.update {
-            it.copy(pack = pack, packLoading = false, category = pack.categories.first().id)
+            it.copy(pack = pack, packLoading = false, category = pack.categories.first().id,
+                selectedForImport = emptySet())
         }
         updateCurrent { it.copy(loadStates = emptyMap(), loadedBanner = null) }
     }
@@ -382,6 +416,111 @@ class KitBuilderViewModel(
         }
     }
 
+    // ── Pack batch import (Phase 11): multi-select + IMPORT ALL / IMPORT SELECTED ──
+
+    /**
+     * Toggle a sample's membership in the batch-import selection. No-op while a batch is
+     * running: the selection was snapshotted into the batch at launch, and mutating it
+     * mid-run would desync the panel's results from what IMPORT SELECTED actually sent.
+     */
+    fun onToggleImportSelect(sample: KitSample) = _globals.update {
+        if (it.importState.running) return@update it
+        val sel = if (sample.uri in it.selectedForImport) it.selectedForImport - sample.uri
+        else it.selectedForImport + sample.uri
+        it.copy(selectedForImport = sel)
+    }
+
+    /** Import every sample in the loaded pack (all categories) to /sounds. */
+    fun onImportAll(context: Context) {
+        val pack = _globals.value.pack ?: return
+        importPack(pack.categories.flatMap { it.samples }, context)
+    }
+
+    /** Import only the multi-selected samples to /sounds. */
+    fun onImportSelected(context: Context) {
+        val g = _globals.value
+        val pack = g.pack ?: return
+        val samples = pack.categories.flatMap { it.samples }.filter { it.uri in g.selectedForImport }
+        importPack(samples, context)
+    }
+
+    private fun importPack(samples: List<KitSample>, context: Context) {
+        val items = samples.map { BatchImportItem("${it.name}.wav", it.uri) }
+        importPack(items) {
+            manager.convert(context, requireNotNull(it.uri), enforceMaxLength = true)
+        }
+    }
+
+    /**
+     * Drive a batch import and mirror its events into [KbImportState].
+     *
+     * Testability seam: the [convert] lambda lets unit tests run the real
+     * [BatchPackImporter] state machine with canned [ConvertedSample]s (no SAF/AudioDecoder).
+     *
+     * Guarded triggers: no-ops while a batch is already [KbImportState.running], on an empty
+     * item list, and (fail-fast, mirroring the importer's own guard) when no device is
+     * connected. `running` is reset in a `finally` so cancellation and failure both restore
+     * the buttons.
+     */
+    internal fun importPack(
+        items: List<BatchImportItem>,
+        convert: suspend (BatchImportItem) -> ConvertedSample,
+    ) {
+        if (_globals.value.importState.running || items.isEmpty()) return
+        if (midi.deviceState.value.outputPortId == null) {
+            _snackbarMessage.value = "Connect the EP-133 before importing"
+            return
+        }
+        _globals.update {
+            it.copy(importState = KbImportState(running = true, total = items.size))
+        }
+        importJob = viewModelScope.launch {
+            try {
+                importer.import(items, convert).collect { event ->
+                    updateImport { st ->
+                        when (event) {
+                            is BatchImportEvent.Blocked ->
+                                st.copy(blocked = event.message)
+                            is BatchImportEvent.Converting ->
+                                st.copy(currentName = event.name, phase = "CONVERTING")
+                            is BatchImportEvent.Uploading ->
+                                st.copy(currentName = event.name, phase = "UPLOADING")
+                            is BatchImportEvent.FileDone ->
+                                st.copy(processed = st.processed + 1,
+                                    results = st.results + KbImportResult(event.name, ok = true))
+                            is BatchImportEvent.FileFailed ->
+                                st.copy(processed = st.processed + 1,
+                                    results = st.results +
+                                        KbImportResult(event.name, ok = false, message = event.message))
+                            is BatchImportEvent.BatchComplete ->
+                                st.copy(currentName = null, phase = null)
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "KitBuilder: pack import failed", e)
+                updateImport { it.copy(blocked = "Import failed: ${e.message ?: e}") }
+            } finally {
+                // Runs on success, failure, AND cancellation: restore the trigger and keep the
+                // panel up (finished) so partial results stay visible until dismissed.
+                updateImport { it.copy(running = false, finished = true, currentName = null, phase = null) }
+            }
+        }
+    }
+
+    /** Cancel the in-flight batch. FTC's terminator unwind closes any in-flight PUT cleanly. */
+    fun onCancelImport() { importJob?.cancel() }
+
+    /** Dismiss the import results panel and clear the selection that was imported. */
+    fun dismissImportPanel() = _globals.update {
+        it.copy(importState = KbImportState(), selectedForImport = emptySet())
+    }
+
+    private fun updateImport(block: (KbImportState) -> KbImportState) =
+        _globals.update { it.copy(importState = block(it.importState)) }
+
     /** Log a per-sample load failure and surface it as a snackbar (device errors + convert errors). */
     private fun reportLoadFailure(sample: KitSample, error: Throwable) {
         Log.e(TAG, "KitBuilder: load failed for ${sample.name}", error)
@@ -481,8 +620,10 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                             sample = sample,
                             playing = s.auditioningUri == sample.uri,
                             padLabel = uriToPad[sample.uri],
+                            selectedForImport = sample.uri in s.selectedForImport,
                             onAssign = { viewModel.onAssign(sample) },
                             onAudition = { viewModel.onAudition(sample, context) },
+                            onToggleSelect = { viewModel.onToggleImportSelect(sample) },
                         )
                     }
             } else {
@@ -496,6 +637,16 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
             }
           }
 
+            // ── Import bar — batch upload of pack one-shots to /sounds (Phase 11) ──
+            if (s.pack != null) {
+                KbImportBar(
+                    selectedCount = s.selectedForImport.size,
+                    running = s.importState.running,
+                    onImportAll = { viewModel.onImportAll(context) },
+                    onImportSelected = { viewModel.onImportSelected(context) },
+                )
+            }
+
             // ── Footer — fill meter + pack switcher. GROUP + CHOKE live in the pinned header
             // shared with CHOP; the push action is the shared PUSH TO DEVICE button below. ──
             if (s.pack != null) {
@@ -506,6 +657,16 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                     onSwitchPack = viewModel::triggerPackPick,
                 )
             }
+        }
+
+        // ── Batch import progress / results panel ──
+        if (s.importState.active) {
+            KbImportPanel(
+                state = s.importState,
+                onCancel = viewModel::onCancelImport,
+                onDismiss = viewModel::dismissImportPanel,
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
         }
 
         // ── Load banner ──
@@ -612,14 +773,16 @@ private fun KbCategoryTabs(
     }
 }
 
-// ── Sample row — audition toggle + name/meta + the pad chip if already staged ──
+// ── Sample row — audition toggle + name/meta + pad chip + batch-import select box ──
 @Composable
 private fun KbSampleRow(
     sample: KitSample,
     playing: Boolean,
     padLabel: String?,
+    selectedForImport: Boolean,
     onAssign: () -> Unit,
     onAudition: () -> Unit,
+    onToggleSelect: () -> Unit,
 ) {
     val t = LocalEP133Tokens.current
     Row(
@@ -654,6 +817,153 @@ private fun KbSampleRow(
             ) {
                 Text("◉ $padLabel", fontFamily = Mono, fontSize = 9.sp,
                     fontWeight = FontWeight.Bold, color = t.onAccent)
+            }
+        }
+        // Batch-import select box: ✓ when this sample is queued for IMPORT SELECTED.
+        Box(
+            Modifier.size(22.dp).clip(RoundedCornerShape(5.dp))
+                .background(if (selectedForImport) t.accent else t.inset)
+                .border(1.dp, if (selectedForImport) t.accent else t.rule, RoundedCornerShape(5.dp))
+                .clickable { onToggleSelect() }
+                .testTag(TestTags.kbImportSelect(sample.name)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (selectedForImport) {
+                Text("✓", fontFamily = Mono, fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold, color = t.onAccent)
+            }
+        }
+    }
+}
+
+// ── Import bar — IMPORT ALL / IMPORT SELECTED actions for the loaded pack ─────
+@Composable
+private fun KbImportBar(
+    selectedCount: Int,
+    running: Boolean,
+    onImportAll: () -> Unit,
+    onImportSelected: () -> Unit,
+) {
+    val t = LocalEP133Tokens.current
+    Row(
+        Modifier.fillMaxWidth().background(t.panel2).padding(14.dp, 8.dp, 14.dp, 0.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("→ /SOUNDS", fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.sp,
+            color = t.text3, modifier = Modifier.weight(1f))
+        KbImportAction(
+            label = "IMPORT ALL",
+            enabled = !running,
+            emphasized = false,
+            onClick = onImportAll,
+            modifier = Modifier.testTag(TestTags.KB_IMPORT_ALL_BUTTON),
+        )
+        KbImportAction(
+            label = "IMPORT SELECTED ($selectedCount)",
+            enabled = !running && selectedCount > 0,
+            emphasized = selectedCount > 0,
+            onClick = onImportSelected,
+            modifier = Modifier.testTag(TestTags.KB_IMPORT_SELECTED_BUTTON),
+        )
+    }
+}
+
+@Composable
+private fun KbImportAction(
+    label: String,
+    enabled: Boolean,
+    emphasized: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val t = LocalEP133Tokens.current
+    Box(
+        modifier.clip(PanelRadius)
+            .background(if (emphasized && enabled) t.accent else t.panel, PanelRadius)
+            .border(1.dp, if (emphasized && enabled) t.accent else t.rule, PanelRadius)
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = 9.dp, vertical = 6.dp),
+    ) {
+        Text(label, fontFamily = Mono, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+            letterSpacing = 0.6.sp,
+            color = when {
+                !enabled -> t.text3
+                emphasized -> t.onAccent
+                else -> t.accentInk
+            })
+    }
+}
+
+// ── Import panel — per-file batch progress + success/fail list ────────────────
+@Composable
+private fun KbImportPanel(
+    state: KbImportState,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val t = LocalEP133Tokens.current
+    Column(
+        modifier.fillMaxWidth().padding(13.dp)
+            .clip(PanelRadius)
+            .background(t.panel, PanelRadius)
+            .border(1.dp, t.rule, PanelRadius)
+            .padding(12.dp)
+            .testTag(TestTags.KB_IMPORT_PANEL),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        val okCount = state.results.count { it.ok }
+        val failCount = state.results.size - okCount
+        val headline = when {
+            state.blocked != null -> state.blocked
+            state.running -> {
+                val cur = state.currentName?.let { " · $it" } ?: ""
+                "${state.phase ?: "IMPORTING"} ${state.processed}/${state.total}$cur"
+            }
+            else -> "IMPORT DONE · $okCount OK" + if (failCount > 0) " · $failCount FAILED" else ""
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(headline, fontFamily = Mono, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                color = if (state.blocked != null || failCount > 0) t.error else t.text,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).testTag(TestTags.KB_IMPORT_PROGRESS_TEXT))
+            if (state.running) {
+                Text("CANCEL", fontFamily = Mono, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                    color = t.accentInk,
+                    modifier = Modifier.clickable { onCancel() }.padding(6.dp)
+                        .testTag(TestTags.KB_IMPORT_CANCEL_BUTTON))
+            } else {
+                Text("OK", fontFamily = Mono, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                    color = t.accentInk,
+                    modifier = Modifier.clickable { onDismiss() }.padding(6.dp)
+                        .testTag(TestTags.KB_IMPORT_DISMISS_BUTTON))
+            }
+        }
+        // Progress bar — filled by terminal per-file outcomes.
+        if (state.total > 0 && state.blocked == null) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                repeat(state.total) { i ->
+                    Box(Modifier.weight(1f).height(5.dp).clip(RoundedCornerShape(1.dp))
+                        .background(if (i < state.processed) t.accent else t.inset))
+                }
+            }
+        }
+        // Success/fail list — most recent last; failures show their error text.
+        state.results.forEach { r ->
+            Row(
+                Modifier.fillMaxWidth().testTag(TestTags.kbImportResultRow(r.name)),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                Text(if (r.ok) "✓" else "✕", fontFamily = Mono, fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold, color = if (r.ok) t.live else t.error)
+                Text(r.name, fontFamily = Mono, fontSize = 9.sp, color = t.text2,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false))
+                if (!r.ok && r.message != null) {
+                    Text(r.message, fontFamily = Mono, fontSize = 9.sp, color = t.error,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
         }
     }

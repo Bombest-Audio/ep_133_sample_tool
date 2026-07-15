@@ -79,4 +79,14 @@ object TestTags {
     const val KB_ASSIGNED_COUNT = "kb_assigned_count"
     const val KB_SWITCH_PACK_BUTTON = "kb_switch_pack_button"
     const val KB_LOAD_BANNER = "kb_load_banner"
+
+    // Kit Builder pack import (batch upload to /sounds)
+    fun kbImportSelect(name: String) = "kb_import_select_$name"
+    const val KB_IMPORT_ALL_BUTTON = "kb_import_all_button"
+    const val KB_IMPORT_SELECTED_BUTTON = "kb_import_selected_button"
+    const val KB_IMPORT_PANEL = "kb_import_panel"
+    const val KB_IMPORT_CANCEL_BUTTON = "kb_import_cancel_button"
+    const val KB_IMPORT_DISMISS_BUTTON = "kb_import_dismiss_button"
+    const val KB_IMPORT_PROGRESS_TEXT = "kb_import_progress_text"
+    fun kbImportResultRow(name: String) = "kb_import_result_row_$name"
 }
