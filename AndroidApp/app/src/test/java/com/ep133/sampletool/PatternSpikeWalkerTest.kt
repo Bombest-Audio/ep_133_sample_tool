@@ -160,6 +160,34 @@ class PatternSpikeWalkerTest {
         assertEquals(2, port.sent.size)
     }
 
+    @Test
+    fun listAllChildren_stopsOnDeviceErrorStatus_doesNotLoopForever() = runTest {
+        // Regression (hardware-surfaced, Phase 6 Plan 04): a device error response
+        // (status 1, body "invalid id") is a terminal error, NOT list data. Before the fix,
+        // listNodeBody stripped the 2-byte page prefix off the error text, mis-parsed the
+        // remaining ASCII into a bogus entry, and listAllChildren paged forever. The simulator
+        // only ever returns clean empty pages, so this path was never exercised in the sim.
+        // Arrange
+        val port = SpyPort()
+        val repo = TestableRepo(port)
+
+        // Act — the device rejects the LIST for this node with an error status.
+        var result: List<SysExProtocol.FileEntry>? = null
+        val job = launch(Dispatchers.Unconfined) {
+            result = repo.listAllChildren(9999)
+        }
+        kotlinx.coroutines.yield()
+
+        val reqId = port.lastSentReqId()
+        assertTrue("port should have sent the first FILE_LIST", reqId > 0)
+        repo.injectSysEx(buildFakeFileListError(reqId = reqId, status = 1))
+        job.join()
+
+        // Assert — terminated on the error, with no bogus entry and no second page.
+        assertEquals("a device error status must yield zero entries", 0, result!!.size)
+        assertEquals("must not page past an error response", 1, port.sent.size)
+    }
+
     // ── Test double: spy MIDIPort that records sent frames (mirrors FileReqIdDedupTest) ──
 
     private class SpyPort : MIDIPort {
@@ -232,6 +260,30 @@ class PatternSpikeWalkerTest {
             reqLow,
             SysExProtocol.TE_SYSEX_FILE.toByte(),
             0x00,               // status = STATUS_OK (NOT packed — raw byte at position 9)
+        ) + packed + byteArrayOf(0xF7.toByte())
+    }
+
+    /**
+     * Build a FILE_LIST *error* response: a raw non-zero [status] byte at position 9, with the
+     * device's "invalid id" text as the (7-bit-packed) body. Mirrors what the hardware sends for
+     * a node it refuses to list. The body is deliberately non-empty to prove the fix keys off the
+     * status byte, not off an empty body.
+     */
+    private fun buildFakeFileListError(reqId: Int, status: Int): ByteArray {
+        val packed = SysExProtocol.pack7bit("invalid id".toByteArray(Charsets.US_ASCII))
+        val reqHigh = ((reqId shr 7) and 0x0F).toByte()
+        val reqLow = (reqId and 0x7F).toByte()
+        return byteArrayOf(
+            0xF0.toByte(),
+            SysExProtocol.TE_ID_0,
+            SysExProtocol.TE_ID_1,
+            SysExProtocol.TE_ID_2,
+            0x00,               // deviceId
+            0x40,
+            reqHigh,
+            reqLow,
+            SysExProtocol.TE_SYSEX_FILE.toByte(),
+            status.toByte(),    // raw status byte at position 9
         ) + packed + byteArrayOf(0xF7.toByte())
     }
 }

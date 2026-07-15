@@ -608,6 +608,16 @@ open class FileTransferClient(
         val portId = outputPortId() ?: return null
         val frame = SysExProtocol.buildFileListByNodeFrame(deviceId(), nodeId, page = page, requestId = requestId)
         val resp = awaitFileOp(requestId, FileOpKind.LIST, portId, frame, FILE_LIST_TIMEOUT_MS) ?: return null
+        // A non-success status (e.g. the device answering "invalid id" for a node it won't LIST)
+        // is a terminal error, NOT list data. Return null so listAllChildren stops paging and a
+        // not-found path segment resolves to null — otherwise the error-text body gets stripped of
+        // its 2-byte prefix and mis-parsed into a bogus entry, spinning listAllChildren forever.
+        if (resp.status != SysExProtocol.STATUS_OK &&
+            resp.status < SysExProtocol.STATUS_SPECIFIC_SUCCESS_START
+        ) {
+            Log.d("EP133APP", "MIDI META: listNodeBody(node=$nodeId page=$page) device error status=${resp.status} — terminal")
+            return null
+        }
         // Body = [page u16 BE][entries...]; skip the 2-byte page word to return raw entry data.
         return if (resp.body.size > 2) resp.body.copyOfRange(2, resp.body.size) else ByteArray(0)
     }
