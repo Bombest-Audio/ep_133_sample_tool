@@ -18,18 +18,25 @@ class NativeSynth(audioManager: AudioManager) : SynthEngine {
     private val ptr: Long
 
     init {
-        System.loadLibrary("nativesynth")
-        val sampleRate = audioManager
-            .getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)
-            ?.toIntOrNull() ?: 48000
-        ptr = nativeCreate(sampleRate)
+        ptr = try {
+            System.loadLibrary("nativesynth")
+            val sampleRate = audioManager
+                .getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)
+                ?.toIntOrNull() ?: 48000
+            nativeCreate(sampleRate)
+        } catch (e: UnsatisfiedLinkError) {
+            // Missing .so for this ABI: degrade to the documented no-op behavior
+            // instead of crashing the app at startup.
+            Log.e(TAG, "nativesynth library unavailable - audio will be silent", e)
+            0L
+        }
         if (ptr == 0L) Log.e(TAG, "Native synth failed to open - audio will be silent")
     }
 
-    override fun noteOn(note: Int, velocity: Int) = nativeNoteOn(ptr, note, velocity)
-    override fun noteOff(note: Int)                = nativeNoteOff(ptr, note)
-    override fun allNotesOff()                     = nativeAllNotesOff(ptr)
-    override fun close()                           = nativeClose(ptr)
+    override fun noteOn(note: Int, velocity: Int) { if (ptr != 0L) nativeNoteOn(ptr, note, velocity) }
+    override fun noteOff(note: Int) { if (ptr != 0L) nativeNoteOff(ptr, note) }
+    override fun allNotesOff() { if (ptr != 0L) nativeAllNotesOff(ptr) }
+    override fun close() { if (ptr != 0L) nativeClose(ptr) }
 
     private external fun nativeCreate(sampleRate: Int): Long
     private external fun nativeNoteOn(ptr: Long, note: Int, velocity: Int)
