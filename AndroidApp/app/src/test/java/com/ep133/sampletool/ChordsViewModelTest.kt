@@ -221,6 +221,39 @@ class ChordsViewModelTest {
         assertEquals(PadChannel.D, vm.chordMapGroup.value)
     }
 
+    // ── selectProgression cleanup ─────────────────────────────────────────────
+
+    @Test
+    fun selectProgression_cancelsActiveChordMap() = runTest {
+        val repo = FakeMIDIRepo(initialConnected = true)
+        val vm = makeVm(repo = repo)
+        vm.selectSound(FAKE_SOUND)
+        vm.selectProgression(SIMPLE_PROGRESSION)
+        vm.programToGroup(PadChannel.A)
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals(PadChannel.A, vm.chordMapGroup.value)
+
+        // Switching progressions must tear down the chord-map session
+        vm.selectProgression(null)
+        assertNull(vm.chordMapGroup.value)
+    }
+
+    @Test
+    fun selectProgression_stopsPreviewChord() = runTest {
+        val synth = RecordingSynth()
+        val repo = FakeMIDIRepo() // offline, so preview routes to the local synth
+        val vm = ChordsViewModel(
+            chordPlayer = ChordPlayer(midi = repo, localSynth = synth),
+            midiRepo = repo,
+            ioDispatcher = testDispatcher,
+        )
+        vm.previewChord(SIMPLE_PROGRESSION.degrees.first())
+        assertTrue(synth.notesOn > 0)
+
+        vm.selectProgression(SIMPLE_PROGRESSION)
+        assertTrue("Preview notes must be released on selection change", synth.allOffCalls > 0)
+    }
+
     // ── sound selection over MIDI ─────────────────────────────────────────────
 
     @Test
@@ -297,6 +330,16 @@ class ChordsViewModelTest {
         // runs on virtual time and is controllable from the scheduler.
         return ChordsViewModel(chordPlayer = chordPlayer, midiRepo = repo, ioDispatcher = testDispatcher)
     }
+}
+
+/** SynthEngine spy counting note events - avoids AudioTrack in unit tests. */
+private class RecordingSynth : SynthEngine {
+    var notesOn = 0
+    var allOffCalls = 0
+    override fun noteOn(note: Int, velocity: Int) { notesOn++ }
+    override fun noteOff(note: Int) {}
+    override fun allNotesOff() { allOffCalls++ }
+    override fun close() {}
 }
 
 /** SynthEngine stub that does nothing - avoids AudioTrack in unit tests. */

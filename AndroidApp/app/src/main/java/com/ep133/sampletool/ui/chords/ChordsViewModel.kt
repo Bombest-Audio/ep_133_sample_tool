@@ -101,6 +101,10 @@ class ChordsViewModel(
 
     fun selectProgression(p: ChordProgression?) {
         stopPlayback()
+        // A tapped preview chord or an active chord-map session belongs to the previous
+        // progression; kill both so no notes or listeners outlive the selection change.
+        chordPlayer.stopCurrentChord()
+        cancelChordMap()
         _selectedProgression.value = p
     }
 
