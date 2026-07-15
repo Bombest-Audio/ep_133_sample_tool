@@ -221,6 +221,37 @@ class ChordsViewModelTest {
         assertEquals(PadChannel.D, vm.chordMapGroup.value)
     }
 
+    // ── chord-map note ownership ──────────────────────────────────────────────
+
+    @Test
+    fun chordMap_staleNoteOff_doesNotKillNewerChord() = runTest {
+        val repo = FakeMIDIRepo(initialConnected = true)
+        val vm = makeVm(repo = repo)
+        vm.selectSound(FAKE_SOUND)
+        vm.selectProgression(SIMPLE_PROGRESSION)
+        vm.programToGroup(PadChannel.A)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val base = PadChannel.A.baseNote
+        fun midiIn(vararg bytes: Int) {
+            repo.port.onMidiReceived?.invoke("in", bytes.map { it.toByte() }.toByteArray())
+            testDispatcher.scheduler.runCurrent()
+        }
+
+        midiIn(0x90, base, 100)     // press pad 0 -> chord I sounds
+        midiIn(0x90, base + 1, 100) // press pad 1 -> chord IV replaces it
+        val sentAfterSecondPress = repo.port.sent.size
+
+        midiIn(0x80, base, 0)       // release pad 0: stale, must be ignored
+        assertEquals(
+            "Releasing a superseded pad must not stop the newer chord",
+            sentAfterSecondPress, repo.port.sent.size,
+        )
+
+        midiIn(0x80, base + 1, 0)   // release the owning pad: chord stops
+        assertTrue(repo.port.sent.size > sentAfterSecondPress)
+    }
+
     // ── selectProgression cleanup ─────────────────────────────────────────────
 
     @Test
