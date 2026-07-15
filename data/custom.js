@@ -326,3 +326,267 @@ if (typeof window !== "undefined" && window.spliceSync) {
     }
   })();
 };
+
+// ---------------------------------------------------------------------------
+// CLAP FX PANEL (Electron desktop only)
+//
+// window.clapTools is exposed by the Electron preload script and backed by
+// the standalone tools/clap-render CLI (see docs/adr-001-clap-hosting.md).
+// On other platforms it does not exist and this whole block is inert. The
+// panel also stays hidden when the CLI binary has not been built.
+//
+// Import handoff: the rendered WAV becomes a draggable chip. On dragstart
+// the File is attached to the drag's dataTransfer, exactly like the Splice
+// panel above, so dropping on a pad or sample slot goes through the app's
+// own onDrop handlers.
+// ---------------------------------------------------------------------------
+if (typeof window !== "undefined" && window.clapTools) {
+  (function () {
+    var MAX_PARAM_ROWS = 48;
+    var plugin = null;   // { path, name }
+    var wavFile = null;  // { path, name }
+    var params = [];     // { id, name, min, max, defaultValue, value }
+    var rendered = null; // { name, file (File) }
+    var panel, bodyEl, statusEl, pluginBtn, wavBtn, paramsEl, renderBtn, resultEl;
+    var collapsed = true;
+    var rendering = false;
+
+    function styleEl(el, styles) {
+      var key;
+      for (key in styles) { if (styles.hasOwnProperty(key)) { el.style[key] = styles[key]; } }
+      return el;
+    }
+
+    function setStatus(text, isError) {
+      statusEl.textContent = text || "";
+      statusEl.style.color = isError ? "#f45050" : "#9a9a9a";
+    }
+
+    function button(label) {
+      var b = document.createElement("button");
+      b.textContent = label;
+      styleEl(b, {
+        display: "block", width: "100%", margin: "3px 0", padding: "4px 6px",
+        fontSize: "11px", fontFamily: "monospace", background: "#2c2c2c",
+        color: "#e5e6e6", border: "1px solid #444444", borderRadius: "3px",
+        cursor: "pointer", textAlign: "left", whiteSpace: "nowrap",
+        overflow: "hidden", textOverflow: "ellipsis"
+      });
+      return b;
+    }
+
+    function renderParams() {
+      paramsEl.innerHTML = "";
+      var count = Math.min(params.length, MAX_PARAM_ROWS);
+      var i;
+      for (i = 0; i < count; i++) {
+        (function (p) {
+          var row = document.createElement("div");
+          styleEl(row, { display: "flex", alignItems: "center", margin: "2px 0" });
+          var name = document.createElement("span");
+          name.textContent = p.name;
+          name.title = p.name + " [" + p.min + " .. " + p.max + "]";
+          styleEl(name, {
+            flex: "1", fontSize: "10px", whiteSpace: "nowrap",
+            overflow: "hidden", textOverflow: "ellipsis", marginRight: "4px"
+          });
+          row.appendChild(name);
+          var input = document.createElement("input");
+          input.type = "number";
+          input.min = String(p.min);
+          input.max = String(p.max);
+          input.step = "any";
+          input.value = String(p.value);
+          styleEl(input, {
+            width: "64px", fontSize: "10px", fontFamily: "monospace",
+            background: "#1d1d1d", color: "#e5e6e6",
+            border: "1px solid #444444", borderRadius: "3px"
+          });
+          input.addEventListener("change", function () {
+            var v = parseFloat(input.value);
+            if (isNaN(v)) { input.value = String(p.value); return; }
+            if (v < p.min) { v = p.min; }
+            if (v > p.max) { v = p.max; }
+            p.value = v;
+            input.value = String(v);
+          });
+          row.appendChild(input);
+          paramsEl.appendChild(row);
+        })(params[i]);
+      }
+      if (params.length > count) {
+        var more = document.createElement("div");
+        more.textContent = "(" + (params.length - count) + " more parameters not shown)";
+        styleEl(more, { fontSize: "10px", opacity: "0.6", margin: "2px 0" });
+        paramsEl.appendChild(more);
+      }
+    }
+
+    function renderResult() {
+      resultEl.innerHTML = "";
+      if (!rendered) { return; }
+      var chip = document.createElement("div");
+      chip.textContent = "≡ " + rendered.name;
+      chip.title = "Drag onto a pad or sample slot to import";
+      styleEl(chip, {
+        padding: "5px 8px", margin: "4px 0 2px 0", fontSize: "11px",
+        background: "#2c2c2c", color: "#e5e6e6", borderRadius: "3px",
+        cursor: "grab", whiteSpace: "nowrap", overflow: "hidden",
+        textOverflow: "ellipsis"
+      });
+      chip.draggable = true;
+      chip.addEventListener("dragstart", function (ev) {
+        if (!ev.dataTransfer) { ev.preventDefault(); return; }
+        ev.dataTransfer.items.add(rendered.file);
+        ev.dataTransfer.effectAllowed = "copy";
+      });
+      resultEl.appendChild(chip);
+
+      var preview = document.createElement("button");
+      preview.textContent = "▶ preview";
+      styleEl(preview, {
+        margin: "0 0 2px 0", padding: "2px 6px", fontSize: "10px",
+        fontFamily: "monospace", background: "#1d1d1d", color: "#e5e6e6",
+        border: "1px solid #444444", borderRadius: "3px", cursor: "pointer"
+      });
+      preview.addEventListener("click", function () {
+        var url = URL.createObjectURL(rendered.file);
+        var audio = new Audio(url);
+        audio.addEventListener("ended", function () { URL.revokeObjectURL(url); });
+        audio.play();
+      });
+      resultEl.appendChild(preview);
+    }
+
+    function choosePlugin() {
+      window.clapTools.choosePlugin().then(function (result) {
+        if (!result) { return; }
+        plugin = result;
+        params = [];
+        rendered = null;
+        pluginBtn.textContent = "plugin: " + plugin.name;
+        setStatus("loading parameters...");
+        renderParams();
+        renderResult();
+        window.clapTools.listParams(plugin.path).then(function (list) {
+          var i;
+          params = [];
+          for (i = 0; i < list.length; i++) {
+            params.push({
+              id: list[i].id, name: list[i].name, min: list[i].min,
+              max: list[i].max, defaultValue: list[i].defaultValue,
+              value: list[i].defaultValue
+            });
+          }
+          setStatus(params.length + " parameters");
+          renderParams();
+        }, function (err) {
+          setStatus(String(err && err.message ? err.message : err), true);
+        });
+      });
+    }
+
+    function chooseWav() {
+      window.clapTools.chooseWav().then(function (result) {
+        if (!result) { return; }
+        wavFile = result;
+        rendered = null;
+        wavBtn.textContent = "wav: " + wavFile.name;
+        renderResult();
+      });
+    }
+
+    function doRender() {
+      if (rendering) { return; }
+      if (!plugin) { setStatus("choose a plugin first", true); return; }
+      if (!wavFile) { setStatus("choose a WAV first", true); return; }
+      rendering = true;
+      renderBtn.textContent = "rendering...";
+      setStatus("");
+      var changed = [];
+      var i;
+      for (i = 0; i < params.length; i++) {
+        if (params[i].value !== params[i].defaultValue) {
+          changed.push({ id: params[i].id, value: params[i].value });
+        }
+      }
+      window.clapTools.render({
+        pluginPath: plugin.path, wavPath: wavFile.path, params: changed
+      }).then(function (result) {
+        rendered = {
+          name: result.name,
+          file: new File([result.bytes], result.name, { type: "audio/wav" })
+        };
+        setStatus("rendered - drag the chip to import");
+        renderResult();
+      }, function (err) {
+        setStatus(String(err && err.message ? err.message : err), true);
+      }).then(function () {
+        rendering = false;
+        renderBtn.textContent = "render";
+      });
+    }
+
+    function buildPanel() {
+      panel = document.createElement("div");
+      styleEl(panel, {
+        position: "fixed", right: "260px", bottom: "10px", width: "240px",
+        background: "#151515", color: "#e5e6e6", zIndex: "99999",
+        border: "1px solid #333333", borderRadius: "6px",
+        fontFamily: "monospace", boxShadow: "0 2px 10px rgba(0,0,0,0.5)"
+      });
+
+      var header = document.createElement("div");
+      header.textContent = "CLAP FX";
+      styleEl(header, {
+        padding: "6px 8px", fontSize: "11px", letterSpacing: "1px",
+        cursor: "pointer", userSelect: "none", background: "#202020",
+        borderRadius: "6px 6px 0 0"
+      });
+      header.addEventListener("click", function () {
+        collapsed = !collapsed;
+        bodyEl.style.display = collapsed ? "none" : "block";
+      });
+      panel.appendChild(header);
+
+      bodyEl = document.createElement("div");
+      styleEl(bodyEl, { display: "none", padding: "6px 8px 8px 8px" });
+      panel.appendChild(bodyEl);
+
+      pluginBtn = button("choose plugin...");
+      pluginBtn.addEventListener("click", choosePlugin);
+      bodyEl.appendChild(pluginBtn);
+
+      wavBtn = button("choose wav...");
+      wavBtn.addEventListener("click", chooseWav);
+      bodyEl.appendChild(wavBtn);
+
+      paramsEl = document.createElement("div");
+      styleEl(paramsEl, { maxHeight: "160px", overflowY: "auto", margin: "4px 0" });
+      bodyEl.appendChild(paramsEl);
+
+      renderBtn = button("render");
+      renderBtn.style.textAlign = "center";
+      renderBtn.addEventListener("click", doRender);
+      bodyEl.appendChild(renderBtn);
+
+      resultEl = document.createElement("div");
+      bodyEl.appendChild(resultEl);
+
+      statusEl = document.createElement("div");
+      styleEl(statusEl, { fontSize: "10px", color: "#9a9a9a", marginTop: "2px", minHeight: "12px" });
+      bodyEl.appendChild(statusEl);
+
+      document.body.appendChild(panel);
+    }
+
+    window.clapTools.available().then(function (ok) {
+      if (!ok) { return; } // CLI not built; stay out of the way
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", buildPanel);
+      } else {
+        buildPanel();
+      }
+    });
+  })();
+};

@@ -27,3 +27,19 @@ contextBridge.exposeInMainWorld('spliceSync', {
     ipcRenderer.on('splice:new-samples', (event, samples) => callback(samples))
   }
 })
+
+// CLAP offline render bridge. Same isolation rules as spliceSync: the page
+// only sees this frozen API. Consumed by the CLAP FX panel in data/custom.js
+// (window.clapTools). Paths are opaque tokens obtained from the choose
+// dialogs; the main process rejects anything it did not hand out.
+contextBridge.exposeInMainWorld('clapTools', {
+  available: () => ipcRenderer.invoke('clap:available'),
+  choosePlugin: () => ipcRenderer.invoke('clap:choose-plugin'),
+  chooseWav: () => ipcRenderer.invoke('clap:choose-wav'),
+  listParams: (pluginPath) => ipcRenderer.invoke('clap:list-params', String(pluginPath)),
+  render: (request) => ipcRenderer.invoke('clap:render', {
+    pluginPath: request ? String(request.pluginPath) : '',
+    wavPath: request ? String(request.wavPath) : '',
+    params: request && Array.isArray(request.params) ? request.params : []
+  })
+})
