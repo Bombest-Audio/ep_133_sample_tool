@@ -89,4 +89,19 @@ object TestTags {
     const val KB_IMPORT_DISMISS_BUTTON = "kb_import_dismiss_button"
     const val KB_IMPORT_PROGRESS_TEXT = "kb_import_progress_text"
     fun kbImportResultRow(name: String) = "kb_import_result_row_$name"
+
+    // Kit Builder prep (batch processing before anything hits the device)
+    const val KB_PREP_NORMALIZE_TOGGLE = "kb_prep_normalize_toggle"
+    const val KB_PREP_TRIM_TOGGLE = "kb_prep_trim_toggle"
+    const val KB_PREP_MONO_TOGGLE = "kb_prep_mono_toggle"
+    const val KB_STAGED_BUTTON = "kb_staged_button"
+    const val KB_STAGED_PANEL = "kb_staged_panel"
+    fun kbStagedRow(name: String) = "kb_staged_row_$name"
+    fun kbStagedAudition(name: String) = "kb_staged_audition_$name"
+    fun kbStagedDuplicate(name: String) = "kb_staged_duplicate_$name"
+    fun kbStagedRename(name: String) = "kb_staged_rename_$name"
+    fun kbStagedDelete(name: String) = "kb_staged_delete_$name"
+    const val KB_STAGED_RENAME_DIALOG = "kb_staged_rename_dialog"
+    const val KB_STAGED_RENAME_FIELD = "kb_staged_rename_field"
+    const val KB_STAGED_RENAME_CONFIRM = "kb_staged_rename_confirm"
 }
