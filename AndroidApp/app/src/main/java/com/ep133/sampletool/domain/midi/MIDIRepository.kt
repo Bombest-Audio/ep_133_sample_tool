@@ -496,8 +496,13 @@ open class MIDIRepository internal constructor(
 
     /**
      * Enumerate ALL children of [nodeId], paging FILE_LIST until an empty page. Thin
-     * delegation to [FileTransferClient.listAllChildren] (Phase 6 pattern-write spike —
+     * delegation to [FileTransferClient.listAllChildren] (Phase 6 pattern-write spike,
      * closes the page-0-only enumeration gap).
+     *
+     * Contract: call [ensureFileSessionInit] first (FILE_INIT must already be in effect),
+     * and do not run this concurrently with other file ops. Like the underlying
+     * [FileTransferClient.listNodeBody] it is an UNLOCKED primitive, so the caller owns
+     * session-init ordering and serialization (mirrors the notes on [getMetadataJson]).
      */
     open suspend fun listAllChildren(nodeId: Int): List<SysExProtocol.FileEntry> = ftc.listAllChildren(nodeId)
 
