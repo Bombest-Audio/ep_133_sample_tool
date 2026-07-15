@@ -10,8 +10,8 @@ import kotlinx.coroutines.delay
  * Plays chords and progressions via MIDI.
  *
  * Routes through [MIDIRepository] when an EP-133 is connected, or falls back to
- * [LocalSynth] (phone speakers) when offline. Callers do not need to check
- * connection state - routing is handled internally.
+ * the injected [SynthEngine] (on-device audio) when offline. Callers do not need
+ * to check connection state - routing is handled internally.
  */
 class ChordPlayer(
     private val midi: MIDIRepository,
