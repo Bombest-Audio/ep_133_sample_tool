@@ -62,6 +62,7 @@ import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.domain.staging.SampleStagingStore
 import com.ep133.sampletool.domain.staging.StagedSample
 import java.io.File
+import com.ep133.sampletool.domain.pack.KitInstrument
 import com.ep133.sampletool.domain.pack.KitPack
 import com.ep133.sampletool.domain.pack.KitSample
 import com.ep133.sampletool.domain.pack.SamplePackLoader
@@ -294,7 +295,9 @@ class KitBuilderViewModel(
             return
         }
         _globals.update {
-            it.copy(pack = pack, packLoading = false, category = pack.categories.first().id,
+            // firstOrNull: an MPC expansion can be all keygroup instruments with no
+            // one-shot categories, and that's still a loadable pack.
+            it.copy(pack = pack, packLoading = false, category = pack.categories.firstOrNull()?.id,
                 selectedForImport = emptySet())
         }
         updateCurrent { it.copy(loadStates = emptyMap(), loadedBanner = null) }
@@ -753,6 +756,24 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
             // ── Category tabs — sticky so the browser keeps context while the samples scroll ──
             val pack = s.pack
             if (pack != null) {
+                // ── MPC keygroup instruments — importable chord voices, not pad one-shots ──
+                if (pack.instruments.isNotEmpty()) {
+                    item {
+                        Text(
+                            "INSTRUMENTS · ${pack.instruments.size} · MPC KEYGROUP",
+                            fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.2.sp,
+                            color = LocalEP133Tokens.current.text3,
+                            modifier = Modifier.fillMaxWidth()
+                                .background(LocalEP133Tokens.current.panel)
+                                .padding(14.dp, 8.dp, 14.dp, 4.dp)
+                                .testTag(TestTags.KB_INSTRUMENT_SECTION),
+                        )
+                    }
+                    items(pack.instruments, key = { it.uri }) { instrument ->
+                        KbInstrumentRow(instrument)
+                    }
+                }
+
                 stickyHeader {
                     KbCategoryTabs(
                         pack = pack,
@@ -762,8 +783,11 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                 }
 
                 // ── Sample list — flattened into the page-level LazyColumn ──
+                // (skipped when the pack has no one-shot categories at all, e.g. an
+                // MPC expansion that is nothing but keygroup instruments)
                 val samples = pack.categories.firstOrNull { it.id == s.category }?.samples.orEmpty()
                 val uriToPad = s.assignments.entries.associate { (idx, smp) -> smp.uri to KB_PAD_LABELS[idx] }
+                if (s.category != null) {
                     item {
                         Row(Modifier.fillMaxWidth().background(t.panel).padding(14.dp, 8.dp, 14.dp, 4.dp)) {
                             Text("${s.category} · ${samples.size}", fontFamily = Mono, fontSize = 9.sp,
@@ -783,6 +807,7 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                             onToggleSelect = { viewModel.onToggleImportSelect(sample) },
                         )
                     }
+                }
             } else {
                 // Empty state — no pack loaded yet.
                 item {
@@ -1311,6 +1336,40 @@ private fun KbImportPanel(
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
+        }
+    }
+}
+
+// ── Instrument row — an MPC KEYGROUP program surfaced as an importable chord voice ──
+@Composable
+private fun KbInstrumentRow(instrument: KitInstrument) {
+    val t = LocalEP133Tokens.current
+    Row(
+        Modifier.fillMaxWidth().background(t.panel)
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .testTag(TestTags.kbInstrumentRow(instrument.name)),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        Box(
+            Modifier.size(30.dp).clip(CircleShape).background(t.inset)
+                .border(1.dp, t.rule, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("♪", fontSize = 11.sp, color = t.text2)
+        }
+        Column(Modifier.weight(1f)) {
+            Text(instrument.name, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(instrument.meta, fontFamily = Mono, fontSize = 9.sp, color = t.text3)
+        }
+        Box(
+            Modifier.clip(PanelRadius).background(t.inset, PanelRadius)
+                .border(1.dp, t.rule, PanelRadius)
+                .padding(horizontal = 6.dp, vertical = 3.dp),
+        ) {
+            Text("CHORD VOICE", fontFamily = Mono, fontSize = 8.5.sp,
+                fontWeight = FontWeight.Bold, color = t.text2)
         }
     }
 }
