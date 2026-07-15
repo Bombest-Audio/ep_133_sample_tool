@@ -23,6 +23,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -54,7 +56,12 @@ import com.ep133.sampletool.domain.midi.BatchPackImporter
 import com.ep133.sampletool.domain.midi.ConvertedSample
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.SampleImportManager
+import com.ep133.sampletool.domain.midi.SamplePrep
+import com.ep133.sampletool.domain.midi.SamplePrepOptions
 import com.ep133.sampletool.domain.model.PadChannel
+import com.ep133.sampletool.domain.staging.SampleStagingStore
+import com.ep133.sampletool.domain.staging.StagedSample
+import java.io.File
 import com.ep133.sampletool.domain.pack.KitPack
 import com.ep133.sampletool.domain.pack.KitSample
 import com.ep133.sampletool.domain.pack.SamplePackLoader
@@ -160,6 +167,10 @@ data class KitBuilderState(
     val devicePads: Map<Int, String> = emptyMap(),
     val selectedForImport: Set<Uri> = emptySet(),
     val importState: KbImportState = KbImportState(),
+    val prep: SamplePrepOptions = SamplePrepOptions(),
+    val staged: List<StagedSample> = emptyList(),
+    val stagedPanelVisible: Boolean = false,
+    val auditioningStagedName: String? = null,
 )
 
 /** The pack-browser globals (shared across groups — a pack is a browsing resource, not kit state). */
@@ -170,6 +181,10 @@ private data class KbGlobals(
     val auditioningUri: Uri? = null,
     val selectedForImport: Set<Uri> = emptySet(),
     val importState: KbImportState = KbImportState(),
+    val prep: SamplePrepOptions = SamplePrepOptions(),
+    val staged: List<StagedSample> = emptyList(),
+    val stagedPanelVisible: Boolean = false,
+    val auditioningStagedName: String? = null,
 )
 
 class KitBuilderViewModel(
@@ -194,6 +209,8 @@ class KitBuilderViewModel(
                 loading = gs.loading, loadStates = gs.loadStates, loadedBanner = gs.loadedBanner,
                 clearingPad = gs.clearingPad, devicePads = gs.devicePads,
                 selectedForImport = g.selectedForImport, importState = g.importState,
+                prep = g.prep, staged = g.staged, stagedPanelVisible = g.stagedPanelVisible,
+                auditioningStagedName = g.auditioningStagedName,
             )
         }.stateIn(viewModelScope, SharingStarted.Eagerly, KitBuilderState())
 
@@ -330,11 +347,53 @@ class KitBuilderViewModel(
         s.copy(assignments = assignments, selectedPad = next, loadStates = emptyMap(), loadedBanner = null)
     }
 
-    /** Toggle audition playback of [sample] via MediaPlayer (local preview, not the device). */
+    /**
+     * Toggle audition playback of [sample] via MediaPlayer (local preview, not the device).
+     *
+     * With no prep toggles on this plays the source URI directly. With prep enabled it
+     * previews the PROCESSED result: the sample is converted, prepped, staged as a local
+     * WAV (see [SampleStagingStore]), and that staged file is played — what you hear is
+     * exactly what an import would upload. The source file is never modified.
+     */
     fun onAudition(sample: KitSample, context: Context) {
         val cur = _globals.value.auditioningUri
         stopAudition()
         if (cur == sample.uri) return   // tapped the playing row's button → just stop
+
+        val prep = _globals.value.prep
+        if (!prep.enabled) {
+            playSource(sample, context)
+            return
+        }
+
+        // Prepped preview: convert + prep + stage off the main thread, then play the staged WAV.
+        _globals.update { it.copy(auditioningUri = sample.uri) }
+        viewModelScope.launch {
+            val staged = try {
+                withContext(Dispatchers.IO) {
+                    val converted = manager.convert(context, sample.uri, enforceMaxLength = false)
+                    val prepped = SamplePrep.apply(converted, prep)
+                    val name = manager.sanitizeName(sample.name + ".wav") ?: "sample.wav"
+                    store(context).stage(name, prepped)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "KitBuilder: prep preview failed for ${sample.name}", e)
+                _snackbarMessage.value = "Can't preview ${sample.name}: ${e.message ?: e}"
+                stopAudition()
+                return@launch
+            }
+            refreshStaged(context)
+            // Only start playback if this row is still the one being auditioned.
+            if (_globals.value.auditioningUri == sample.uri) {
+                playFile(staged.file) { _globals.update { it.copy(auditioningUri = sample.uri) } }
+            }
+        }
+    }
+
+    /** Play [sample]'s source URI (the untouched pack file). */
+    private fun playSource(sample: KitSample, context: Context) {
         try {
             player = MediaPlayer().apply {
                 setDataSource(context, sample.uri)
@@ -353,11 +412,104 @@ class KitBuilderViewModel(
         }
     }
 
+    /** Play a local file via MediaPlayer; [onStarted] updates the playing indicator. */
+    private fun playFile(file: File, onStarted: () -> Unit) {
+        try {
+            player = MediaPlayer().apply {
+                setDataSource(file.absolutePath)
+                setOnCompletionListener { stopAudition() }
+                setOnErrorListener { _, _, _ -> stopAudition(); true }
+                setOnPreparedListener { it.start() }
+                prepareAsync()
+            }
+            onStarted()
+        } catch (e: Exception) {
+            Log.e(TAG, "KitBuilder: file audition failed for ${file.name}", e)
+            _snackbarMessage.value = "Can't play ${file.name}"
+            stopAudition()
+        }
+    }
+
     private fun stopAudition() {
         try { player?.stop() } catch (_: Exception) {}
         try { player?.release() } catch (_: Exception) {}
         player = null
-        _globals.update { it.copy(auditioningUri = null) }
+        _globals.update { it.copy(auditioningUri = null, auditioningStagedName = null) }
+    }
+
+    // ── Prep toggles + staged-sample management (issue #52: prep before upload) ──
+
+    /** Staging area in app-private storage; prepped copies live here, never the sources. */
+    private fun store(context: Context) =
+        SampleStagingStore(File(context.filesDir, "staged_samples"))
+
+    fun onTogglePrepNormalize() = updatePrep { it.copy(normalize = !it.normalize) }
+    fun onTogglePrepTrimSilence() = updatePrep { it.copy(trimSilence = !it.trimSilence) }
+    fun onTogglePrepMono() = updatePrep { it.copy(toMono = !it.toMono) }
+
+    private fun updatePrep(block: (SamplePrepOptions) -> SamplePrepOptions) =
+        _globals.update { it.copy(prep = block(it.prep)) }
+
+    /** Show/hide the staged-samples panel (refreshes the list when opening). */
+    fun onToggleStagedPanel(context: Context) {
+        val show = !_globals.value.stagedPanelVisible
+        _globals.update { it.copy(stagedPanelVisible = show) }
+        if (show) refreshStaged(context)
+    }
+
+    /** Re-read the staging directory into state. */
+    fun refreshStaged(context: Context) {
+        viewModelScope.launch {
+            val items = withContext(Dispatchers.IO) { store(context).list() }
+            _globals.update { it.copy(staged = items) }
+        }
+    }
+
+    /** Toggle audition of a staged (already processed) WAV. */
+    fun onAuditionStaged(item: StagedSample) {
+        val cur = _globals.value.auditioningStagedName
+        stopAudition()
+        if (cur == item.name) return
+        playFile(item.file) { _globals.update { it.copy(auditioningStagedName = item.name) } }
+    }
+
+    /** Rename a staged sample. [rawTo] is sanitized before it touches the filesystem. */
+    fun onRenameStaged(from: String, rawTo: String, context: Context) {
+        val to = manager.sanitizeName(rawTo)
+        if (to == null) {
+            _snackbarMessage.value = "Invalid name: $rawTo"
+            return
+        }
+        stagingOp(context, "Couldn't rename $from") {
+            requireNotNull(store(context).rename(from, to)) { "name already staged or file missing" }
+        }
+    }
+
+    /** Delete a staged sample (the local processed copy only — never the source file). */
+    fun onDeleteStaged(name: String, context: Context) =
+        stagingOp(context, "Couldn't delete $name") {
+            require(store(context).delete(name)) { "file missing" }
+        }
+
+    /** Duplicate a staged sample as "<name> copy.wav". */
+    fun onDuplicateStaged(name: String, context: Context) =
+        stagingOp(context, "Couldn't duplicate $name") {
+            requireNotNull(store(context).duplicate(name)) { "file missing" }
+        }
+
+    /** Run a staging file op on IO, surface failures as a snackbar, then refresh the list. */
+    private fun stagingOp(context: Context, failureLabel: String, op: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { op() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "KitBuilder: staging op failed", e)
+                _snackbarMessage.value = "$failureLabel: ${e.message ?: e}"
+            }
+            refreshStaged(context)
+        }
     }
 
     /**
@@ -461,6 +613,10 @@ class KitBuilderViewModel(
      * item list, and (fail-fast, mirroring the importer's own guard) when no device is
      * connected. `running` is reset in a `finally` so cancellation and failure both restore
      * the buttons.
+     *
+     * The active [SamplePrepOptions] are snapshotted at launch and applied to every
+     * converted sample (post-decode, pre-upload) — toggling prep mid-batch doesn't
+     * change what an in-flight batch uploads. Defaults-off prep is a no-op passthrough.
      */
     internal fun importPack(
         items: List<BatchImportItem>,
@@ -471,12 +627,13 @@ class KitBuilderViewModel(
             _snackbarMessage.value = "Connect the EP-133 before importing"
             return
         }
+        val prep = _globals.value.prep
         _globals.update {
             it.copy(importState = KbImportState(running = true, total = items.size))
         }
         importJob = viewModelScope.launch {
             try {
-                importer.import(items, convert).collect { event ->
+                importer.import(items) { SamplePrep.apply(convert(it), prep) }.collect { event ->
                     updateImport { st ->
                         when (event) {
                             is BatchImportEvent.Blocked ->
@@ -637,6 +794,18 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
             }
           }
 
+            // ── Prep bar — per-batch processing toggles + staged-samples panel access ──
+            if (s.pack != null) {
+                KbPrepBar(
+                    prep = s.prep,
+                    stagedCount = s.staged.size,
+                    onToggleNormalize = viewModel::onTogglePrepNormalize,
+                    onToggleTrimSilence = viewModel::onTogglePrepTrimSilence,
+                    onToggleMono = viewModel::onTogglePrepMono,
+                    onToggleStagedPanel = { viewModel.onToggleStagedPanel(context) },
+                )
+            }
+
             // ── Import bar — batch upload of pack one-shots to /sounds (Phase 11) ──
             if (s.pack != null) {
                 KbImportBar(
@@ -657,6 +826,20 @@ fun KitBuilderScreen(viewModel: KitBuilderViewModel, modifier: Modifier = Modifi
                     onSwitchPack = viewModel::triggerPackPick,
                 )
             }
+        }
+
+        // ── Staged-samples panel — local file management for prepped copies ──
+        if (s.stagedPanelVisible) {
+            KbStagedPanel(
+                staged = s.staged,
+                auditioningName = s.auditioningStagedName,
+                onAudition = viewModel::onAuditionStaged,
+                onDuplicate = { viewModel.onDuplicateStaged(it, context) },
+                onDelete = { viewModel.onDeleteStaged(it, context) },
+                onRename = { from, to -> viewModel.onRenameStaged(from, to, context) },
+                onDismiss = { viewModel.onToggleStagedPanel(context) },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
         }
 
         // ── Batch import progress / results panel ──
@@ -893,6 +1076,169 @@ private fun KbImportAction(
                 else -> t.accentInk
             })
     }
+}
+
+// ── Prep bar — batch processing toggles applied before upload/staging ─────────
+@Composable
+private fun KbPrepBar(
+    prep: SamplePrepOptions,
+    stagedCount: Int,
+    onToggleNormalize: () -> Unit,
+    onToggleTrimSilence: () -> Unit,
+    onToggleMono: () -> Unit,
+    onToggleStagedPanel: () -> Unit,
+) {
+    val t = LocalEP133Tokens.current
+    Row(
+        Modifier.fillMaxWidth().background(t.panel2).padding(14.dp, 8.dp, 14.dp, 0.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("PREP", fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.sp,
+            color = t.text3, modifier = Modifier.weight(1f))
+        KbImportAction(
+            label = "NORMALIZE",
+            enabled = true,
+            emphasized = prep.normalize,
+            onClick = onToggleNormalize,
+            modifier = Modifier.testTag(TestTags.KB_PREP_NORMALIZE_TOGGLE),
+        )
+        KbImportAction(
+            label = "TRIM SILENCE",
+            enabled = true,
+            emphasized = prep.trimSilence,
+            onClick = onToggleTrimSilence,
+            modifier = Modifier.testTag(TestTags.KB_PREP_TRIM_TOGGLE),
+        )
+        KbImportAction(
+            label = "MONO",
+            enabled = true,
+            emphasized = prep.toMono,
+            onClick = onToggleMono,
+            modifier = Modifier.testTag(TestTags.KB_PREP_MONO_TOGGLE),
+        )
+        KbImportAction(
+            label = "STAGED ($stagedCount)",
+            enabled = true,
+            emphasized = false,
+            onClick = onToggleStagedPanel,
+            modifier = Modifier.testTag(TestTags.KB_STAGED_BUTTON),
+        )
+    }
+}
+
+// ── Staged panel — rename / duplicate / delete the local processed copies ─────
+@Composable
+private fun KbStagedPanel(
+    staged: List<StagedSample>,
+    auditioningName: String?,
+    onAudition: (StagedSample) -> Unit,
+    onDuplicate: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onRename: (String, String) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val t = LocalEP133Tokens.current
+    var renaming by remember { mutableStateOf<String?>(null) }
+
+    renaming?.let { from ->
+        KbRenameDialog(
+            from = from,
+            onConfirm = { to -> onRename(from, to); renaming = null },
+            onDismiss = { renaming = null },
+        )
+    }
+
+    Column(
+        modifier.fillMaxWidth().padding(13.dp)
+            .clip(PanelRadius)
+            .background(t.panel, PanelRadius)
+            .border(1.dp, t.rule, PanelRadius)
+            .padding(12.dp)
+            .testTag(TestTags.KB_STAGED_PANEL),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("STAGED SAMPLES · LOCAL COPIES ONLY", fontFamily = Mono, fontSize = 10.sp,
+                fontWeight = FontWeight.Bold, color = t.text, modifier = Modifier.weight(1f))
+            Text("OK", fontFamily = Mono, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                color = t.accentInk,
+                modifier = Modifier.clickable { onDismiss() }.padding(6.dp))
+        }
+        if (staged.isEmpty()) {
+            Text("nothing staged yet — audition a sample with a prep toggle on",
+                fontFamily = Mono, fontSize = 9.sp, color = t.text3)
+        }
+        staged.forEach { item ->
+            Row(
+                Modifier.fillMaxWidth().testTag(TestTags.kbStagedRow(item.name)),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val playing = auditioningName == item.name
+                Text(if (playing) "■" else "▶", fontFamily = Mono, fontSize = 10.sp,
+                    color = if (playing) t.live else t.text2,
+                    modifier = Modifier.clickable { onAudition(item) }.padding(4.dp)
+                        .testTag(TestTags.kbStagedAudition(item.name)))
+                Text(item.name, fontFamily = Mono, fontSize = 9.sp, color = t.text2,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f))
+                Text("${item.sizeBytes / 1024} KB", fontFamily = Mono, fontSize = 9.sp,
+                    color = t.text3)
+                Text("DUP", fontFamily = Mono, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                    color = t.accentInk,
+                    modifier = Modifier.clickable { onDuplicate(item.name) }.padding(4.dp)
+                        .testTag(TestTags.kbStagedDuplicate(item.name)))
+                Text("REN", fontFamily = Mono, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                    color = t.accentInk,
+                    modifier = Modifier.clickable { renaming = item.name }.padding(4.dp)
+                        .testTag(TestTags.kbStagedRename(item.name)))
+                Text("DEL", fontFamily = Mono, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                    color = t.error,
+                    modifier = Modifier.clickable { onDelete(item.name) }.padding(4.dp)
+                        .testTag(TestTags.kbStagedDelete(item.name)))
+            }
+        }
+    }
+}
+
+// ── Rename dialog — new name for a staged sample (sanitized by the ViewModel) ─
+@Composable
+private fun KbRenameDialog(
+    from: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val t = LocalEP133Tokens.current
+    var value by remember(from) { mutableStateOf(from.removeSuffix(".wav")) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag(TestTags.KB_STAGED_RENAME_DIALOG),
+        containerColor = t.panel,
+        title = {
+            Text("Rename $from", fontFamily = Mono, fontSize = 12.sp,
+                fontWeight = FontWeight.Bold, color = t.text)
+        },
+        text = {
+            OutlinedTextField(
+                value = value,
+                onValueChange = { value = it },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().testTag(TestTags.KB_STAGED_RENAME_FIELD),
+            )
+        },
+        confirmButton = {
+            Text("RENAME", fontFamily = Mono, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                color = t.accentInk,
+                modifier = Modifier.clickable { onConfirm(value) }.padding(8.dp)
+                    .testTag(TestTags.KB_STAGED_RENAME_CONFIRM))
+        },
+        dismissButton = {
+            Text("CANCEL", fontFamily = Mono, fontSize = 10.sp, color = t.text2,
+                modifier = Modifier.clickable { onDismiss() }.padding(8.dp))
+        },
+    )
 }
 
 // ── Import panel — per-file batch progress + success/fail list ────────────────
