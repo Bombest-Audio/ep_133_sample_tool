@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Usb
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -54,6 +55,8 @@ import com.ep133.sampletool.domain.model.PadChannel
 import com.ep133.sampletool.domain.model.midiToNoteName
 import com.ep133.sampletool.domain.model.resolveChordMidiNotes
 import com.ep133.sampletool.domain.model.resolveChordName
+import androidx.compose.ui.platform.testTag
+import com.ep133.sampletool.ui.TestTags
 import com.ep133.sampletool.ui.theme.TEColors
 
 @Composable
@@ -72,6 +75,7 @@ fun ChordBuilderScreen(
     val showSoundPicker by viewModel.showSoundPicker.collectAsState()
     val chordMapGroup by viewModel.chordMapGroup.collectAsState()
     val showGroupPicker by viewModel.showGroupPicker.collectAsState()
+    val bakeState by viewModel.bakeState.collectAsState()
 
     val prog = progression ?: return
     var tappedIndex by remember { mutableIntStateOf(-1) }
@@ -156,6 +160,15 @@ fun ChordBuilderScreen(
 
         Spacer(modifier = Modifier.weight(1f))
 
+        if (bakeState !is BakeUiState.Idle) {
+            BakeBanner(
+                state = bakeState,
+                onCancel = viewModel::cancelBake,
+                onDismiss = viewModel::dismissBakeResult,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -170,6 +183,22 @@ fun ChordBuilderScreen(
                     text = "SEND TO BEATS",
                     style = MaterialTheme.typography.titleSmall,
                 )
+            }
+
+            if (deviceState.connected) {
+                FilledTonalButton(
+                    onClick = viewModel::bakeSelectedProgression,
+                    enabled = bakeState !is BakeUiState.Running,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag(TestTags.CHORDS_BAKE_BUTTON),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Text(
+                        text = "BAKE",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                }
             }
 
             if (deviceState.connected && selectedSound != null) {
@@ -226,6 +255,59 @@ fun ChordBuilderScreen(
             onGroupSelected = viewModel::programToGroup,
             onDismiss = viewModel::dismissGroupPicker,
         )
+    }
+}
+
+/**
+ * Bake progress + result banner: spinner with a CANCEL action while running,
+ * dismissible confirmation or error once finished.
+ */
+@Composable
+private fun BakeBanner(
+    state: BakeUiState,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val (text, color) = when (state) {
+        is BakeUiState.Running -> "${state.stage}…" to TEColors.Teal
+        is BakeUiState.Done -> "Saved to /sounds as ${state.name}" to TEColors.Teal
+        is BakeUiState.Error -> state.message to MaterialTheme.colorScheme.error
+        BakeUiState.Idle -> return
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(TestTags.CHORDS_BAKE_BANNER),
+        color = color.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (state is BakeUiState.Running) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = color,
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = color,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = if (state is BakeUiState.Running) onCancel else onDismiss) {
+                Text(
+                    text = if (state is BakeUiState.Running) "CANCEL" else "DISMISS",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = color,
+                )
+            }
+        }
     }
 }
 

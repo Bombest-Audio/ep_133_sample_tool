@@ -393,35 +393,39 @@ class SampleImportManager(private val midi: MIDIRepository) {
      * @param rawName Original filename as received from the SAF picker or caller.
      * @return        Sanitized `"<basename>.wav"` or `null` if no safe name can be derived.
      */
-    fun sanitizeName(rawName: String): String? {
-        // Step 1: extract the basename (strip path components, then drop extension).
-        val withoutPath = rawName.substringAfterLast('/').substringAfterLast('\\')
-        val stem = withoutPath.substringBeforeLast('.')
-
-        // Step 2: replace every character outside [A-Za-z0-9 _-] with '_'.
-        val replaced = stem.replace(Regex("[^A-Za-z0-9 _\\-]"), "_")
-
-        // Step 3: collapse whitespace runs, trim leading/trailing whitespace and punctuation.
-        val collapsed = replaced.replace(Regex("\\s+"), " ").trim()
-        val trimmed = collapsed.trim('.', '_', '-').trim()
-
-        // Step 4: cap length, then re-trim any punctuation exposed at the cut point.
-        val capped = if (trimmed.length > MAX_BASENAME_LEN) {
-            trimmed.substring(0, MAX_BASENAME_LEN).trimEnd('_', '-', ' ')
-        } else {
-            trimmed
-        }
-
-        // Step 5: reject empty result.
-        if (capped.isEmpty()) return null
-
-        // Step 6: append device extension.
-        return "$capped.wav"
-    }
+    fun sanitizeName(rawName: String): String? = Companion.sanitizeName(rawName)
 
     companion object {
         /** Maximum device-safe basename length (excludes the ".wav" extension). */
         const val MAX_BASENAME_LEN = 32
+
+        /** Static form of [SampleImportManager.sanitizeName] - same contract, no instance needed
+         *  (shared with [ChordBakeManager] so baked names get the identical T-05-03-02 treatment). */
+        fun sanitizeName(rawName: String): String? {
+            // Step 1: extract the basename (strip path components, then drop extension).
+            val withoutPath = rawName.substringAfterLast('/').substringAfterLast('\\')
+            val stem = withoutPath.substringBeforeLast('.')
+
+            // Step 2: replace every character outside [A-Za-z0-9 _-] with '_'.
+            val replaced = stem.replace(Regex("[^A-Za-z0-9 _\\-]"), "_")
+
+            // Step 3: collapse whitespace runs, trim leading/trailing whitespace and punctuation.
+            val collapsed = replaced.replace(Regex("\\s+"), " ").trim()
+            val trimmed = collapsed.trim('.', '_', '-').trim()
+
+            // Step 4: cap length, then re-trim any punctuation exposed at the cut point.
+            val capped = if (trimmed.length > MAX_BASENAME_LEN) {
+                trimmed.substring(0, MAX_BASENAME_LEN).trimEnd('_', '-', ' ')
+            } else {
+                trimmed
+            }
+
+            // Step 5: reject empty result.
+            if (capped.isEmpty()) return null
+
+            // Step 6: append device extension.
+            return "$capped.wav"
+        }
     }
 
     /**
