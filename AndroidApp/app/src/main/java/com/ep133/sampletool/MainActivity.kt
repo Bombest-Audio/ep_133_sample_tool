@@ -17,7 +17,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
+import android.media.AudioManager
+import com.ep133.sampletool.domain.midi.ChordPlayer
 import com.ep133.sampletool.domain.midi.MIDIRepository
+import com.ep133.sampletool.domain.midi.NativeSynth
 import com.ep133.sampletool.domain.midi.ProjectBackupManager
 import com.ep133.sampletool.domain.midi.SampleImportManager
 import com.ep133.sampletool.domain.project.PrefsProjectNameStore
@@ -31,6 +34,7 @@ import com.ep133.sampletool.ui.projects.ProjectsViewModel
 import com.ep133.sampletool.ui.kit.GroupSession
 import com.ep133.sampletool.ui.kit.KitViewModel
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
+import com.ep133.sampletool.ui.chords.ChordsViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 
@@ -81,6 +85,10 @@ class MainActivity : ComponentActivity() {
         val groupSession = GroupSession(getSharedPreferences("ep133_group_session", MODE_PRIVATE))
         val kitViewModel = KitViewModel(midiRepo, sampleImportManager, groupSession)
         val kitBuilderViewModel = KitBuilderViewModel(midiRepo, sampleImportManager, groupSession)
+        // Chords preview synth: Oboe-backed native synth when connected hardware is absent.
+        val nativeSynth = NativeSynth(getSystemService(AudioManager::class.java))
+        val chordPlayer = ChordPlayer(midiRepo, nativeSynth)
+        val chordsViewModel = ChordsViewModel(chordPlayer, midiRepo)
 
         // SAF launchers — MUST be registered before setContent (Activity lifecycle constraint).
         // See STATE.md decision: "SAF launchers must be registered before setContent() in MainActivity"
@@ -158,6 +166,7 @@ class MainActivity : ComponentActivity() {
                 deviceViewModel = deviceViewModel,
                 kitViewModel = kitViewModel,
                 kitBuilderViewModel = kitBuilderViewModel,
+                chordsViewModel = chordsViewModel,
                 isConnected = deviceState.connected,
             )
         }

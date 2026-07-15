@@ -52,12 +52,15 @@ import com.ep133.sampletool.ui.theme.Mono
 import com.ep133.sampletool.ui.kit.KitScreen
 import com.ep133.sampletool.ui.kit.KitViewModel
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
+import com.ep133.sampletool.ui.chords.ChordsScreen
+import com.ep133.sampletool.ui.chords.ChordsViewModel
 
 private val BadgeShape = RoundedCornerShape(3.dp)
 
 private enum class NavRoute(val route: String, val label: String, val tag: String) {
     PADS("pads", "PADS", TestTags.NAV_PADS),
     KIT("kit", "SAMPLES", TestTags.NAV_KIT),
+    CHORDS("chords", "CHORDS", TestTags.NAV_CHORDS),
     PROJECTS("projects", "PROJ", TestTags.NAV_PROJECTS),
     DEVICE("device", "DEVICE", TestTags.NAV_DEVICE),
 }
@@ -74,6 +77,7 @@ fun EP133App(
     deviceViewModel: DeviceViewModel,
     kitViewModel: KitViewModel,
     kitBuilderViewModel: KitBuilderViewModel,
+    chordsViewModel: ChordsViewModel,
     isConnected: Boolean = false,
 ) {
     // Theme state lives above EP133Theme so the header controls can re-theme the whole app.
@@ -188,6 +192,7 @@ fun EP133App(
                     composable(NavRoute.KIT.route) {
                         KitScreen(kitViewModel, kitBuilderViewModel)
                     }
+                    composable(NavRoute.CHORDS.route) { ChordsScreen(chordsViewModel) }
                 }
             }
 

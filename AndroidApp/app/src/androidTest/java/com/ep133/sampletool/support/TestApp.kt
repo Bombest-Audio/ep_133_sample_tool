@@ -3,6 +3,7 @@ package com.ep133.sampletool.support
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
+import com.ep133.sampletool.domain.midi.ChordPlayer
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.ProjectBackupManager
 import com.ep133.sampletool.domain.midi.SampleImportManager
@@ -12,6 +13,7 @@ import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.kit.GroupSession
 import com.ep133.sampletool.ui.kit.KitViewModel
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
+import com.ep133.sampletool.ui.chords.ChordsViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
 
@@ -27,6 +29,7 @@ class TestAppContext(
     val deviceViewModel: DeviceViewModel,
     val kitViewModel: KitViewModel,
     val kitBuilderViewModel: KitBuilderViewModel,
+    val chordsViewModel: ChordsViewModel,
 ) {
     val backupRequests = mutableListOf<String>()
     val restoreRequests = mutableListOf<Unit>()
@@ -52,8 +55,12 @@ fun ComposeContentTestRule.launchEP133App(
     val groupSession = GroupSession() // prefs-less: in-memory group/choke state
     val kitViewModel = KitViewModel(repo, sampleImportManager, groupSession)
     val kitBuilderViewModel = KitBuilderViewModel(repo, sampleImportManager, groupSession)
+    // LocalSynth (AudioTrack) rather than NativeSynth: keeps the harness free of the
+    // nativesynth JNI library so tests run on any device or emulator image.
+    val chordsViewModel = ChordsViewModel(ChordPlayer(repo), repo)
     val ctx = TestAppContext(
         repo, padsViewModel, projectsViewModel, deviceViewModel, kitViewModel, kitBuilderViewModel,
+        chordsViewModel,
     )
 
     deviceViewModel.onRequestBackup = { name -> ctx.backupRequests += name }
@@ -68,6 +75,7 @@ fun ComposeContentTestRule.launchEP133App(
             deviceViewModel = deviceViewModel,
             kitViewModel = kitViewModel,
             kitBuilderViewModel = kitBuilderViewModel,
+            chordsViewModel = chordsViewModel,
             isConnected = state.connected,
         )
     }

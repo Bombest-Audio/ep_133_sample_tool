@@ -12,6 +12,7 @@ object TestTags {
     const val NAV_KIT = "nav_kit"
     const val NAV_PROJECTS = "nav_projects"
     const val NAV_DEVICE = "nav_device"
+    const val NAV_CHORDS = "nav_chords"
     const val HEADER_TITLE = "header_title"
     const val HEADER_SKU_BADGE = "header_sku_badge"
     const val HEADER_THEME_TOGGLE = "header_theme_toggle"
@@ -58,6 +59,14 @@ object TestTags {
     const val KIT_PROGRESS_STATUS = "kit_progress_status"
     fun kitProgressPad(rank: Int) = "kit_progress_pad_$rank"
     const val GROUP_CHOKE_TOGGLE = "group_choke_toggle"
+
+    // Chords
+    const val CHORDS_SOUND_SELECTOR = "chords_sound_selector"
+    const val CHORDS_OFFLINE_NOTICE = "chords_offline_notice"
+    const val CHORDS_PROGRESSION_LIST = "chords_progression_list"
+    fun chordsProgressionCard(id: String) = "chords_progression_card_$id"
+    const val CHORDS_SOUND_PICKER_SHEET = "chords_sound_picker_sheet"
+    const val CHORDS_GROUP_PICKER_SHEET = "chords_group_picker_sheet"
 
     // Kit Builder (embedded in the SAMPLES screen's KIT mode)
     fun kbPadCell(index: Int) = "kb_pad_cell_$index"
