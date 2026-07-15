@@ -14,6 +14,8 @@ import com.ep133.sampletool.ui.kit.GroupSession
 import com.ep133.sampletool.ui.kit.KitViewModel
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
 import com.ep133.sampletool.ui.chords.ChordsViewModel
+import com.ep133.sampletool.ui.offline.MediaPlayerSamplePlayer
+import com.ep133.sampletool.ui.offline.OfflineBrowserViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
 
@@ -30,6 +32,7 @@ class TestAppContext(
     val kitViewModel: KitViewModel,
     val kitBuilderViewModel: KitBuilderViewModel,
     val chordsViewModel: ChordsViewModel,
+    val offlineViewModel: OfflineBrowserViewModel,
 ) {
     val backupRequests = mutableListOf<String>()
     val restoreRequests = mutableListOf<Unit>()
@@ -58,9 +61,11 @@ fun ComposeContentTestRule.launchEP133App(
     // LocalSynth (AudioTrack) rather than NativeSynth: keeps the harness free of the
     // nativesynth JNI library so tests run on any device or emulator image.
     val chordsViewModel = ChordsViewModel(ChordPlayer(repo), repo)
+    val offlineViewModel = OfflineBrowserViewModel(MediaPlayerSamplePlayer())
     val ctx = TestAppContext(
         repo, padsViewModel, projectsViewModel, deviceViewModel, kitViewModel, kitBuilderViewModel,
         chordsViewModel,
+        offlineViewModel,
     )
 
     deviceViewModel.onRequestBackup = { name -> ctx.backupRequests += name }
@@ -77,6 +82,7 @@ fun ComposeContentTestRule.launchEP133App(
             kitBuilderViewModel = kitBuilderViewModel,
             chordsViewModel = chordsViewModel,
             isConnected = state.connected,
+            offlineViewModel = offlineViewModel,
         )
     }
     return ctx
