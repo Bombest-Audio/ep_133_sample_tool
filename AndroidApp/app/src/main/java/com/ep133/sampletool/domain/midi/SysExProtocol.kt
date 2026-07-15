@@ -51,6 +51,9 @@ object SysExProtocol {
     // New-file INIT: flags = TE_SYSEX_FILE_CAPABILITY_READ or TE_SYSEX_FILE_TYPE_FILE = 5.
     const val TE_SYSEX_FILE_CAPABILITY_READ = 4
     const val TE_SYSEX_FILE_CAPABILITY_WRITE = 8
+    const val TE_SYSEX_FILE_CAPABILITY_DELETE = 16
+    const val TE_SYSEX_FILE_CAPABILITY_MOVE = 32
+    const val TE_SYSEX_FILE_CAPABILITY_PLAYBACK = 64
     const val TE_SYSEX_FILE_TYPE_FILE = 1
 
     // ── FILE_METADATA sub-opcodes ──
@@ -702,7 +705,39 @@ object SysExProtocol {
         val isWritable: Boolean get() = flags and TE_SYSEX_FILE_CAPABILITY_WRITE != 0
         /** True if the FILE_TYPE_FILE flag is NOT set (i.e. this is a directory node). */
         val isDir: Boolean get() = flags and TE_SYSEX_FILE_TYPE_FILE == 0
+        /** True if the CAPABILITY_DELETE flag is set. */
+        val isDeletable: Boolean get() = flags and TE_SYSEX_FILE_CAPABILITY_DELETE != 0
+        /** True if the CAPABILITY_MOVE flag is set. */
+        val isMovable: Boolean get() = flags and TE_SYSEX_FILE_CAPABILITY_MOVE != 0
+        /** True if the CAPABILITY_PLAYBACK flag is set (identifies a playable sound node). */
+        val isPlayable: Boolean get() = flags and TE_SYSEX_FILE_CAPABILITY_PLAYBACK != 0
     }
+
+    /**
+     * Decode a raw FILE_LIST/FILE_INFO flags byte into a `|`-joined human-readable set,
+     * e.g. `decodeFlags(0x1d) == "READ|WRITE|DELETE|FILE"`.
+     *
+     * Ordered READ|WRITE|DELETE|MOVE|PLAYBACK, then DIR/FILE from the type bit. Emits only
+     * set bits (pattern spike Task 1/2, pattern-write-candidate classification).
+     */
+    fun decodeFlags(flags: Int): String {
+        val parts = mutableListOf<String>()
+        if (flags and TE_SYSEX_FILE_CAPABILITY_READ != 0) parts += "READ"
+        if (flags and TE_SYSEX_FILE_CAPABILITY_WRITE != 0) parts += "WRITE"
+        if (flags and TE_SYSEX_FILE_CAPABILITY_DELETE != 0) parts += "DELETE"
+        if (flags and TE_SYSEX_FILE_CAPABILITY_MOVE != 0) parts += "MOVE"
+        if (flags and TE_SYSEX_FILE_CAPABILITY_PLAYBACK != 0) parts += "PLAYBACK"
+        parts += if (flags and TE_SYSEX_FILE_TYPE_FILE != 0) "FILE" else "DIR"
+        return parts.joinToString("|")
+    }
+
+    /**
+     * True if [flags] marks a node as a write candidate for the pattern-write spike:
+     * the WRITE capability bit is set AND the node is not a directory (a dir must be
+     * recursed into, never PUT/METADATA-SET to directly).
+     */
+    fun isWriteCandidate(flags: Int): Boolean =
+        (flags and TE_SYSEX_FILE_CAPABILITY_WRITE != 0) && (flags and TE_SYSEX_FILE_TYPE_FILE != 0)
 
     /**
      * Parse an already-unpacked FILE_INFO response body into [NodeInfo].

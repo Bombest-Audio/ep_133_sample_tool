@@ -226,7 +226,22 @@ The filesystem is addressed by numeric **node IDs**; **root is node `0`**. Verif
     └── … 09 (node 11000)
 ```
 
+Each group dir holds exactly **12 pad FILE nodes** named `01`-`12` (`flags=0x1d` =
+READ|WRITE|DELETE|FILE), one per hardware pad. A pad's metadata is its **sound binding**
+(`sym`, `sound.playmode`, `sample.start`/`end`, `envelope.*`, `sound.pitch`/`amplitude`/`pan`,
+`time.mode`, `midi.channel`); an unassigned pad reads `{"sym":0}`. A pad node has no children
+(`FILE_LIST` on it returns status 1 "invalid id").
+
 Resolve a path by listing from root and matching each segment's child by name.
+
+> **Exhaustively enumerated (fw 2.5.0, Phase 6 pattern-write spike, 2026-07-14).** A recursive
+> read-only walk of a physical unit (600 nodes from root; all 9 project slots) confirmed this tree
+> is complete: root has only `sounds` + `projects`, every project's only child is `groups`, every
+> group has exactly 12 pad sound-slots, and pads have no children. **No pattern / sequence / scene /
+> step-data node exists anywhere in the FILE tree.** The on-device sequencer's pattern state is not
+> exposed over `FILE`. See [ep133-pattern-write-spike-findings.md](./ep133-pattern-write-spike-findings.md)
+> for the full dump and the NO-GO analysis. (Sequencer state may ride `PRODUCT_SPECIFIC (127)`, which
+> that spike left unprobed.)
 
 ### FILE_LIST (subcommand 4)
 
