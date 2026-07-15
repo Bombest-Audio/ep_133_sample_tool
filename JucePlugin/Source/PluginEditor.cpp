@@ -64,6 +64,17 @@ EP133AudioProcessorEditor::EP133AudioProcessorEditor (EP133AudioProcessor& p)
 {
     addAndMakeVisible (webBrowser);
 
+    // Issue #40: notify the web app when MIDI devices are plugged in/removed.
+    // JUCE invokes this callback on the message thread, so it is safe to emit
+    // straight into the WebView. The polyfill's JUCE branch listens for
+    // "devicesChanged" and calls window.__ep133_onDevicesChanged(), which
+    // re-queries getMidiDevices and fires Web MIDI statechange listeners.
+    // The connection is severed automatically when the member is destroyed.
+    midiDeviceListConnection = juce::MidiDeviceListConnection::make ([this]
+    {
+        webBrowser.emitEventIfBrowserIsVisible ("devicesChanged", juce::var());
+    });
+
     // Navigate to the resource-provider root (JUCE resolves "/" → index.html)
     webBrowser.goToURL (webBrowser.getResourceProviderRoot());
 

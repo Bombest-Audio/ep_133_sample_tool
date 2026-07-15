@@ -71,6 +71,11 @@ private:
 
     juce::WebBrowserComponent webBrowser;
 
+    // Fires when the system MIDI device list changes (hotplug). Registered in
+    // the constructor; disconnects automatically when this member is destroyed.
+    // Declared after webBrowser so the callback can never outlive the browser.
+    juce::MidiDeviceListConnection midiDeviceListConnection;
+
     // Open MIDI ports owned by this editor (closed in destructor)
     juce::OwnedArray<juce::MidiInput>                        openInputs;
     std::map<juce::String, std::unique_ptr<juce::MidiOutput>> openOutputs;

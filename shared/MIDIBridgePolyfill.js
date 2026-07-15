@@ -162,6 +162,11 @@
       window.__JUCE__.backend.addEventListener('midiIn', function (event) {
         window.__ep133_onMidiIn(event.portId, event.data);
       });
+      // Device hotplug arrives the same way (emitEventIfBrowserIsVisible
+      // "devicesChanged" on the C++ side); route it into the shared handler.
+      window.__JUCE__.backend.addEventListener('devicesChanged', function () {
+        window.__ep133_onDevicesChanged();
+      });
     }
   }
 
