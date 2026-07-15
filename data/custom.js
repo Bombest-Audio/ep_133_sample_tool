@@ -141,3 +141,188 @@ if (CustomColors == false) {
   FontColorLogo1 = "#000000";
   FontColorLogo2 = ColorButtons;
 };
+
+// ---------------------------------------------------------------------------
+// SPLICE FOLDER SYNC PANEL (Electron desktop only)
+//
+// window.spliceSync is exposed by the Electron preload script. On other
+// platforms (Android/iOS/JUCE/browser) it does not exist and this whole
+// block is inert.
+//
+// Import handoff: each detected sample is listed as a draggable chip. On
+// dragstart we attach the prefetched File to the drag's dataTransfer, so
+// dropping a chip on a pad or sample slot goes through the app's own
+// onDrop handlers (which read event.dataTransfer.files) - the exact same
+// code path as dragging a file in from Finder/Explorer.
+// ---------------------------------------------------------------------------
+if (typeof window !== "undefined" && window.spliceSync) {
+  (function () {
+    var MAX_ITEMS = 25;
+    var MAX_PREFETCH_BYTES = 32 * 1024 * 1024;
+    var items = []; // { path, name, size, file (File|null), failed (bool) }
+    var panel, listEl, toggleEl, folderEl, bodyEl, collapsed = true;
+
+    function prefetch(item) {
+      if (item.file || item.failed || item.size > MAX_PREFETCH_BYTES) return;
+      window.spliceSync.readFile(item.path).then(function (result) {
+        var mime = "audio/wav";
+        var lower = item.name.toLowerCase();
+        if (/\.mp3$/.test(lower)) { mime = "audio/mpeg"; }
+        else if (/\.flac$/.test(lower)) { mime = "audio/flac"; }
+        else if (/\.ogg$/.test(lower)) { mime = "audio/ogg"; }
+        else if (/\.aiff?$/.test(lower)) { mime = "audio/aiff"; }
+        item.file = new File([result.bytes], result.name, { type: mime });
+        renderList();
+      }, function () {
+        item.failed = true;
+        renderList();
+      });
+    }
+
+    function styleEl(el, styles) {
+      var key;
+      for (key in styles) { if (styles.hasOwnProperty(key)) { el.style[key] = styles[key]; } }
+      return el;
+    }
+
+    function renderList() {
+      if (!listEl) return;
+      listEl.innerHTML = "";
+      if (items.length === 0) {
+        var empty = document.createElement("div");
+        empty.textContent = "No new samples yet. Download something on Splice.";
+        styleEl(empty, { padding: "6px 8px", opacity: "0.6", fontSize: "11px" });
+        listEl.appendChild(empty);
+        return;
+      }
+      var i;
+      for (i = 0; i < items.length; i++) {
+        (function (item) {
+          var row = document.createElement("div");
+          row.textContent = (item.file ? "≡ " : item.failed ? "✕ " : "… ") + item.name;
+          row.title = item.failed
+            ? "Could not read this file"
+            : item.file
+              ? "Drag onto a pad or sample slot to import"
+              : "Loading file...";
+          styleEl(row, {
+            padding: "5px 8px", margin: "2px 0", fontSize: "11px",
+            background: item.file ? "#2c2c2c" : "#1d1d1d",
+            color: item.failed ? "#888888" : "#e5e6e6",
+            borderRadius: "3px", cursor: item.file ? "grab" : "default",
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"
+          });
+          row.draggable = !!item.file;
+          row.addEventListener("mouseenter", function () { prefetch(item); });
+          row.addEventListener("dragstart", function (ev) {
+            if (!item.file || !ev.dataTransfer) { ev.preventDefault(); return; }
+            ev.dataTransfer.items.add(item.file);
+            ev.dataTransfer.effectAllowed = "copy";
+          });
+          listEl.appendChild(row);
+        })(items[i]);
+      }
+    }
+
+    function refreshSettings() {
+      window.spliceSync.getSettings().then(function (settings) {
+        toggleEl.checked = settings.enabled;
+        folderEl.textContent = settings.folder;
+        folderEl.title = settings.folder + (settings.enabled && !settings.watching
+          ? " (folder not found - click to choose another)" : "");
+        folderEl.style.color = settings.enabled && !settings.watching ? "#f45050" : "#9a9a9a";
+      });
+    }
+
+    function buildPanel() {
+      panel = document.createElement("div");
+      styleEl(panel, {
+        position: "fixed", right: "10px", bottom: "10px", width: "240px",
+        background: "#151515", color: "#e5e6e6", zIndex: "99999",
+        border: "1px solid #333333", borderRadius: "6px",
+        fontFamily: "monospace", boxShadow: "0 2px 10px rgba(0,0,0,0.5)"
+      });
+
+      var header = document.createElement("div");
+      header.textContent = "SPLICE SYNC";
+      styleEl(header, {
+        padding: "6px 8px", fontSize: "11px", letterSpacing: "1px",
+        cursor: "pointer", userSelect: "none", background: "#202020",
+        borderRadius: "6px 6px 0 0"
+      });
+      header.addEventListener("click", function () {
+        collapsed = !collapsed;
+        bodyEl.style.display = collapsed ? "none" : "block";
+      });
+      panel.appendChild(header);
+
+      bodyEl = document.createElement("div");
+      styleEl(bodyEl, { display: "none", padding: "6px 8px 8px 8px" });
+      panel.appendChild(bodyEl);
+
+      var controls = document.createElement("div");
+      styleEl(controls, { display: "flex", alignItems: "center", marginBottom: "4px" });
+
+      toggleEl = document.createElement("input");
+      toggleEl.type = "checkbox";
+      toggleEl.title = "Watch the Splice folder for new samples";
+      toggleEl.addEventListener("change", function () {
+        window.spliceSync.setSettings({ enabled: toggleEl.checked, folder: "" })
+          .then(refreshSettings);
+      });
+      controls.appendChild(toggleEl);
+
+      var label = document.createElement("span");
+      label.textContent = "watch folder";
+      styleEl(label, { fontSize: "11px", marginLeft: "4px" });
+      controls.appendChild(label);
+      bodyEl.appendChild(controls);
+
+      folderEl = document.createElement("div");
+      folderEl.textContent = "";
+      styleEl(folderEl, {
+        fontSize: "10px", color: "#9a9a9a", cursor: "pointer",
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+        marginBottom: "6px"
+      });
+      folderEl.addEventListener("click", function () {
+        window.spliceSync.chooseFolder().then(function (folder) {
+          if (!folder) return;
+          window.spliceSync.setSettings({ enabled: toggleEl.checked, folder: folder })
+            .then(refreshSettings);
+        });
+      });
+      bodyEl.appendChild(folderEl);
+
+      listEl = document.createElement("div");
+      styleEl(listEl, { maxHeight: "180px", overflowY: "auto" });
+      bodyEl.appendChild(listEl);
+
+      document.body.appendChild(panel);
+      renderList();
+      refreshSettings();
+    }
+
+    window.spliceSync.onNewSamples(function (samples) {
+      var i;
+      for (i = 0; i < samples.length; i++) {
+        items.unshift({
+          path: samples[i].path, name: samples[i].name,
+          size: samples[i].size, file: null, failed: false
+        });
+      }
+      if (items.length > MAX_ITEMS) { items.length = MAX_ITEMS; }
+      // Prefetch only the most recent sample; the rest load lazily on
+      // mouseenter so a big download batch cannot balloon memory.
+      if (items.length > 0) { prefetch(items[0]); }
+      if (collapsed && bodyEl) { collapsed = false; bodyEl.style.display = "block"; }
+      renderList();
+    });
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", buildPanel);
+    } else {
+      buildPanel();
+    }
+  })();
+};
