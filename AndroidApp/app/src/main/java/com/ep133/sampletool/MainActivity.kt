@@ -31,6 +31,8 @@ import com.ep133.sampletool.ui.projects.ProjectsViewModel
 import com.ep133.sampletool.ui.kit.GroupSession
 import com.ep133.sampletool.ui.kit.KitViewModel
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
+import com.ep133.sampletool.ui.offline.MediaPlayerSamplePlayer
+import com.ep133.sampletool.ui.offline.OfflineBrowserViewModel
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 
@@ -81,6 +83,8 @@ class MainActivity : ComponentActivity() {
         val groupSession = GroupSession(getSharedPreferences("ep133_group_session", MODE_PRIVATE))
         val kitViewModel = KitViewModel(midiRepo, sampleImportManager, groupSession)
         val kitBuilderViewModel = KitBuilderViewModel(midiRepo, sampleImportManager, groupSession)
+        // Offline backup browser (issue #55): manifest-backed backups, no device required.
+        val offlineViewModel = OfflineBrowserViewModel(MediaPlayerSamplePlayer())
 
         // SAF launchers — MUST be registered before setContent (Activity lifecycle constraint).
         // See STATE.md decision: "SAF launchers must be registered before setContent() in MainActivity"
@@ -159,6 +163,7 @@ class MainActivity : ComponentActivity() {
                 kitViewModel = kitViewModel,
                 kitBuilderViewModel = kitBuilderViewModel,
                 isConnected = deviceState.connected,
+                offlineViewModel = offlineViewModel,
             )
         }
 

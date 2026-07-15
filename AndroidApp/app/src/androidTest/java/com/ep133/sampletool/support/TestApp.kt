@@ -12,6 +12,8 @@ import com.ep133.sampletool.ui.device.DeviceViewModel
 import com.ep133.sampletool.ui.kit.GroupSession
 import com.ep133.sampletool.ui.kit.KitViewModel
 import com.ep133.sampletool.ui.kitbuilder.KitBuilderViewModel
+import com.ep133.sampletool.ui.offline.MediaPlayerSamplePlayer
+import com.ep133.sampletool.ui.offline.OfflineBrowserViewModel
 import com.ep133.sampletool.ui.pads.PadsViewModel
 import com.ep133.sampletool.ui.projects.ProjectsViewModel
 
@@ -27,6 +29,7 @@ class TestAppContext(
     val deviceViewModel: DeviceViewModel,
     val kitViewModel: KitViewModel,
     val kitBuilderViewModel: KitBuilderViewModel,
+    val offlineViewModel: OfflineBrowserViewModel,
 ) {
     val backupRequests = mutableListOf<String>()
     val restoreRequests = mutableListOf<Unit>()
@@ -52,8 +55,10 @@ fun ComposeContentTestRule.launchEP133App(
     val groupSession = GroupSession() // prefs-less: in-memory group/choke state
     val kitViewModel = KitViewModel(repo, sampleImportManager, groupSession)
     val kitBuilderViewModel = KitBuilderViewModel(repo, sampleImportManager, groupSession)
+    val offlineViewModel = OfflineBrowserViewModel(MediaPlayerSamplePlayer())
     val ctx = TestAppContext(
         repo, padsViewModel, projectsViewModel, deviceViewModel, kitViewModel, kitBuilderViewModel,
+        offlineViewModel,
     )
 
     deviceViewModel.onRequestBackup = { name -> ctx.backupRequests += name }
@@ -69,6 +74,7 @@ fun ComposeContentTestRule.launchEP133App(
             kitViewModel = kitViewModel,
             kitBuilderViewModel = kitBuilderViewModel,
             isConnected = state.connected,
+            offlineViewModel = offlineViewModel,
         )
     }
     return ctx
