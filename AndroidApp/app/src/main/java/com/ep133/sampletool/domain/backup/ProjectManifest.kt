@@ -125,7 +125,8 @@ object ProjectManifestLoader {
             ManifestSample(
                 sym = s.optInt("sym"),
                 relativePath = rel,
-                name = s.optString("name").takeIf { it.isNotEmpty() },
+                // isNull guards JSONObject.NULL, which optString would stringify to "null".
+                name = if (s.isNull("name")) null else s.optString("name").takeIf { it.isNotEmpty() },
                 channels = s.optInt("channels", 1),
                 sampleRate = s.optInt("samplerate", 46875),
                 file = wav,

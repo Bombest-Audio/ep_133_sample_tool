@@ -75,8 +75,11 @@ class ProjectManifestLoaderTest {
         assertEquals("snare", present.name)
         assertEquals(2, present.channels)
         assertNotNull("existing WAV resolves to a File", present.file)
-        // Missing WAV keeps its entry but resolves to null instead of failing the load.
-        assertNull(m.samples.single { it.sym == 77 }.file)
+        // Missing WAV keeps its entry but resolves to null instead of failing the load,
+        // and a JSON null name loads as Kotlin null, not the string "null".
+        val absent = m.samples.single { it.sym == 77 }
+        assertNull(absent.file)
+        assertNull(absent.name)
     }
 
     @Test
