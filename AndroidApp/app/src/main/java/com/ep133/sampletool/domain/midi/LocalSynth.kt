@@ -115,8 +115,10 @@ class LocalSynth : SynthEngine {
                 track.write(buf, 0, buf.size)
                 totalSamples += buf.size
             }
-        } catch (_: CancellationException) {
-            // Expected when noteOff() cancels this coroutine
+        } catch (e: CancellationException) {
+            // Expected when noteOff() cancels this coroutine; rethrow so cancellation
+            // propagates (the finally block still releases the AudioTrack).
+            throw e
         } finally {
             track.stop()
             track.release()
