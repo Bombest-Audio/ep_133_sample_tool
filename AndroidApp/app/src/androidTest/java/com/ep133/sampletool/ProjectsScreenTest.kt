@@ -107,21 +107,21 @@ class ProjectsScreenTest {
     }
 
     @Test
-    fun backupLibrary_rendersSeededBackupWithGatedRestore() {
+    fun backupLibrary_rendersSeededBackupWithEnabledRestore() {
         // Arrange: a real .tar in the app's backups dir
         File(backupsDir(), "P01.tar").writeBytes(ByteArray(128))
         val h = setUpProjects()
-        // Assert: card renders, share is live, restore stays gated (RESTORE_ENABLED=false)
+        // Assert: card renders, share is live, restore is enabled (RESTORE_ENABLED=true, 999.10)
         h.robot.assertBackupCardVisible("P01.tar")
             .assertShareEnabled("P01.tar")
-            .assertRestoreGated("P01.tar")
+            .assertRestoreEnabled("P01.tar")
     }
 
     @Test
     fun restoreConfirmDialog_appearsViaRequestAndCancels() {
         // Arrange
         val h = setUpProjects()
-        // Act: the gated UI can't reach it yet; drive the VM seam the button will use
+        // Act: drive the VM seam the RESTORE button uses
         h.viewModel.requestRestore(File(backupsDir(), "P01.tar"))
         // Assert
         h.robot.assertRestoreConfirmVisible()

@@ -76,8 +76,8 @@ class ProjectsRobot(rule: ComposeContentTestRule) : BaseRobot(rule) {
         actionIn(backupName, "SHARE").assertIsEnabled()
     }
 
-    fun assertRestoreGated(backupName: String) = apply {
-        actionIn(backupName, "RESTORE · SOON").assertIsNotEnabled()
+    fun assertRestoreEnabled(backupName: String) = apply {
+        actionIn(backupName, "RESTORE").assertIsEnabled()
     }
 
     fun assertRestoreConfirmVisible() = apply {
