@@ -718,7 +718,7 @@ object SysExProtocol {
      * e.g. `decodeFlags(0x1d) == "READ|WRITE|DELETE|FILE"`.
      *
      * Ordered READ|WRITE|DELETE|MOVE|PLAYBACK, then DIR/FILE from the type bit. Emits only
-     * set bits (pattern spike Task 1/2 — pattern-write-write-candidate classification).
+     * set bits (pattern spike Task 1/2, pattern-write-candidate classification).
      */
     fun decodeFlags(flags: Int): String {
         val parts = mutableListOf<String>()
