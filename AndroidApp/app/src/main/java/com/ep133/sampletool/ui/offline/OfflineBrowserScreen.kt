@@ -396,7 +396,7 @@ private fun PadCell(
             fontWeight = FontWeight.Bold,
         )
         Text(
-            text = if (assigned) sampleName ?: "SYM ${pad.sym}" else "—",
+            text = if (assigned) sampleName ?: "SYM ${pad.sym}" else "·",
             color = if (assigned) t.text else t.text3.copy(alpha = 0.6f),
             fontSize = 10.sp,
             fontWeight = if (assigned) FontWeight.SemiBold else FontWeight.Normal,
@@ -468,7 +468,7 @@ private fun ParamReadout(pad: ManifestPad, sample: ManifestSample?) {
             ) {
                 ParamCell("ATTACK", params.attack.toString(), Modifier.weight(1f))
                 ParamCell("RELEASE", params.release.toString(), Modifier.weight(1f))
-                ParamCell("MODE", params.playmode?.uppercase(Locale.US) ?: "—", Modifier.weight(1f))
+                ParamCell("MODE", params.playmode?.uppercase(Locale.US) ?: "·", Modifier.weight(1f))
             }
         }
     }

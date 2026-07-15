@@ -810,7 +810,7 @@ private fun BackupCard(
 
         Text(
             text = formatTimestamp(backup.timestamp) +
-                if (backup.hasManifest) "" else " · NO MANIFEST — RE-BACKUP TO BROWSE OFFLINE",
+                if (backup.hasManifest) "" else " · NO MANIFEST - RE-BACKUP TO BROWSE OFFLINE",
             color = t.text3,
             fontFamily = Mono,
             fontSize = 9.sp,
