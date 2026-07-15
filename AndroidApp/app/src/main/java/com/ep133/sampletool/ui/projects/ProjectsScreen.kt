@@ -53,6 +53,8 @@ import androidx.core.app.ShareCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ep133.sampletool.domain.backup.ProjectManifestLoader
+import com.ep133.sampletool.domain.export.ExportFormat
 import com.ep133.sampletool.domain.midi.BackupItem
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.domain.midi.ProjectBackupManager
@@ -69,10 +71,12 @@ import com.ep133.sampletool.ui.theme.Mono
 import com.ep133.sampletool.ui.theme.accentRail
 import com.ep133.sampletool.ui.theme.PanelRadius
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -244,6 +248,52 @@ class ProjectsViewModel(
         _pendingRestoreFile = null
     }
 
+    private val _isExporting = MutableStateFlow(false)
+    val isExporting: StateFlow<Boolean> = _isExporting.asStateFlow()
+
+    // The finished export artifact, waiting for the screen to launch the share sheet.
+    private val _exportedFile = MutableStateFlow<File?>(null)
+    val exportedFile: StateFlow<File?> = _exportedFile.asStateFlow()
+
+    fun consumeExportedFile() {
+        _exportedFile.value = null
+    }
+
+    /**
+     * Export a manifest-backed backup to [format] under the app's exports dir (ROADMAP 999.6).
+     * Pure file work off the main thread; the device is not involved.
+     */
+    fun exportBackup(backup: BackupItem, format: ExportFormat, context: Context) {
+        if (_isExporting.value) return
+        _isExporting.value = true
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val manifest = ProjectManifestLoader.loadFor(backup.file)
+                        ?: error("backup has no readable manifest")
+                    val baseName = backup.file.name.removeSuffix(".tar")
+                    val exporter = format.makeExporter()
+                    val outDir = File(exportsDir(context), "$baseName-${exporter.id}")
+                    outDir.deleteRecursively()
+                    exporter.export(manifest, outDir, baseName)
+                }
+                _exportedFile.value = result.shareFile
+                _snackbarMessage.value = "Export complete: ${result.shareFile.name}"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _snackbarMessage.value = "Export failed: ${e.message ?: e}"
+            } finally {
+                _isExporting.value = false
+            }
+        }
+    }
+
+    /** exports/ under external app files, internal fallback (mirrors ProjectBackupManager). */
+    private fun exportsDir(context: Context): File =
+        (context.getExternalFilesDir("exports")
+            ?: context.filesDir.resolve("exports")).also { it.mkdirs() }
+
     fun dismissSnackbar() {
         _snackbarMessage.value = null
     }
@@ -265,6 +315,15 @@ private fun formatTimestamp(epochMillis: Long): String =
  * URI (PROJ-04). Never uses `Uri.fromFile` / `file://` — T-04-09 / Pitfall 4.
  */
 private fun shareBackup(context: Context, file: File) {
+    shareFile(context, file, "Share EP-133 project backup")
+}
+
+/** Same FileProvider share path for a finished DAW export artifact (ROADMAP 999.6). */
+private fun shareExport(context: Context, file: File) {
+    shareFile(context, file, "Share EP-133 DAW export")
+}
+
+private fun shareFile(context: Context, file: File, title: String) {
     val uri = FileProvider.getUriForFile(
         context,
         "${context.packageName}.fileprovider",
@@ -273,7 +332,7 @@ private fun shareBackup(context: Context, file: File) {
     ShareCompat.IntentBuilder(context)
         .setType(SHARE_MIME)
         .setStream(uri)
-        .setChooserTitle("Share EP-133 project backup")
+        .setChooserTitle(title)
         .startChooser()
 }
 
@@ -304,7 +363,18 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
     val projectNames by viewModel.projectNames.collectAsState()
     var slotToClear by remember { mutableStateOf<MIDIRepository.ProjectSlot?>(null) }
     var slotToRename by remember { mutableStateOf<MIDIRepository.ProjectSlot?>(null) }
+    var backupToExport by remember { mutableStateOf<BackupItem?>(null) }
+    val isExporting by viewModel.isExporting.collectAsState()
+    val exportedFile by viewModel.exportedFile.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // Launch the share sheet once per finished export.
+    LaunchedEffect(exportedFile) {
+        exportedFile?.let { file ->
+            shareExport(context, file)
+            viewModel.consumeExportedFile()
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.loadProjects()
@@ -373,6 +443,17 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
                     colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
                 ) { Text("Cancel") }
             },
+        )
+    }
+
+    backupToExport?.let { backup ->
+        ExportFormatDialog(
+            backupName = backup.name,
+            onPick = { format ->
+                backupToExport = null
+                viewModel.exportBackup(backup, format, context)
+            },
+            onDismiss = { backupToExport = null },
         )
     }
 
@@ -448,8 +529,10 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
                 items(backups, key = { it.file.absolutePath }) { backup ->
                     BackupCard(
                         backup = backup,
+                        isExporting = isExporting,
                         onShare = { shareBackup(context, backup.file) },
                         onRestore = { viewModel.requestRestore(backup.file) },
+                        onExport = { backupToExport = backup },
                     )
                 }
             }
@@ -646,8 +729,10 @@ private fun SlotCard(
 @Composable
 private fun BackupCard(
     backup: BackupItem,
+    isExporting: Boolean,
     onShare: () -> Unit,
     onRestore: () -> Unit,
+    onExport: () -> Unit,
 ) {
     val t = LocalEP133Tokens.current
     Column(
@@ -713,7 +798,68 @@ private fun BackupCard(
                 onClick = onRestore,
             )
         }
+
+        // DAW export (ROADMAP 999.6) — only manifest-backed backups carry the readable
+        // pad/sample data an export needs; older tar-only backups stay share/restore only.
+        if (backup.hasManifest) {
+            ActionButton(
+                label = if (isExporting) "EXPORTING…" else "EXPORT TO DAW",
+                icon = Icons.Filled.SaveAlt,
+                enabled = !isExporting,
+                contentColor = t.accent,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onExport,
+            )
+        }
     }
+}
+
+/** Format picker for EXPORT TO DAW: one tap per [ExportFormat], plain cancel to back out. */
+@Composable
+private fun ExportFormatDialog(
+    backupName: String,
+    onPick: (ExportFormat) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val t = LocalEP133Tokens.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag(TestTags.PROJECTS_EXPORT_DIALOG),
+        containerColor = t.panel,
+        titleContentColor = t.text,
+        textContentColor = t.text2,
+        shape = PanelRadius,
+        title = { Text("Export to DAW", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Export \"$backupName\" as samples plus a track scaffold. " +
+                        "Patterns and FX aren't readable from the device (see README.txt " +
+                        "in the export).",
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                )
+                ExportFormat.entries.forEach { format ->
+                    ActionButton(
+                        label = format.label.uppercase(),
+                        enabled = true,
+                        contentColor = t.accent,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag(TestTags.exportFormatOption(format.name.lowercase())),
+                        onClick = { onPick(format) },
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = t.text2),
+            ) { Text("Cancel") }
+        },
+    )
 }
 
 /**
