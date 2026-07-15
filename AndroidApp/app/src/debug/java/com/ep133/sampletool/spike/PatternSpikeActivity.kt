@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.ep133.sampletool.domain.midi.MIDIRepository
 import com.ep133.sampletool.midi.MIDIManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /**
@@ -94,15 +95,30 @@ private fun PatternSpikeScreen(repo: MIDIRepository) {
             singleLine = true,
         )
 
+        // Only let the walk run once the device is connected AND the GREET has populated
+        // firmwareVersion. Running before then races the device-stats handshake and yields a
+        // partial/empty dump, which would read as a misleading NO-GO.
+        val canRun = deviceState.connected &&
+            !deviceState.firmwareVersion.isNullOrEmpty() &&
+            !running
         Button(
+            enabled = canRun,
             onClick = {
-                if (running) return@Button
+                if (!canRun) return@Button
                 running = true
                 status = "Running…"
                 scope.launch {
-                    val dump = PatternSpikeRunner.run(repo, scratchPath)
-                    status = "Done — ${dump.size} node(s) found. Full dump in Logcat (tag EP133SPIKE)."
-                    running = false
+                    try {
+                        val dump = PatternSpikeRunner.run(repo, scratchPath)
+                        status = "Done - ${dump.size} node(s) found. Full dump in Logcat (tag EP133SPIKE)."
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        status = "Failed: ${e.message ?: e.toString()}"
+                    } finally {
+                        // Always reset, even if the walk threw, so the button re-enables.
+                        running = false
+                    }
                 }
             },
         ) {
