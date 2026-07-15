@@ -54,13 +54,25 @@ private class SpyMIDIPort(private val connected: Boolean = false) : MIDIPort {
  * [_deviceState] backing flow directly rather than overriding [deviceState], matching
  * the convention in the androidTest doubles.
  */
-private class FakeMIDIRepo(initialConnected: Boolean = false) : MIDIRepository(SpyMIDIPort(initialConnected)) {
+private class FakeMIDIRepo(
+    val port: SpyMIDIPort,
+    initialConnected: Boolean = false,
+) : MIDIRepository(port) {
+
+    constructor(initialConnected: Boolean = false) : this(SpyMIDIPort(initialConnected), initialConnected)
+
     init {
-        _deviceState.value = DeviceState(connected = initialConnected)
+        _deviceState.value = DeviceState(
+            connected = initialConnected,
+            outputPortId = if (initialConnected) "out" else null,
+        )
     }
 
     fun setConnected(connected: Boolean) {
-        _deviceState.value = DeviceState(connected = connected)
+        _deviceState.value = DeviceState(
+            connected = connected,
+            outputPortId = if (connected) "out" else null,
+        )
     }
 }
 
@@ -209,11 +221,81 @@ class ChordsViewModelTest {
         assertEquals(PadChannel.D, vm.chordMapGroup.value)
     }
 
+    // ── sound selection over MIDI ─────────────────────────────────────────────
+
+    @Test
+    fun selectSound_above128_sendsBankSelectBeforeProgramChange() = runTest {
+        val repo = FakeMIDIRepo(initialConnected = true)
+        val vm = makeVm(repo = repo)
+
+        // Sound #200: index 199 -> bank MSB 1, program 71
+        vm.selectSound(EP133Sound(number = 200, name = "HIGH PAD", category = "melodic"))
+
+        val bytes = repo.port.sent.last()
+        // CC0 (Bank Select MSB) = 1, CC32 (LSB) = 0, then PC 71 - in that order
+        assertEquals(0xB0.toByte(), bytes[0]); assertEquals(0x00.toByte(), bytes[1]); assertEquals(0x01.toByte(), bytes[2])
+        assertEquals(0xB0.toByte(), bytes[3]); assertEquals(0x20.toByte(), bytes[4]); assertEquals(0x00.toByte(), bytes[5])
+        assertEquals(0xC0.toByte(), bytes[6]); assertEquals(71.toByte(), bytes[7])
+    }
+
+    @Test
+    fun selectSound_below128_sendsBankZero() = runTest {
+        val repo = FakeMIDIRepo(initialConnected = true)
+        val vm = makeVm(repo = repo)
+
+        vm.selectSound(FAKE_SOUND) // #42 -> bank 0, program 41
+
+        val bytes = repo.port.sent.last()
+        assertEquals(0x00.toByte(), bytes[2])   // bank MSB 0
+        assertEquals(41.toByte(), bytes[7])     // program 41
+    }
+
+    // ── playback completion ───────────────────────────────────────────────────
+
+    @Test
+    fun playProgression_naturalCompletion_clearsPlayingProgressionId() = runTest {
+        val vm = makeVm()
+
+        vm.playProgression(SIMPLE_PROGRESSION)
+        assertEquals(SIMPLE_PROGRESSION.id, vm.playingProgressionId.value)
+
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertNull(vm.playingProgressionId.value)
+        assertFalse(vm.isPlaying.value)
+        assertEquals(-1, vm.playingStep.value)
+    }
+
+    // ── pad-load sweep cancellation ───────────────────────────────────────────
+
+    @Test
+    fun cancelChordMap_stopsPendingPadLoads() = runTest {
+        val repo = FakeMIDIRepo(initialConnected = true)
+        val vm = makeVm(repo = repo)
+        vm.selectSound(FAKE_SOUND)
+        vm.selectProgression(SIMPLE_PROGRESSION)
+        val sentBeforeProgram = repo.port.sent.size
+
+        vm.programToGroup(PadChannel.A)
+        // Advance far enough for a couple of staggered pad loads, then cancel mid-sweep.
+        testDispatcher.scheduler.advanceTimeBy(65)
+        testDispatcher.scheduler.runCurrent()
+        vm.cancelChordMap()
+        val sentAtCancel = repo.port.sent.size
+        assertTrue("Expected some pad loads before cancel", sentAtCancel > sentBeforeProgram)
+        assertTrue("Sweep should not have finished", sentAtCancel < sentBeforeProgram + 12)
+
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals("No pad loads after cancel", sentAtCancel, repo.port.sent.size)
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────
 
     private fun makeVm(repo: FakeMIDIRepo = FakeMIDIRepo()): ChordsViewModel {
         val chordPlayer = ChordPlayer(midi = repo, localSynth = NoOpSynth())
-        return ChordsViewModel(chordPlayer = chordPlayer, midiRepo = repo)
+        // Inject the test dispatcher as ioDispatcher so the staggered pad-load sweep
+        // runs on virtual time and is controllable from the scheduler.
+        return ChordsViewModel(chordPlayer = chordPlayer, midiRepo = repo, ioDispatcher = testDispatcher)
     }
 }
 
