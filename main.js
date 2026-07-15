@@ -4,6 +4,7 @@ const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
 const spliceWatcher = require('./splice-watcher')
+const clapRender = require('./clap-render-bridge')
 
 // ---------------------------------------------------------------------------
 // Splice folder sync (desktop only)
@@ -114,6 +115,68 @@ function registerSpliceIpc () {
   })
 }
 
+// ---------------------------------------------------------------------------
+// CLAP offline render (desktop only)
+// Spawns the tools/clap-render CLI so plugin code never runs in-process.
+// Plugin and WAV paths must come from the choose dialogs below, so the
+// bridge cannot be used to run the CLI against arbitrary paths.
+// ---------------------------------------------------------------------------
+
+const approvedClapPlugins = new Set()
+const approvedClapWavs = new Set()
+
+function assertApproved (set, filePath, label) {
+  if (typeof filePath !== 'string' || !set.has(path.resolve(filePath))) {
+    throw new Error(label + ' was not chosen through the file dialog')
+  }
+  return path.resolve(filePath)
+}
+
+function registerClapIpc () {
+  ipcMain.handle('clap:available', () => clapRender.isAvailable(__dirname))
+
+  ipcMain.handle('clap:choose-plugin', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose a CLAP plugin',
+      defaultPath: process.platform === 'darwin' ? '/Library/Audio/Plug-Ins/CLAP' : undefined,
+      filters: [{ name: 'CLAP plugins', extensions: ['clap'] }],
+      properties: ['openFile', 'treatPackageAsDirectory']
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const chosen = path.resolve(result.filePaths[0])
+    approvedClapPlugins.add(chosen)
+    return { path: chosen, name: path.basename(chosen, '.clap') }
+  })
+
+  ipcMain.handle('clap:choose-wav', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose a WAV to process',
+      filters: [{ name: 'WAV files', extensions: ['wav'] }],
+      properties: ['openFile']
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const chosen = path.resolve(result.filePaths[0])
+    approvedClapWavs.add(chosen)
+    return { path: chosen, name: path.basename(chosen) }
+  })
+
+  ipcMain.handle('clap:list-params', (event, pluginPath) => {
+    const plugin = assertApproved(approvedClapPlugins, pluginPath, 'plugin')
+    return clapRender.listParams(__dirname, plugin)
+  })
+
+  ipcMain.handle('clap:render', (event, request) => {
+    const plugin = assertApproved(approvedClapPlugins, request && request.pluginPath, 'plugin')
+    const wav = assertApproved(approvedClapWavs, request && request.wavPath, 'input WAV')
+    const params = Array.isArray(request && request.params)
+      ? request.params
+          .filter((p) => p && typeof p.id === 'string' && Number.isFinite(Number(p.value)))
+          .map((p) => ({ id: p.id, value: Number(p.value) }))
+      : []
+    return clapRender.render(__dirname, plugin, wav, params)
+  })
+}
+
 function createWindow () {
   // Create the browser window.
   mainWindow = new BrowserWindow({
@@ -158,6 +221,7 @@ function createWindow () {
 app.whenReady().then(() => {
   spliceSettings = loadSpliceSettings()
   registerSpliceIpc()
+  registerClapIpc()
   createWindow()
   applySpliceSettings()
 
