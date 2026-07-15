@@ -2,6 +2,8 @@ package com.ep133.sampletool.domain.midi
 
 import android.content.Context
 import android.util.Log
+import com.ep133.sampletool.domain.backup.ProjectManifestLoader
+import com.ep133.sampletool.domain.backup.ProjectManifestWriter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -43,8 +45,17 @@ sealed class ProjectBackupProgress {
     data class Error(val message: String) : ProjectBackupProgress()
 }
 
-/** One on-disk project backup in the library (PROJ-03). */
-data class BackupItem(val file: File, val name: String, val timestamp: Long)
+/**
+ * One on-disk project backup in the library (PROJ-03). [hasManifest] is true when a sidecar
+ * `<name>.manifest/manifest.json` exists next to the `.tar` (999.10), so the UI can badge
+ * manifest-carrying backups.
+ */
+data class BackupItem(
+    val file: File,
+    val name: String,
+    val timestamp: Long,
+    val hasManifest: Boolean = false,
+)
 
 /**
  * Single-project archive backup / restore + local backup-library enumeration over the
@@ -56,7 +67,10 @@ data class BackupItem(val file: File, val name: String, val timestamp: Long)
  *
  * Reference: data/index.js `downloadProjectArchive` / `uploadProjectArchive`.
  */
-class ProjectBackupManager(private val midi: MIDIRepository) {
+class ProjectBackupManager(
+    private val midi: MIDIRepository,
+    private val manifestWriter: ProjectManifestWriter = ProjectManifestWriter(midi),
+) {
 
     /**
      * Backup file name: `[{customName}-]EP133-P{NN}-{timestamp}.tar`. An optional app-side
@@ -83,6 +97,10 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
      * Downloads the archive via the paged GET (no `ZipOutputStream`), then writes it under
      * `getExternalFilesDir("backups")` (falling back to internal `filesDir/backups` if external
      * storage is unavailable). Emits Progress → Done(file), or Error on failure.
+     *
+     * After the `.tar` lands, a sidecar manifest directory (`<name>.manifest/` with manifest.json
+     * + exported sample WAVs) is written best-effort via [ProjectManifestWriter] (999.10); its
+     * failure never fails the backup.
      */
     fun backupProject(
         slot: MIDIRepository.ProjectSlot,
@@ -120,6 +138,17 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
             return@flow
         }
 
+        // Sidecar manifest (999.10) — strictly additive and best-effort: the .tar above is
+        // already on disk and stays the authoritative restore artifact. A manifest failure is
+        // logged (and partial skips are recorded inside manifest.json), never surfaced as Error.
+        try {
+            manifestWriter.writeManifest(slot, file, slotIndexOf(slot.name))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Manifest write failed for ${file.name} — .tar backup is still valid", e)
+        }
+
         emit(ProjectBackupProgress.Progress(archive.size, archive.size))
         emit(ProjectBackupProgress.Done(file))
     }
@@ -137,9 +166,9 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
      * the anchored regex also rejects path separators, so a traversal name ("../") can never match.
      * Reads the bytes under [Dispatchers.IO], then uploads via the paged PUT.
      *
-     * Restore is wired and validated, but the user-facing button stays gated on a hardware
-     * backup→restore round-trip pass and behind the restore-confirm AlertDialog. The destructive
-     * PUT requires that confirmation before invocation.
+     * Restore is wired, validated, and enabled in the UI (999.10) behind the restore-confirm
+     * AlertDialog — the destructive PUT requires that confirmation before invocation. The
+     * hardware backup→restore round-trip UAT is still pending (Open Q2 / UAT-3).
      */
     fun restoreProject(file: File, context: Context): Flow<ProjectBackupProgress> = flow {
         val slotIndex = tarSlotIndex(file.name)
@@ -235,7 +264,14 @@ class ProjectBackupManager(private val midi: MIDIRepository) {
         fun enumerateBackups(dir: File): List<BackupItem> =
             dir.listFiles { f -> f.extension == "tar" }
                 ?.sortedByDescending { it.lastModified() }
-                ?.map { BackupItem(it, it.name, it.lastModified()) }
+                ?.map {
+                    BackupItem(
+                        file = it,
+                        name = it.name,
+                        timestamp = it.lastModified(),
+                        hasManifest = ProjectManifestLoader.hasManifest(it),
+                    )
+                }
                 ?: emptyList()
     }
 }

@@ -490,9 +490,10 @@ open class MIDIRepository internal constructor(
      * Fetch metadata for [nodeId] using the nodeId-form GET (METADATA_GET = 2). Thin delegation
      * to [FileTransferClient.getMetadataJson].
      *
-     * MUST be called from within a FTC [FileTransferClient.withFileOpLock] context.
+     * MUST be called from within a FTC [FileTransferClient.withFileOpLock] context
+     * (e.g. via [withFileSession]). Kept `open` so hardware-free test doubles can override it.
      */
-    suspend fun getMetadataJson(nodeId: Int): JSONObject = ftc.getMetadataJson(nodeId)
+    open suspend fun getMetadataJson(nodeId: Int): JSONObject = ftc.getMetadataJson(nodeId)
 
     /**
      * Write [json] as the metadata for [nodeId] via a single METADATA SET frame. Thin delegation
@@ -516,6 +517,19 @@ open class MIDIRepository internal constructor(
      * session-init ordering and serialization (mirrors the notes on [getMetadataJson]).
      */
     open suspend fun listAllChildren(nodeId: Int): List<SysExProtocol.FileEntry> = ftc.listAllChildren(nodeId)
+
+    /**
+     * Run [block] holding the file-op mutex with the FILE_INIT session ensured — the locked
+     * context the UNLOCKED primitives ([getMetadataJson], [listAllChildren], [getNodeInfo])
+     * require. Mirrors PadAssignmentService's `withPadOp` locking discipline.
+     *
+     * Do NOT call self-locking ops (e.g. [getFileBytes], [listProjects], [getProjectArchive])
+     * from inside [block]: the mutex is not reentrant, so that deadlocks.
+     */
+    open suspend fun <T> withFileSession(block: suspend () -> T): T = ftc.withFileOpLock {
+        ftc.ensureFileSessionInitNoLock()
+        block()
+    }
 
     // ── Pad-assignment layer (thin delegations to PadAssignmentService) ───────────
     // getActiveGroupIndex/setActiveGroup/assignSampleToPad/clearPad/clearProject/

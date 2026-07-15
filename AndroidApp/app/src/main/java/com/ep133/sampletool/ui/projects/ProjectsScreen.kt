@@ -82,13 +82,14 @@ import java.util.Locale
 const val SHARE_MIME = "application/octet-stream"
 
 /**
- * Until the hardware backup→restore round-trip (Open Q2 / UAT-3) passes, the destructive
- * restore action stays disabled. The AlertDialog confirmation is wired regardless; flipping
- * this to `true` after the round-trip is the only change needed to enable the button.
+ * Restore is live (999.10): the #26 filename/slot validation fixes are on main with tests
+ * (RestoreFilenameValidationTest), and every restore still runs through the destructive-action
+ * confirm AlertDialog before the device PUT.
  *
- * HARDWARE-GATE (Open Q2): enable restore after the hardware backup→restore round-trip.
+ * NOTE: the hardware backup→restore round-trip UAT (Open Q2 / UAT-3) is still pending. Flip
+ * this back to `false` if that pass surfaces a protocol problem.
  */
-private const val RESTORE_ENABLED = false
+private const val RESTORE_ENABLED = true
 
 /**
  * ViewModel for the Projects browser + backup library (PROJ-01 / PROJ-03 / PROJ-04).
@@ -220,7 +221,7 @@ class ProjectsViewModel(
         _showRestoreConfirm.value = true
     }
 
-    /** Run the staged restore after the user confirms (gated by [RESTORE_ENABLED]). */
+    /** Run the staged restore after the user confirms in the AlertDialog. */
     fun confirmRestore(context: Context) {
         val file = _pendingRestoreFile ?: return
         _showRestoreConfirm.value = false
@@ -453,7 +454,7 @@ fun ProjectsScreen(viewModel: ProjectsViewModel) {
                 }
             }
 
-            // ── Restore-gated note (RESTORE_ENABLED) ──
+            // ── Restore caution note (hardware round-trip UAT still pending) ──
             item { RestoreGateNote() }
         }
 
@@ -639,7 +640,8 @@ private fun SlotCard(
 
 /**
  * A saved backup — faceplate card: name + restore tag, timestamp · size as mono, decorative bar
- * meter, and share / restore (restore stays disabled until [RESTORE_ENABLED]).
+ * meter, and share / restore (restore is live behind the confirm dialog when [RESTORE_ENABLED];
+ * hardware round-trip UAT is still pending — see the [RESTORE_ENABLED] doc).
  */
 @Composable
 private fun BackupCard(
@@ -691,7 +693,7 @@ private fun BackupCard(
 
         BarMeter(seed = backup.name.hashCode())
 
-        // Actions — share (enabled) + restore (gated/disabled until hardware round-trip passes).
+        // Actions — share + restore (restore is destructive; the confirm dialog gates the PUT).
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -821,7 +823,7 @@ private fun ProgressStrip(progress: Float) {
     }
 }
 
-/** The restore-gated explainer — inset panel with an accent left rail and a mono "!" marker. */
+/** The restore caution note — inset panel with an accent left rail and a mono "!" marker. */
 @Composable
 private fun RestoreGateNote() {
     val t = LocalEP133Tokens.current
@@ -844,14 +846,14 @@ private fun RestoreGateNote() {
         )
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
-                text = "restore is coming.",
+                text = "restore overwrites the target slot.",
                 color = t.text,
                 fontSize = 11.5.sp,
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                text = "it's gated until we finish hardware testing — we won't ship a feature that " +
-                    "can brick your unit.",
+                text = "back up the slot first if you care about what's on it — hardware " +
+                    "round-trip testing is still in progress.",
                 color = t.text2,
                 fontSize = 11.5.sp,
                 lineHeight = 17.sp,

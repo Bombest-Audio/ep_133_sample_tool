@@ -44,6 +44,26 @@ class BackupLibraryTest {
     }
 
     @Test
+    fun enumerateBackups_flagsManifestPresence() {
+        val dir = File.createTempFile("ep133-manifests", "").let { it.delete(); it.mkdirs(); it }
+        try {
+            val withManifest = File(dir, "EP133-P01-a.tar").apply { writeBytes(ByteArray(0)) }
+            File(dir, "EP133-P02-b.tar").apply { writeBytes(ByteArray(0)) }
+            // Sidecar dir + manifest.json only for the first backup (999.10).
+            File(dir, "EP133-P01-a.manifest").apply { mkdirs() }
+                .resolve("manifest.json").writeText("{}")
+
+            val byName = ProjectBackupManager.enumerateBackups(dir).associateBy { it.name }
+
+            assertEquals(2, byName.size)
+            assertTrue("sidecar present → hasManifest", byName[withManifest.name]!!.hasManifest)
+            assertFalse("no sidecar → !hasManifest", byName["EP133-P02-b.tar"]!!.hasManifest)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun enumerateBackups_emptyDirReturnsEmptyList() {
         val dir = File.createTempFile("ep133-empty", "").let { it.delete(); it.mkdirs(); it }
         try {
