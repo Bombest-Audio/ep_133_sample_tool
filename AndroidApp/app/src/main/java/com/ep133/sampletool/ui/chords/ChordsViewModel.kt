@@ -202,16 +202,24 @@ class ChordsViewModel(
         val degrees = prog.degrees
 
         chordMapJob = viewModelScope.launch {
+            // Track which pad note owns the sounding chord: pads are monophonic here
+            // (playChord replaces the previous chord), so a release of an older, already
+            // superseded pad must not kill the chord the newest pad is playing.
+            var activePadNote: Int? = null
             midiRepo.incomingMidi.collect { event ->
                 val offset = event.note - baseNote
                 when {
                     // noteOn in this group's range → play chord at that index
-                    event.status == 0x90 && event.velocity > 0 && offset in degrees.indices ->
+                    event.status == 0x90 && event.velocity > 0 && offset in degrees.indices -> {
+                        activePadNote = event.note
                         chordPlayer.playChord(degrees[offset], _keyRoot.value)
-                    // noteOff → release chord
+                    }
+                    // noteOff → release only if it matches the pad that owns the chord
                     (event.status == 0x80 || (event.status == 0x90 && event.velocity == 0))
-                        && offset in degrees.indices ->
+                        && offset in degrees.indices && event.note == activePadNote -> {
+                        activePadNote = null
                         chordPlayer.stopCurrentChord()
+                    }
                 }
             }
         }
