@@ -10,7 +10,7 @@ I want to run a sample through a CLAP plugin (EQ, saturation, whatever) right be
 
 - The desktop app is Electron + WebView. All business logic is JS in `data/`.
 - The JUCE plugin (issue #14) is a MIDI-only stub. It wraps the same web app and does no audio processing.
-- Android/iOS wrap the web app too, plus Android has native Compose screens. Neither can host desktop CLAP binaries at all (wrong ABI, wrong platform - CLAP plugins ship as macOS/Windows/Linux dylibs).
+- Android/iOS wrap the web app too, plus Android has native Compose screens. Neither can host desktop CLAP binaries at all (wrong ABI, wrong platform - CLAP plugins ship as desktop `.clap` packages: a macOS bundle, a Windows DLL, or a Linux .so).
 
 So this is a desktop-only feature by nature, and the host has to be native code.
 
