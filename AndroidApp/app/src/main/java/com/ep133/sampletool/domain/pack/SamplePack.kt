@@ -17,9 +17,28 @@ data class KitSample(
 /** A category tab in a pack (a top-level subfolder such as KICKS, SNARES, …). */
 data class KitCategory(val id: String, val samples: List<KitSample>)
 
-/** A loaded sample pack: the folder name + its categories. */
-data class KitPack(val name: String, val categories: List<KitCategory>) {
-    val isEmpty: Boolean get() = categories.all { it.samples.isEmpty() }
+/**
+ * A KEYGROUP instrument found in an MPC expansion (.xpm) inside the pack.
+ * [zones] is the parsed key map; [sampleUris] resolves each zone's sample file
+ * name (lowercased) to its SAF URI, captured at scan time so loading needs no
+ * second directory walk. Load with [MpcInstrumentLoader.load] and play through
+ * SampledInstrumentVoice as a chord voice.
+ */
+data class KitInstrument(
+    val name: String,
+    val uri: Uri,                       // the .xpm document
+    val zones: List<MpcZone>,
+    val sampleUris: Map<String, Uri>,
+    val meta: String,                   // small subtitle, e.g. "KEYGROUP · 4 zones"
+)
+
+/** A loaded sample pack: the folder name + its categories (+ MPC keygroup instruments). */
+data class KitPack(
+    val name: String,
+    val categories: List<KitCategory>,
+    val instruments: List<KitInstrument> = emptyList(),
+) {
+    val isEmpty: Boolean get() = categories.all { it.samples.isEmpty() } && instruments.isEmpty()
 }
 
 /**
@@ -46,7 +65,15 @@ object SamplePackLoader {
             }
             .filter { it.samples.isNotEmpty() }
 
-        KitPack(name = packName, categories = categories)
+        // MPC expansions: .xpm program files route KEYGROUP programs to the
+        // instruments list and DRUM programs to extra one-shot categories.
+        val mpc = MpcExpansionScanner.scan(context, root)
+
+        KitPack(
+            name = packName,
+            categories = categories + mpc.drumCategories,
+            instruments = mpc.instruments,
+        )
     }
 
     /** Strip a leading "N. " / "N " ordering prefix and uppercase, e.g. "1. KICKS" -> "KICKS". */

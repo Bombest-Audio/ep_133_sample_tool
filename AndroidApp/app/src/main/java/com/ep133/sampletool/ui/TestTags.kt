@@ -95,6 +95,8 @@ object TestTags {
     const val KB_ASSIGNED_COUNT = "kb_assigned_count"
     const val KB_SWITCH_PACK_BUTTON = "kb_switch_pack_button"
     const val KB_LOAD_BANNER = "kb_load_banner"
+    const val KB_INSTRUMENT_SECTION = "kb_instrument_section"
+    fun kbInstrumentRow(name: String) = "kb_instrument_row_$name"
 
     // Kit Builder pack import (batch upload to /sounds)
     fun kbImportSelect(name: String) = "kb_import_select_$name"
