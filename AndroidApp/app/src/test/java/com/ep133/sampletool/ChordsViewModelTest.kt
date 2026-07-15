@@ -9,6 +9,7 @@ import com.ep133.sampletool.domain.model.ChordQuality
 import com.ep133.sampletool.domain.model.DeviceState
 import com.ep133.sampletool.domain.model.EP133Sound
 import com.ep133.sampletool.domain.model.PadChannel
+import com.ep133.sampletool.domain.model.Vibe
 import com.ep133.sampletool.midi.MIDIPort
 import com.ep133.sampletool.ui.chords.ChordsViewModel
 import kotlinx.coroutines.Dispatchers
@@ -351,6 +352,50 @@ class ChordsViewModelTest {
 
         testDispatcher.scheduler.advanceUntilIdle()
         assertEquals("No pad loads after cancel", sentAtCancel, repo.port.sent.size)
+    }
+
+    // ── generateProgression ───────────────────────────────────────────────────
+
+    @Test
+    fun generateProgression_selectsGeneratedProgression() = runTest {
+        val vm = makeVm()
+        vm.adjustGeneratorBars(2) // 4 -> 6
+        vm.generateProgression(seed = 99L)
+
+        val selected = vm.selectedProgression.value
+        assertEquals(6, selected?.degrees?.size)
+        assertTrue(selected!!.id.startsWith("gen-"))
+    }
+
+    @Test
+    fun generateProgression_sameSeed_isDeterministic() = runTest {
+        val vm = makeVm()
+        vm.generateProgression(seed = 7L)
+        val first = vm.selectedProgression.value
+
+        vm.selectProgression(null)
+        vm.generateProgression(seed = 7L)
+        val second = vm.selectedProgression.value
+
+        assertEquals(first?.degrees, second?.degrees)
+    }
+
+    @Test
+    fun generateProgression_usesSelectedVibe() = runTest {
+        val vm = makeVm()
+        vm.toggleVibe(Vibe.BLUES)
+        vm.generateProgression(seed = 1L)
+
+        assertEquals(setOf(Vibe.BLUES), vm.selectedProgression.value?.vibes)
+    }
+
+    @Test
+    fun adjustGeneratorBars_clampsToRange() = runTest {
+        val vm = makeVm()
+        vm.adjustGeneratorBars(-100)
+        assertEquals(2, vm.generatorBars.value)
+        vm.adjustGeneratorBars(100)
+        assertEquals(16, vm.generatorBars.value)
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
